@@ -636,7 +636,8 @@ import Foundation
                 let position = min(body.count, max(0, args["content_offset"] as? Int ?? 0)), count = min(8000, max(1, args["content_limit"] as? Int ?? 4000))
                 let slice = String(body.dropFirst(position).prefix(count)), next = position + slice.count
                 let identity = query.isEmpty ? " · " + message.id : ""
-                output += "[\(i) · \(message.role)\(identity) · 字符 \(position)...\(next)/\(body.count)]\n" + slice + (next < body.count ? "\n[本条未结束，继续 content_offset=\(next)]" : "") + "\n\n"
+                let response = message.responseState == .interrupted ? " · 回复中断" : ""
+                output += "[\(i) · \(message.role)\(identity)\(response) · 字符 \(position)...\(next)/\(body.count)]\n" + slice + (next < body.count ? "\n[本条未结束，继续 content_offset=\(next)]" : "") + "\n\n"
                 if output.utf8.count > 24_000 { output += "[请增大 offset 继续读取]"; break }
             }
             if !query.isEmpty { output += "[当前任务共\(task.messages.count)条记录，offset=\(start)之后匹配\(matches.count)条。]" }

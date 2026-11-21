@@ -38,12 +38,19 @@ import AppKit
             contents.some(value => value.startsWith('用户要求原文（仅作为理解记录的依据，不必复述）：')) ? 'compact' :
             text.includes('PUBLIC_QUEUED_SECOND') ? 'queue-retry' : text.includes('PUBLIC_QUEUE_FAILURE_FIRST') ? 'queue-failure' :
             text.includes('PUBLIC_REPLACEMENT_AFTER_FAILURE') ? 'replacement' : text.includes('PUBLIC_LATE_FAILURE_FIRST') ? 'late-failure' :
+            text.includes('PUBLIC_STREAM_RETRY') ? 'stream-retry' : text.includes('PUBLIC_STREAM_EOF') ? 'stream-eof' :
             text.includes('PUBLIC_CANCEL_TURN') ? 'cancel' : text.includes('PUBLIC_ERROR_TURN') ? 'error' : 'turn';
           fs.appendFileSync(process.argv[3], 'wire\t' + JSON.stringify({kind, contaminated:text.includes('PUBLIC_DIAGNOSTIC_ONLY'),
+            containsInterruptedOutput:text.includes('PUBLIC_INTERRUPTED_ASSISTANT'),
             queuedInputIsLatest:lastUser.startsWith('PUBLIC_QUEUED_SECOND'), queuedAttachmentOnWire:lastUser.includes('[附件编号：'),
             syntheticContinuation:text.includes('继续完成原任务，保留之前的约束。')}) + '\n');
+          if (kind === 'stream-eof' || kind === 'cancel') {
+            res.writeHead(200, {'Content-Type':'text/event-stream'});
+            res.write('data: '+JSON.stringify({choices:[{delta:{content:'PUBLIC_INTERRUPTED_ASSISTANT'}}]})+'\n\n');
+            if (kind === 'stream-eof') { res.end(); return; }
+          }
           if (kind === 'cancel') {
-            const timer = setTimeout(() => {res.writeHead(504); res.end();}, 15_000);
+            const timer = setTimeout(() => res.end(), 15_000);
             res.on('close', () => clearTimeout(timer)); return;
           }
           if (kind === 'queue-failure') {
@@ -182,8 +189,8 @@ import AppKit
         let cancelling = store.create(title: "公开请求取消", workspace: workspace.path), beforeCancel = try rows().count
         guard runtime.submit("PUBLIC_CANCEL_TURN", taskID: cancelling) else { throw PetError("取消样例未开始") }
         let started = Date().addingTimeInterval(8)
-        while try !rows().dropFirst(beforeCancel).contains(where: { $0.1["kind"] as? String == "cancel" }), Date() < started { await wait(0.025) }
-        guard Date() < started else { throw PetError("取消前未收到真实本机请求") }
+        while store.task(cancelling)?.messages.last?.content != "PUBLIC_INTERRUPTED_ASSISTANT", Date() < started { await wait(0.025) }
+        guard store.task(cancelling)?.messages.last?.responseState == .streaming else { throw PetError("取消前未收到真实本机流片段") }
         runtime.interrupt(cancelling)
         let cancelled = Date().addingTimeInterval(8)
         while try !rows().dropFirst(beforeCancel).contains(where: { $0.0 == "after" }), Date() < cancelled { await wait(0.025) }
@@ -193,6 +200,40 @@ import AppKit
             && store.task(cancelling)?.status == .stopped && cancellation.last?.1["status"] as? String == "cancelled"
             && cancellation.last?.1["error"] is NSNull && cancellation.last?.1["token_usage"] is NSNull
             && store.task(cancelling)?.events.filter { $0.hook?.event == .interrupt && $0.status == "completed" }.count == 1
+        checks["stoppingRetainsStreamAsInterruptedText"] = store.task(cancelling)?.messages.last?.responseState == .interrupted &&
+            store.task(cancelling)?.messages.last?.content == "PUBLIC_INTERRUPTED_ASSISTANT" && store.task(cancelling)?.messages.last?.isReply == false
+
+        let truncated = store.create(title: "公开流式连接中断", workspace: workspace.path)
+        guard runtime.submit("PUBLIC_STREAM_EOF", taskID: truncated) else { throw PetError("流中断样例未开始") }
+        let interrupted = try await settled(truncated)
+        guard let fragment = interrupted.messages.last else { throw PetError("流片段未保存") }
+        checks["missingFinishRetainsFragmentWithoutFinalReply"] = interrupted.status == .failed && fragment.responseState == .interrupted &&
+            fragment.content == "PUBLIC_INTERRUPTED_ASSISTANT" && !fragment.isReply && interrupted.modelReceipts?.last?.completed == false
+        let fragmentHash = AgentFiles.hash(Data(fragment.content.utf8))
+        checks["incompleteReplyCanBeCopiedButCannotBeRated"] = try store.replyMessage(taskID: truncated, messageID: fragment.id, expectedHash: fragmentHash, allowIncomplete: true).content == fragment.content &&
+            (try? store.replyMessage(taskID: truncated, messageID: fragment.id, expectedHash: fragmentHash)) == nil
+        guard runtime.submit("PUBLIC_STREAM_RETRY", taskID: truncated) else { throw PetError("流中断后未继续") }
+        let continued = try await settled(truncated)
+        let newWire = try rows().last { $0.0 == "wire" && $0.1["kind"] as? String == "stream-retry" }?.1
+        checks["newRequestOmitsInterruptedFragmentAndKeepsOldID"] = newWire?["containsInterruptedOutput"] as? Bool == false &&
+            continued.status == .completed && continued.messages.contains { $0.id == fragment.id && $0.responseState == .interrupted } &&
+            continued.messages.last?.isReply == true && continued.messages.last?.responseState == nil
+        var legacy = interrupted
+        legacy.messages = interrupted.messages.map { message in
+            var value = message; value.responseState = nil; return value
+        }
+        let olderAnswer = AgentMessage(role: "assistant", content: "有完整内容的旧版回复")
+        legacy.messages.insert(olderAnswer, at: 0)
+        let legacyProfile = output.appendingPathComponent("legacy-stream")
+        let legacyAgent = legacyProfile.appendingPathComponent("agent")
+        try fm.createDirectory(at: legacyAgent, withIntermediateDirectories: true)
+        let legacyBytes = try JSONEncoder().encode(legacy)
+        try legacyBytes.write(to: legacyProfile.appendingPathComponent("original-task.json"))
+        try legacyBytes.write(to: legacyAgent.appendingPathComponent(legacy.id + ".json"))
+        let legacyStore = AgentStore(directory: legacyProfile, legacy: [], extensionHome: home)
+        let migrated = legacyStore.task(legacy.id)
+        checks["legacyRecoveryUsesFailedReceiptAndKeepsOldCompletedText"] = migrated?.messages.last?.responseState == .interrupted &&
+            migrated?.messages.last?.id == fragment.id && migrated?.messages.first?.id == olderAnswer.id && migrated?.messages.first?.isReply == true
 
         let compact = store.create(title: "公开请求重试", workspace: workspace.path), beforeCompact = try rows().count
         let original = [AgentMessage(role: "user", content: "PUBLIC_ORIGINAL"), AgentMessage(role: "assistant", content: String(repeating: "Public research history with retained evidence. ", count: 100)), AgentMessage(role: "user", content: "PUBLIC_CURRENT")]
@@ -207,11 +248,12 @@ import AppKit
             && compacted.modelReceipts?.map(\.finishReason) == ["length", "stop"]
 
         let beforeRecap = try rows().count
-        guard runtime.analyze(owner, recap: true) else { throw PetError("回顾样例未开始") }
-        let recapped = try await settled(owner), recap = try ordered(since: beforeRecap)
+        guard runtime.analyze(truncated, recap: true) else { throw PetError("回顾样例未开始") }
+        let recapped = try await settled(truncated), recap = try ordered(since: beforeRecap)
         checks["recapIsObservedWithoutReceivingFailedDiagnostics"] = recap.map(\.0) == ["before", "wire", "after"] && fieldsMatch(recap)
             && recap.contains { $0.1["kind"] as? String == "recap" && $0.1["contaminated"] as? Bool == false }
             && recapped.recap?.text == "PUBLIC_RECAP_RESULT"
+        checks["recapRequestUsesCompletedHistoryOnly"] = recap.first(where: { $0.0 == "wire" })?.1["containsInterruptedOutput"] as? Bool == false
 
         let queued = store.create(title: "请求失败时的已发送补充", workspace: workspace.path)
         let attachmentURL = workspace.appendingPathComponent("公开补充.txt")
@@ -280,5 +322,31 @@ import AppKit
         store.selectedID = owner
         try JSONSerialization.data(withJSONObject: ["taskID": owner, "queuedFailureTaskID": queued, "replacementTaskID": racing, "loopbackRequests": transmitted.count], options: [.sortedKeys]).write(
             to: output.appendingPathComponent("model-request-fixture.json"), options: .atomic)
+    }
+
+    func prepareStreamRecoveryUI(_ output: URL, tasks: AgentStore, runtime: AgentRuntime) throws -> String {
+        guard Bundle.main.object(forInfoDictionaryKey: "BlueFatFishAcceptanceOnly") as? Bool == true,
+              let port = Int(try String(contentsOf: output.appendingPathComponent("stream-port.txt"), encoding: .utf8)),
+              (1...65_535).contains(port) else { throw PetError("流式恢复验收需要独立应用和本机样例服务") }
+        let endpoint = "http://127.0.0.1:\(port)/v1"
+        store.preferences.endpoint = endpoint
+        store.preferences.model = "fixture-observer"
+        store.preferences.contextTokens = 8192
+        store.preferences.replyTokens = 512
+        store.preferences.visionMode = "off"
+        var settings = AgentGeneralSettings.Settings()
+        settings.runningInput = .queue
+        settings.promptSuggestions = false; settings.skillEvolutionSuggestions = false
+        runtime.taskSettings = { settings }
+        let marker = output.appendingPathComponent("stream-task-id.txt"), id: String
+        if FileManager.default.fileExists(atPath: marker.path) {
+            id = try String(contentsOf: marker, encoding: .utf8)
+            guard tasks.task(id) != nil else { throw PetError("原流式恢复任务不存在") }
+        } else {
+            id = tasks.create(title: "公开流式回复恢复", mode: .ask)
+            try Data(id.utf8).write(to: marker, options: .atomic)
+        }
+        control.showAgentTask(id)
+        return endpoint
     }
 }

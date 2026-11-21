@@ -24,6 +24,8 @@ struct AgentToolCall: Codable, Identifiable {
     var wire: [String: Any] { ["id": id, "type": "function", "function": ["name": name, "arguments": arguments]] }
 }
 struct AgentMessage: Codable, Identifiable {
+    enum ResponseState: String, Codable { case streaming, interrupted }
+
     var id = UUID().uuidString
     var role: String
     var content: String
@@ -45,8 +47,10 @@ struct AgentMessage: Codable, Identifiable {
     var ruleReferences: [AgentPluginRuleReference]?
     var localRuleReferences: [AgentLocalRuleReference]?
     var hookRejected: Bool?
+    var responseState: ResponseState?
     var isHumanInput: Bool { role == "user" && nativeContext != true && hookRejected != true }
-    var isReply: Bool { role == "assistant" && nativeContext != true && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (toolCalls ?? []).isEmpty }
+    var hasReplyText: Bool { role == "assistant" && nativeContext != true && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (toolCalls ?? []).isEmpty }
+    var isReply: Bool { hasReplyText && responseState == nil }
     var isImportedContext: Bool { nativeContext == true && (importedContext == true || content.hasPrefix("[Codex历史记录，仅作资料") || content.hasPrefix("[Qoder历史记录，仅作资料")) }
     var wire: [String: Any] {
         let references = (attachmentIDs ?? []).isEmpty ? "" : "\n[附件编号：" + (attachmentIDs ?? []).joined(separator: ", ") + "]"
@@ -278,6 +282,19 @@ struct AgentTaskRecord: Codable, Identifiable {
         return status.title
     }
     var queuedCount: Int { (queuedInputs?.count ?? 0) + (queuedMessages?.count ?? 0) }
+    var unfinishedResponseIDs: Set<String> {
+        let receipts = (modelReceipts ?? []).filter { $0.purpose == "conversation" }
+        let failed = Set(receipts.filter { !$0.completed }.compactMap(\.messageID))
+            .subtracting(receipts.filter(\.completed).compactMap(\.messageID))
+        return Set(messages.filter {
+            $0.responseState == .streaming || ($0.responseState == nil && $0.duration == nil && failed.contains($0.id) && $0.hasReplyText)
+        }.map(\.id))
+    }
+    mutating func interruptResponses() {
+        let unfinished = unfinishedResponseIDs
+        for index in messages.indices where unfinished.contains(messages[index].id) { messages[index].responseState = .interrupted }
+        messages.removeAll { $0.role == "assistant" && $0.content.isEmpty && ($0.toolCalls ?? []).isEmpty }
+    }
     var submittedAttachmentIDs: Set<String> { Set(messages.filter(\.isHumanInput).flatMap { $0.attachmentIDs ?? [] }) }
     var availableAttachmentIDs: Set<String> {
         let captures = Set((attachments ?? []).filter { $0.browserCapture != nil || $0.desktopCapture != nil || $0.canvasCapture != nil }.map(\.id))

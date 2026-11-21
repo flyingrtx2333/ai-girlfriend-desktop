@@ -409,7 +409,7 @@ import Foundation
             record.status = restarting ? .ready : .stopped
             Self.skipPending(&record, reason: "用户中断了执行。操作可能部分执行，继续前先检查真实状态。")
             record.flushQueuedInputs()
-            record.messages.removeAll { $0.role == "assistant" && $0.content.isEmpty && ($0.toolCalls ?? []).isEmpty }
+            record.interruptResponses()
             for i in record.events.indices where ["running", "waiting"].contains(record.events[i].status) { record.events[i].status = "stopped" }
         }
         notifyChange(id)
@@ -594,7 +594,7 @@ import Foundation
         append("失败事件节选：\n" + failures.suffix(4).map { $0.title + "：" + $0.detail }.joined(separator: "\n"), maximum: budget / 8)
         append("计划：\n" + task.plan.map { "[\($0.status)] \($0.title)" }.joined(separator: "\n") + "\n产物：\n" + task.artifacts.joined(separator: "\n") + "\n来源：\n" + task.sources.joined(separator: "\n"), maximum: budget / 5)
         append("历史工作摘要（模型生成，须以原始结果核对）：\n" + (task.contextSummary ?? "无"), maximum: budget / 6)
-        let remainingMessages = task.messages.filter { $0.hookRejected != true }.suffix(16)
+        let remainingMessages = task.messages.filter { $0.hookRejected != true && $0.responseState == nil }.suffix(16)
         for message in remainingMessages.reversed() { append("[最近记录，倒序 · \(message.role)]\n" + message.content, maximum: max(128, budget / 8)) }
         if !key.isEmpty { input = input.replacingOccurrences(of: key, with: "[Token 已隐藏]") }
         try modelRequestCheck?()
@@ -1025,7 +1025,7 @@ import Foundation
                     store.update(id) { $0.flushQueuedInputs() }
                     task = store.task(id)!
                 }
-                let lastAssistant = task.messages.lastIndex(where: { $0.role == "assistant" }) ?? -1
+                let lastAssistant = task.messages.lastIndex(where: { $0.role == "assistant" && $0.responseState == nil }) ?? -1
                 for message in task.messages.dropFirst(lastAssistant + 1) where message.isHumanInput && task.hookPromptIDs?.contains(message.id) != true {
                     guard try await admitPrompt(message, id: id, secret: key) else { throw AgentHookHalt("输入已被 Hook 阻止，请修改后重新发送") }
                 }
@@ -1067,7 +1067,7 @@ import Foundation
                 if (store.task(id)?.queuedCount ?? 0) > 0 { continue }
                 if task.kind == AgentKnowledgeCards.kind, (store.task(id)?.modelReceipts?.count ?? 0) >= 30 { throw PetError("本次知识卡片达到30次模型请求，已有记录和草稿保留") }
                 try modelRequestCheck?()
-                let assistant = AgentMessage(role: "assistant", content: "")
+                let assistant = AgentMessage(role: "assistant", content: "", responseState: .streaming)
                 store.update(id) { $0.contextSnapshot = try? AgentContext.snapshot(preferences: p, system: system, skills: payload.skills, messages: context, tools: definitions, loadedSkills: task.isProjectDocumentation ? 0 : task.activeSkills?.count ?? 0); $0.messages.append(assistant); if $0.mode == .goal { $0.goalExecution?.usedTurns += 1 } }; notifyChange(id)
                 if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
                 preparationPasses = 0
@@ -1088,7 +1088,13 @@ import Foundation
                     for i in record.messages.indices {
                         if let references = record.messages[i].visuals, !references.isEmpty, references.allSatisfy(deliveredImages.contains) { record.messages[i].visualsDelivered = true }
                     }
-                    if let i = record.messages.firstIndex(where: { $0.id == assistant.id }) { record.messages[i].content = turn.content; record.messages[i].reasoning = turn.reasoning.isEmpty ? nil : turn.reasoning; record.messages[i].toolCalls = turn.calls.isEmpty ? nil : turn.calls; record.messages[i].duration = max(0, ProcessInfo.processInfo.systemUptime - replyStarted) }
+                    if let i = record.messages.firstIndex(where: { $0.id == assistant.id }) {
+                        record.messages[i].content = turn.content
+                        record.messages[i].reasoning = turn.reasoning.isEmpty ? nil : turn.reasoning
+                        record.messages[i].toolCalls = turn.calls.isEmpty ? nil : turn.calls
+                        record.messages[i].duration = max(0, ProcessInfo.processInfo.systemUptime - replyStarted)
+                        record.messages[i].responseState = nil
+                    }
                     record.pendingCalls = turn.calls
                     record.unansweredQueuedMessageID = nil
                     if !visuals.isEmpty {
@@ -1124,7 +1130,7 @@ import Foundation
                 Self.skipPending(&record, reason: "执行已停止，未继续此操作；恢复后先核对真实状态。")
                 record.flushQueuedInputs()
                 record.status = cancelled ? .stopped : .failed
-                record.messages.removeAll { $0.role == "assistant" && $0.content.isEmpty && ($0.toolCalls ?? []).isEmpty }
+                record.interruptResponses()
                 for i in record.events.indices where record.events[i].status == "running" { record.events[i].status = cancelled ? "stopped" : "failed" }
                 record.events.append(AgentEvent(kind: "state", title: cancelled ? "已停止" : "执行失败", detail: cancelled ? "" : error.localizedDescription, status: cancelled ? "stopped" : "failed"))
             }

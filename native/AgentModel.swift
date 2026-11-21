@@ -20,6 +20,7 @@ import Foundation
 
 enum AgentModel {
     @MainActor static func requestBody(preferences: PetPreferences, system: String, messages: [AgentMessage], tools: [[String: Any]], requiredTool: String? = nil, visuals: [String: [AgentVisualInput]] = [:]) throws -> [String: Any] {
+        let messages = messages.filter { $0.responseState == nil }
         let snapshot = try AgentContext.snapshot(preferences: preferences, system: system, skills: "", messages: messages, tools: tools, loadedSkills: 0)
         guard snapshot.estimatedTokens + preferences.outputLimit <= preferences.contextLimit else { throw PetError("Agent请求超过当前上下文预算，请整理历史或提高上限") }
         var body = try preferences.modelOptions(stream: true)

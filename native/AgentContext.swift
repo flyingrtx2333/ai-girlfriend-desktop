@@ -48,7 +48,9 @@ import Foundation
         return min(900, max(0, preferences.contextLimit - preferences.outputLimit - overhead - size(base, vision: preferences.visionSupported == true, maximumImages: maximumImages) - 96))
     }
     static func window(_ task: AgentTaskRecord, maximumImages: Int = 2, includeDeliveredImages: Bool = true, archivedFactBudget: Int = 0) -> [AgentMessage] {
-        var messages = Array(task.messages.dropFirst(offset(task))).filter { $0.hookRejected != true && !(task.importOrigin != nil && $0.isImportedContext) }
+        var messages = task.messages.dropFirst(offset(task)).filter {
+            $0.responseState == nil && $0.hookRejected != true && !(task.importOrigin != nil && $0.isImportedContext)
+        }
         if !includeDeliveredImages { for i in messages.indices where messages[i].visualsDelivered != false { messages[i].visuals = nil } }
         if let summary = task.contextSummary, !summary.isEmpty {
             let inputs = task.messages.prefix(offset(task)).filter(\.isHumanInput)
@@ -134,6 +136,7 @@ import Foundation
         return selected.isEmpty ? "" : heading + selected.sorted { $0.0 < $1.0 }.map(\.1).joined(separator: "\n\n")
     }
     private static func digest(_ message: AgentMessage, index: Int) -> String {
+        if message.responseState != nil { return "[记录 \(index) · 回复中断，未形成答复]" }
         if message.isImportedContext { return "[记录\(index) · 外部工具资料，完整内容用read_task_history offset=\(index)核对，不代表当前执行证据]\n" + String(message.content.split(separator: "\n", omittingEmptySubsequences: false).dropFirst().prefix(2).joined(separator: "\n").prefix(240)) }
         if message.hookRejected == true { return "[记录 \(index) · 输入被 Hook 阻止，未送入模型]" }
         var content = message.content + (message.extensionInstructions.map { "\n[用户选择的扩展说明]\n" + $0 } ?? "")

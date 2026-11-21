@@ -126,6 +126,7 @@ import WebKit
         if CommandLine.arguments.contains("--manual-ui") || boundedLiveUI {
             // Manual fixtures block transmission; each live workflow requires its own bounded authorization and ledger.
             var requests = 0
+            let streamRecoveryUI = !boundedLiveUI && CommandLine.arguments.contains("--stream-recovery-ui")
             do {
                 ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务未初始化") }
                 var gitRemoteWindow: AgentGitPushWindow?
@@ -136,6 +137,12 @@ import WebKit
                 } else if attentionLiveUI {
                     let budget = try prepareAttentionLiveUI(output); requests = budget.used
                     runtime.modelRequestCheck = { try budget.request(); requests = budget.used }
+                } else if streamRecoveryUI {
+                    let endpoint = try prepareStreamRecoveryUI(output, tasks: tasks, runtime: runtime)
+                    runtime.modelRequestCheck = { [weak self] in
+                        guard self?.store.preferences.endpoint == endpoint, requests < 2 else { throw PetError("流式验收仅允许本机样例请求") }
+                        requests += 1
+                    }
                 } else { runtime.modelRequestCheck = { requests += 1; throw PetError("本轮手动窗口检查禁止模型请求") } }
                 if CommandLine.arguments.contains("--mcp-oauth-ui") { try configureMCPOAuthFixture(output, service: tasks.mcp, opensBrowser: true) }
                 if CommandLine.arguments.contains("--plugin-market-ui") { _ = try configurePluginMarketFixture(output, plugins: tasks.extensions.plugins) }
@@ -285,7 +292,9 @@ import WebKit
                     window.setFrame(NSRect(x: visible.midX - parts[0] / 2, y: visible.maxY - parts[1], width: parts[0], height: parts[1]), display: true)
                 }
                 gitRemoteWindow?.showWindow(nil); gitRemoteWindow?.window?.makeKeyAndOrderFront(nil)
-                try write(["appPID": getpid(), "binaryHash": hash, "modelTransmissionBlocked": !boundedLiveUI, "boundedAttentionLive": attentionLiveUI, "boundedSkillCreationLive": skillCreationLiveUI, "modelRequestsAtStart": requests, "windowSize": control.window.map { [Double($0.frame.width), Double($0.frame.height)] } ?? []], "manual-ui-process-" + pid + ".json")
+                try write(["appPID": getpid(), "binaryHash": hash, "modelTransmissionBlocked": !boundedLiveUI && !streamRecoveryUI,
+                           "loopbackStreamRecovery": streamRecoveryUI, "boundedAttentionLive": attentionLiveUI, "boundedSkillCreationLive": skillCreationLiveUI,
+                           "modelRequestsAtStart": requests, "windowSize": control.window.map { [Double($0.frame.width), Double($0.frame.height)] } ?? []], "manual-ui-process-" + pid + ".json")
                 let deadline = Date().addingTimeInterval(3600); var capture = ""
                 while Date() < deadline && !FileManager.default.fileExists(atPath: output.appendingPathComponent("finish-manual-ui-" + pid).path) {
                     mcpInput?.pollUI()

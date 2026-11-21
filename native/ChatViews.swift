@@ -86,10 +86,11 @@ final class ChatMessageRow: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { copiedReset?.cancel() }
-    func setReplyActions(binding: String?, feedback: String?, canFeedback: Bool, canBranch: Bool, copy: (() -> Bool)?, mark: ((String) -> Void)?, branch: (() -> Void)?) {
+    func setReplyActions(binding: String?, feedback: String?, canFeedback: Bool, canBranch: Bool, copyOnly: Bool, copy: (() -> Bool)?, mark: ((String) -> Void)?, branch: (() -> Void)?) {
         if replyBinding != binding { copiedReset?.cancel(); copyReply.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil); copyReply.setAccessibilityValue("") }
         replyBinding = binding; onCopyReply = copy; onReplyFeedback = mark; onBranchReply = branch
         replyActions.isHidden = binding == nil; helpful.isEnabled = canFeedback; unhelpful.isEnabled = canFeedback; branchReply.isEnabled = canBranch
+        helpful.isHidden = copyOnly; unhelpful.isHidden = copyOnly; branchReply.isHidden = copyOnly
         for (button, value, title, symbol) in [(helpful, "helpful", "有帮助", "hand.thumbsup"), (unhelpful, "unhelpful", "无帮助", "hand.thumbsdown")] {
             let selected = feedback == value; button.image = NSImage(systemSymbolName: symbol + (selected ? ".fill" : ""), accessibilityDescription: nil)
             button.contentTintColor = selected ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.secondaryText; button.setAccessibilityLabel((selected ? "取消" : "") + title); button.setAccessibilityValue(selected ? "已标记" : "未标记")
@@ -120,8 +121,13 @@ final class ChatMessageRow: NSView {
     @objc private func markHelpful() { onReplyFeedback?("helpful") }
     @objc private func markUnhelpful() { onReplyFeedback?("unhelpful") }
     @objc private func branchResponse() { onBranchReply?() }
-    func setDuration(_ value: String?) { duration.stringValue = value.map { "耗时 " + $0 } ?? ""; duration.isHidden = value == nil }
-    var visibleDuration: String? { duration.isHidden ? nil : duration.stringValue }
+    private(set) var visibleDuration: String?
+    func setReplyMetadata(duration value: String?, interrupted: Bool) {
+        visibleDuration = value.map { "耗时 " + $0 }
+        duration.setAccessibilityLabel(interrupted ? "回复状态" : "回复耗时")
+        duration.stringValue = interrupted ? "回复中断" : visibleDuration ?? ""
+        duration.isHidden = visibleDuration == nil && !interrupted
+    }
     func update(_ value: String, markdown: Bool = true, searchQuery: String? = nil, searchDisplayRange: NSRange? = nil, searchDisplayText: String? = nil) {
         let size = AgentAppearance.messageSize + (isReasoning ? -1 : workbench ? 0 : 1)
         guard text != value || renderedMarkdown != markdown || highlightQuery != searchQuery || highlightDisplayRange != searchDisplayRange || highlightDisplayText != searchDisplayText || renderedSize != size || renderedFontStyle != AgentContentAppearance.fontStyle || label.stringValue.isEmpty else { return }

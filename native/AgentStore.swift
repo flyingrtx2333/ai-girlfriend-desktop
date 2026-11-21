@@ -166,7 +166,8 @@ import Foundation
             let boundary = try? AgentDataImport.historyBoundary(task, directory: directory); task.importOrigin?.historyThroughID = boundary
         }
         let hasWaitingSupplements = [.failed, .stopped].contains(task.status) && task.queuedCount > 0
-        let interrupted = !hooks.isRunning(id) && (task.status == .running || hasWaitingSupplements || task.pendingFileCapture != nil || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
+        let interrupted = !hooks.isRunning(id) && (task.status == .running || hasWaitingSupplements || task.pendingFileCapture != nil ||
+            !task.unfinishedResponseIDs.isEmpty || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
         if interrupted { Self.recover(&task) }
         cache[id] = task
         rememberStoredTask(id, hash: AgentFiles.hash(data))
@@ -224,6 +225,7 @@ import Foundation
             task.events[i].status = "stopped"; task.events[i].hook?.delivery = "interrupted"
             task.events[i].detail += "\n应用中断，后台结果未确认；未自动重放"
         }
+        if task.status == .running || !task.unfinishedResponseIDs.isEmpty { task.interruptResponses() }
         guard task.status == .running else {
             if [.failed, .stopped].contains(task.status), task.queuedCount > 0 { task.flushQueuedInputs() }
             return
@@ -236,7 +238,6 @@ import Foundation
         }
         task.pendingCalls = []
         task.flushQueuedInputs()
-        task.messages.removeAll { $0.role == "assistant" && $0.content.isEmpty && ($0.toolCalls ?? []).isEmpty }
         for i in task.events.indices where task.events[i].status == "running" { task.events[i].status = "stopped" }
         task.events.append(AgentEvent(kind: "state", title: "应用中断，检查后可继续", detail: "未确认的操作不会自动重放。", status: "stopped"))
     }
@@ -522,9 +523,11 @@ import Foundation
         for id in newlyArchived { browser.close(id); canvases.close(id); desktop.disconnect(id); mcp.disconnect(owner: id); hooks.cancel(id); onArchive?(id) }
         for value in values { offices.changed(value.id) }; trimCache(keeping: selection ?? ""); worktreeRetention.tasksChanged()
     }
-    func replyMessage(taskID: String, messageID: String, expectedHash: String, allowStreaming: Bool = false) throws -> AgentMessage {
-        guard refreshDeletedRecords(), let record = task(taskID), let message = record.messages.first(where: { $0.id == messageID && $0.isReply }), AgentFiles.hash(Data(message.content.utf8)) == expectedHash,
-              allowStreaming || record.status != .running || record.messages.last?.id != messageID else { throw PetError("回复已变化，请重新打开后重试") }
+    func replyMessage(taskID: String, messageID: String, expectedHash: String, allowIncomplete: Bool = false) throws -> AgentMessage {
+        guard refreshDeletedRecords(), let record = task(taskID),
+              let message = record.messages.first(where: { $0.id == messageID && (allowIncomplete ? $0.hasReplyText : $0.isReply) }),
+              AgentFiles.hash(Data(message.content.utf8)) == expectedHash,
+              allowIncomplete || record.status != .running || record.messages.last?.id != messageID else { throw PetError("回复已变化，请重新打开后重试") }
         let files = try AgentFiles(workspace: directory.path)
         guard try files.fileHash(files.literalURL(taskID + ".json"), maximum: 20_000_000) == taskHashes[taskID] else { throw PetError("任务记录已被其他窗口或应用修改，请重新打开后重试") }
         return message

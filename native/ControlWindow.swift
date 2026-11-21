@@ -4678,7 +4678,7 @@ final class FormDocumentView: NSView {
     private func replyAction(_ action: String, taskID: String, messageID: String, hash: String) -> Bool {
         guard agentTaskID == taskID, let tasks = companion?.agentStore else { return false }
         do {
-            let message = try tasks.replyMessage(taskID: taskID, messageID: messageID, expectedHash: hash, allowStreaming: action == "copy")
+            let message = try tasks.replyMessage(taskID: taskID, messageID: messageID, expectedHash: hash, allowIncomplete: action == "copy")
             if action == "copy" {
                 NSPasteboard.general.clearContents(); guard NSPasteboard.general.setString(message.content, forType: .string) else { throw PetError("回复未能复制，请重试") }; return true
             }
@@ -4921,16 +4921,17 @@ final class FormDocumentView: NSView {
         }
         let owner = task.id
         for message in messages {
-            let streaming = task.status == .running && message.id == task.messages.last?.id && (message.toolCalls ?? []).isEmpty
+            let interrupted = message.responseState == .interrupted
+            let streaming = !interrupted && task.status == .running && message.id == task.messages.last?.id && (message.toolCalls ?? []).isEmpty
             let search = messageSearch?.taskID == task.id && messageSearch?.messageID == message.id ? messageSearch : nil
             messageRows[message.id]?.update(message.content, markdown: !streaming, searchQuery: search?.query, searchDisplayRange: search?.displayRange, searchDisplayText: search?.displayText)
             reasoningRows[message.id]?.update(message.reasoning ?? "", markdown: false)
             messageRows[message.id]?.setAttachments((message.attachmentIDs ?? []).compactMap { fileMap[$0] }, onOpen: { [weak self] id in self?.openAttachment(taskID: owner, id: id) })
             if let row = messageRows[message.id] {
                 let eligible = message.isReply, hash = AgentFiles.hash(Data(message.content.utf8))
-                row.setDuration(eligible && !streaming ? display.durationFormat.text(message.duration) : nil)
+                row.setReplyMetadata(duration: eligible && !streaming ? display.durationFormat.text(message.duration) : nil, interrupted: interrupted)
                 let canBranch = eligible && !running && task.pendingFileCapture == nil && task.pendingFileRollback == nil && !task.isProjectDocumentation && task.kind != "hook" && tasks.organization.archiveID(task.organizationWorkspace, mode: task.organizationMode) == nil
-                row.setReplyActions(binding: eligible ? owner + ":" + message.id + ":" + hash : nil, feedback: tasks.organization.replyFeedback(taskID: owner, message: message), canFeedback: eligible && !streaming, canBranch: canBranch,
+                row.setReplyActions(binding: message.hasReplyText ? owner + ":" + message.id + ":" + hash : nil, feedback: tasks.organization.replyFeedback(taskID: owner, message: message), canFeedback: eligible && !streaming, canBranch: canBranch, copyOnly: message.responseState != nil,
                     copy: { [weak self] in self?.replyAction("copy", taskID: owner, messageID: message.id, hash: hash) ?? false },
                     mark: { [weak self] value in _ = self?.replyAction(value, taskID: owner, messageID: message.id, hash: hash) },
                     branch: { [weak self] in _ = self?.replyAction("branch", taskID: owner, messageID: message.id, hash: hash) })

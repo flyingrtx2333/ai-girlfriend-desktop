@@ -102,7 +102,7 @@ import Foundation
         guard remaining >= 512 else { throw PetError(label + "要求超过上下文预算，请缩小分析范围") }
         let calls = Dictionary(task.messages.flatMap { $0.toolCalls ?? [] }.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
         var exchanges: [[AgentMessage]] = [], projected: [String: AgentMessage] = [:]
-        for original in task.messages where !original.isHumanInput && original.hookRejected != true {
+        for original in task.messages where original.responseState == nil && !original.isHumanInput && original.hookRejected != true {
             let message = original.role == "tool" && calls[original.toolCallID ?? ""] == "search_project" ? searchExcerpt(original) : original
             projected[message.id] = message
             if message.role == "tool" { if !exchanges.isEmpty { exchanges[exchanges.count - 1].append(message) } }
