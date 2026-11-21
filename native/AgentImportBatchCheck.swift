@@ -22,9 +22,22 @@ import AppKit
             return control
         }
         func settle(_ pending: () -> Bool) async throws {
-            let limit = Date().addingTimeInterval(20)
+            let limit = Date().addingTimeInterval(60)
             while pending(), Date() < limit { await wait(0.05) }
             guard !pending() else { throw PetError("SSH 窗口操作未结束") }
+        }
+        func detectSSH(_ route: AgentImportRoute) throws {
+            guard control.showSettingsCategory("imports"),
+                  let location = find(content, NSSegmentedControl.self, { $0.accessibilityIdentifier() == "import-location" }),
+                  let action = location.action else { throw PetError("缺少 SSH 导入入口") }
+            location.selectedSegment = 1
+            NSApp.sendAction(action, to: location.target, from: location)
+            guard let host = find(content, NSTextField.self, { $0.accessibilityIdentifier() == "import-ssh-host" }),
+                  let directory = find(content, NSTextField.self, { $0.accessibilityIdentifier() == "import-ssh-directory" }) else { throw PetError("缺少 SSH 来源字段") }
+            host.stringValue = route.sshHost ?? ""
+            directory.stringValue = route.root
+            directory.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: directory))
+            try button("检测任务记录").performClick(nil)
         }
         var checks: [String: Bool] = [:]
         var requests = 0
@@ -32,6 +45,67 @@ import AppKit
         let importer = tasks.dataImport
         let root = output.appendingPathComponent("Codex '公开样例'")
         let route = AgentImportRoute(source: .codex, category: .tasks, root: root.path, workspace: nil, sshHost: "whale-import")
+        if CommandLine.arguments.contains("--ssh-import-stream-check") {
+            struct Fixture: Decodable {
+                struct Record: Decodable { let id: String; let sha256: String }
+                let bytes: Int
+                let records: [Record]
+            }
+            let fixtureURL = output.deletingLastPathComponent().appendingPathComponent("large-fixture.json")
+            let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: fixtureURL))
+            let marker = output.appendingPathComponent("slow-stream-ready.json")
+            let slow = AgentImportRoute(source: .codex, category: .tasks, root: output.appendingPathComponent("Slow read").path,
+                                       workspace: nil, sshHost: route.sshHost)
+            try detectSSH(slow)
+            try await settle { !FileManager.default.fileExists(atPath: marker.path) }
+            let stop = try button("停止检测")
+            content.layoutSubtreeIfNeeded()
+            checks["stopAvailableInNarrowWindowDuringRealTransfer"] = importer.canStopScan(for: slow) && stop.visibleRect.width >= stop.bounds.width - 1 &&
+                find(content, NSButton.self, { $0.accessibilityIdentifier() == "import-ssh-confirm" && $0.isEnabled }) == nil
+            if let pixels = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                content.cacheDisplay(in: content.bounds, to: pixels)
+                try pixels.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("ssh-stream-scanning.png"))
+            }
+            let requested = Date()
+            stop.performClick(nil)
+            try await settle { importer.scanning }
+            checks["stopDiscardsIncompletePreviewAndReleasesScan"] = Date().timeIntervalSince(requested) < 5 && importer.stoppedScan == slow &&
+                importer.preview(for: slow) == nil && !importer.active && find(content, NSTextField.self, { $0.stringValue == "已停止检测" }) != nil
+            try button("重新检测").performClick(nil)
+            try await settle { importer.scanning || importer.preview(for: slow) == nil }
+            checks["sameSourceCanRetryAfterCancellation"] = importer.preview(for: slow)?.available.count == 1 && importer.stoppedScan == nil
+
+            try button("返回导入").performClick(nil)
+            try detectSSH(route)
+            try await settle { importer.scanning || importer.preview(for: route) == nil }
+            let records = importer.preview(for: route)?.records ?? []
+            checks["largeArchiveShowsEveryValidRecordAndItsHash"] = fixture.bytes > 256 * 1024 * 1024 &&
+                records.filter { $0.issue == nil }.count == fixture.records.count + 2 && fixture.records.allSatisfy { wanted in
+                    records.contains { $0.sourceID.lowercased() == wanted.id.lowercased() && $0.rawHash == wanted.sha256 && $0.issue == nil }
+                }
+            guard let last = fixture.records.last, let index = records.firstIndex(where: { $0.sourceID.lowercased() == last.id.lowercased() }),
+                  let list = find(content, NSTableView.self, { $0.accessibilityLabel() == "可导入任务记录" }) else { throw PetError(importer.preview(for: route)?.issue ?? "缺少大档案预览") }
+            let selected = records[index]
+            try button("全选").performClick(nil)
+            list.scrollRowToVisible(index)
+            guard let choice = list.view(atColumn: 0, row: index, makeIfNecessary: true) as? NSButton else { throw PetError("缺少大档案勾选入口") }
+            choice.performClick(nil)
+            try button("导入 1 项").performClick(nil)
+            try await settle { importer.active || importer.batch == nil }
+            let saved = try importer.sourceURL(selected.targetID)
+            let files = try AgentFiles(workspace: saved.deletingLastPathComponent().path)
+            let copiedHash = try files.fileHash(saved)
+            checks["onlyTheSelectedLargeRecordIsCopiedIntact"] = importer.batch?.items.count == 1 && importer.batch?.items.first?.state == "imported" &&
+                copiedHash == last.sha256 && tasks.task(selected.targetID)?.messages.last?.content == "文档全文已保留"
+            let profile = tasks.directory.deletingLastPathComponent()
+            checks["scanAndCancellationLeaveNoTransferFiles"] = try !FileManager.default.contentsOfDirectory(atPath: profile.path)
+                .contains { $0.hasPrefix("ssh-import-transfer-") }
+            let report: [String: Any] = ["appPID": getpid(), "binaryHash": binaryHash, "archiveBytes": fixture.bytes, "windowSize": [size.width, size.height],
+                "checks": checks, "modelRequests": requests, "sourceSHA256": copiedHash, "success": checks.values.allSatisfy { $0 } && requests == 0]
+            try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted])
+                .write(to: output.appendingPathComponent("ssh-stream-report.json"), options: .atomic)
+            return
+        }
         if reopening {
             let saved = try JSONDecoder().decode(AgentSettingsRecovery.Navigation.self, from: Data(contentsOf: navigation))
             try control.materializeSettingsNavigation(saved)
@@ -41,15 +115,7 @@ import AppKit
             checks["openingThePageDoesNotConnect"] = importer.preview(for: route) == nil && !importer.scanning
             try button("重新检测").performClick(nil)
         } else {
-            guard control.showSettingsCategory("imports"),
-                  let location = find(content, NSSegmentedControl.self, { $0.accessibilityIdentifier() == "import-location" }),
-                  let action = location.action else { throw PetError("缺少 SSH 导入入口") }
-            location.selectedSegment = 1
-            NSApp.sendAction(action, to: location.target, from: location)
-            guard let host = find(content, NSTextField.self, { $0.accessibilityIdentifier() == "import-ssh-host" }),
-                  let directory = find(content, NSTextField.self, { $0.accessibilityIdentifier() == "import-ssh-directory" }) else { throw PetError("缺少 SSH 来源字段") }
-            host.stringValue = "whale-import"; directory.stringValue = root.path
-            try button("检测任务记录").performClick(nil)
+            try detectSSH(route)
         }
         try await settle { importer.scanning || importer.preview(for: route) == nil }
         guard let records = importer.preview(for: route)?.records,

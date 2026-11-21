@@ -52,12 +52,15 @@ struct AgentImportBatch: Codable {
     private let directory: URL, journal: URL
     private var signature = "missing", loadIssue: String?
     private var work: Task<Void, Never>?
+    private var sshScan: Task<[AgentImportCandidate], Error>?
     private var lock: Int32 = -1
     private(set) var batch: AgentImportBatch?
     private var recentRoute: AgentImportRoute?
     private var previews: [AgentImportRoute: AgentImportPreview] = [:]
     var preview: [AgentImportCandidate] { recentRoute.flatMap { previews[$0]?.records } ?? [] }
     private(set) var scanning = false
+    private(set) var stoppedScan: AgentImportRoute?
+    var stoppingScan: Bool { sshScan?.isCancelled == true }
     private(set) var operationIssue: String?
     var issue: String? { operationIssue ?? recentRoute.flatMap { previews[$0]?.issue } }
     var onChange: (() -> Void)?
@@ -95,6 +98,14 @@ struct AgentImportBatch: Codable {
 
     func preview(for route: AgentImportRoute) -> AgentImportPreview? { previews[route] }
 
+    func canStopScan(for route: AgentImportRoute) -> Bool { recentRoute == route && sshScan?.isCancelled == false }
+
+    func stopScan(for route: AgentImportRoute) {
+        guard canStopScan(for: route) else { return }
+        sshScan?.cancel()
+        onChange?()
+    }
+
     func detect(_ source: AgentImportSource, root: URL, category: AgentImportCategory = .tasks, workspace: String? = nil) async {
         await detect([.init(source: source, category: category, root: root.path, workspace: workspace)])
     }
@@ -107,14 +118,29 @@ struct AgentImportBatch: Codable {
         let categories = Set(routes.map(\.category))
         previews = previews.filter { $0.key.source != first.source || $0.key.sshHost != first.sshHost || !categories.contains($0.key.category) }
         recentRoute = routes.count == 1 ? first : nil
-        scanning = true; operationIssue = nil
+        scanning = true; stoppedScan = nil; operationIssue = nil
         onChange?()
         defer { scanning = false; onChange?() }
         for route in routes {
             do { previews[route] = .init(records: try await discover(route)) }
+            catch is CancellationError { stoppedScan = route; break }
             catch { previews[route] = .init(records: [], issue: error.localizedDescription) }
             onChange?()
         }
+    }
+
+    private func discoverSSH(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
+        let transport = ssh
+        let task = Task { try await transport.discover(route) }
+        sshScan = task
+        onChange?()
+        defer { sshScan = nil }
+        return try await withTaskCancellationHandler {
+            let result = try await task.value
+            try Task.checkCancellation()
+            guard !task.isCancelled else { throw CancellationError() }
+            return result
+        } onCancel: { task.cancel() }
     }
 
     private func discover(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
@@ -144,7 +170,7 @@ struct AgentImportBatch: Codable {
             return try await AgentStandaloneDataImport.discover(source, root: root, workspace: workspace, store: store)
         case .tasks:
             let records: [AgentImportCandidate]
-            if route.sshHost != nil { records = try await ssh.discover(route) }
+            if route.sshHost != nil { records = try await discoverSSH(route) }
             else { records = try await Task.detached(priority: .utility) { try AgentImportReaders.discover(source, root: root) }.value }
             let duplicates = Dictionary(grouping: records, by: \.id)
             return try records.map { record in

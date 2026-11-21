@@ -325,10 +325,13 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
             hasPreview = hasPreview || preview != nil
             updateCategory(route, preview: preview, items: grouped[route] ?? [])
         }
-        locations.isEnabled = canConfigure; sources.isEnabled = canConfigure; detectAll.isEnabled = canConfigure
+        let canStop = usesSSH && service.canStopScan(for: route(.tasks))
+        locations.isEnabled = canConfigure; sources.isEnabled = canConfigure; detectAll.isEnabled = canConfigure || canStop
         connection.isHidden = !usesSSH
         sshHost.isEnabled = canConfigure; sshRoot.isEnabled = canConfigure
-        detectAll.title = usesSSH ? (hasPreview ? "重新检测" : "检测任务记录") : (hasPreview ? "重新检测全部" : "检测可导入内容")
+        if canStop { detectAll.title = "停止检测" }
+        else if usesSSH { detectAll.title = hasPreview ? "重新检测" : "检测任务记录" }
+        else { detectAll.title = hasPreview ? "重新检测全部" : "检测可导入内容" }
         overview.isHidden = editing != nil; editor.isHidden = editing == nil
         let preview = editing.flatMap { service.preview(for: route($0)) }
         refreshEditor(preview: preview, items: editing.map { grouped[route($0)] ?? [] } ?? [])
@@ -346,7 +349,9 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         if let issue = inputIssue ?? service.operationIssue ?? preview?.issue ?? remoteIssue { state.stringValue = issue; state.textColor = .systemRed }
         else {
             state.textColor = AgentWorkbenchTheme.secondaryText
-            if service.scanning { state.stringValue = "正在检测…" }
+            if service.stoppingScan { state.stringValue = "正在停止检测…" }
+            else if service.scanning { state.stringValue = "正在检测…" }
+            else if service.stoppedScan == route(.tasks) { state.stringValue = "已停止检测" }
             else if let batch, batch.source == selectedSource, batch.sshHost == route(.tasks).sshHost,
                     service.active || service.unfinished || !hasPreview {
                 let done = batch.items.filter { $0.state == "imported" }.count, failed = batch.items.filter { $0.state == "failed" }.count
@@ -407,8 +412,10 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         folder.title = route.sshHost.map { "SSH · " + $0 } ?? (isDefault ? "~/" + String(root.path.dropFirst(home.path.count + 1)) : root.lastPathComponent.isEmpty ? root.path : root.lastPathComponent)
         folder.toolTip = route.sshHost.map { $0 + ":" + route.root } ?? root.path
         folder.setAccessibilityLabel(route.sshHost == nil ? "来源目录" : "SSH 来源")
-        folder.isEnabled = canConfigure; detect.isEnabled = canConfigure
-        detect.title = preview == nil && !usesSSH ? "检测此类" : "重新检测"
+        let canStop = usesSSH && service.canStopScan(for: route)
+        folder.isEnabled = canConfigure; detect.isEnabled = canConfigure || canStop
+        if canStop { detect.title = "停止检测" }
+        else { detect.title = preview == nil && !usesSSH ? "检测此类" : "重新检测" }
         destinationControl.isHidden = route.category.globalTarget == nil
         if let title = route.category.globalTarget { updateDestinations(globalTitle: title) }
         table.setAccessibilityLabel("可导入" + route.category.title)
@@ -660,20 +667,22 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         Task { await service.detect([route]) }
     }
     private func detectSSH() {
+        let route = self.route(.tasks)
+        if service.canStopScan(for: route) { service.stopScan(for: route); return }
         guard canConfigure else { return }
         window?.makeFirstResponder(nil)
-        let route = self.route(.tasks)
-        guard let host = route.sshHost, AgentSSHImport.valid(host: host, root: route.root) else {
+        let confirmed = self.route(.tasks)
+        guard let host = confirmed.sshHost, AgentSSHImport.valid(host: host, root: confirmed.root) else {
             inputIssue = "请填写 SSH 主机和远程目录（绝对路径或 ~/）"
             refresh()
             if editing == nil { window?.makeFirstResponder(sshHost) }
             return
         }
         inputIssue = nil
-        remoteRoutes[route.source] = route
+        remoteRoutes[confirmed.source] = confirmed
         editing = .tasks
         refresh()
-        Task { await service.detect([route]) }
+        Task { await service.detect([confirmed]) }
     }
     @objc private func toggleRecord(_ sender: NSButton) {
         let route = currentRoute
