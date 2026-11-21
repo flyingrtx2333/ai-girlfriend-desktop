@@ -2488,6 +2488,7 @@ final class FormDocumentView: NSView {
 
     func show(tab: String) {
         if selectedTab != tab, !canLeaveMainPage() { return }
+        let revealingKnowledge = tab == "knowledge" && (selectedTab != tab || window?.isVisible != true)
         if window?.isVisible != true { refreshPreferences() }
         if tab == "settings", selectedTab != "settings" {
             setSettingsReturn(to: selectedTab, knowledgeRoot: selectedTab == "knowledge" ? knowledgePageHost.selectedRoot : nil)
@@ -2498,7 +2499,10 @@ final class FormDocumentView: NSView {
         if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { focusTaskInput() }; return }
         showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         if selectedTab == "chat" { focusTaskInput() }
-        if selectedTab == "knowledge" { knowledgePageHost.focusCurrentPage() }
+        if selectedTab == "knowledge" {
+            if revealingKnowledge { knowledgePageHost.currentController?.settingsDidAppear() }
+            knowledgePageHost.focusCurrentPage()
+        }
         if selectedTab == "attention" { attentionPageController?.refresh(); attentionPageController?.focusSearch() }
         if selectedTab == "automation" { automationWindow?.focusEditor() }
         companion?.updatePetWorkspaceOcclusion()

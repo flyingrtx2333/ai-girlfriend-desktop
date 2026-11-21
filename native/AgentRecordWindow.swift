@@ -145,6 +145,7 @@ import UniformTypeIdentifiers
         markdown.onViewportChange = { [weak self] in self?.onWorkspaceChange?() }
         AgentTextEncoding.prepareMenu(encodingMenu); encodingMenu.target = self; encodingMenu.action = #selector(reopenEncoding); encodingMenu.isHidden = true
         let pane = NSView(); [displayMode, encodingMenu, NSView(), sourceAdd].forEach { readingToolbar.addArrangedSubview($0) }; sourceSelection.update()
+        if wikiOnly { readingToolbar.spacing = 4 }
         readingToolbar.heightAnchor.constraint(equalToConstant: 24).isActive = true
         video.isHidden = true
         for child in [viewer, markdown, video] { pane.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: pane.topAnchor), child.leadingAnchor.constraint(equalTo: pane.leadingAnchor), child.trailingAnchor.constraint(equalTo: pane.trailingAnchor), child.bottomAnchor.constraint(equalTo: pane.bottomAnchor)]) }
