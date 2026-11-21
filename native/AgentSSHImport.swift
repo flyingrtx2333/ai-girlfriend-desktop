@@ -7,7 +7,7 @@ import Darwin
 struct AgentSSHImport: Sendable {
     let profile: URL
     let home: URL?
-    static let categories: [AgentImportCategory] = [.tasks, .memory, .skills]
+    static let categories: [AgentImportCategory] = [.tasks, .memory, .skills, .automations]
 
     static func valid(host: String, root: String) -> Bool {
         guard TerminalSurface.validSSHDestination(host), root.utf8.count <= 4096,
@@ -187,6 +187,63 @@ struct AgentSSHImport: Sendable {
         default: throw FrameError.invalid
         }
         return .failure(PetError(issue))
+    }
+
+    func discoverAutomations(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
+        let explicit = Self.explicitAutomationFile(route)
+        return try await automationResponse(route, explicit: explicit, wanted: "") { input in
+            let groups: [[AgentImportCandidate]] = try Self.scanFrames(input, maximum: AgentAutomationDataImport.maximumBytes(route.source),
+                                                                       oversized: "远端定时任务文件超过大小限制") { path, bytes in
+                guard Self.validRelativePath(path), AgentAutomationDataImport.allows(path, source: route.source),
+                      explicit == nil || explicit == path else { throw FrameError.invalid }
+                let file = explicit == nil ? Self.prefix(route) + path : route.root
+                return try AgentAutomationDataImport.preview(route.source, file: file, workspace: route.workspace, sshHost: route.sshHost) {
+                    try bytes.get()
+                }
+            }
+            let records = groups.flatMap { $0 }
+            guard records.count <= AgentAutomationDataImport.maximumRows else { throw PetError("计划项目过多，请分别选择来源文件") }
+            return records.sorted { $0.file.localizedStandardCompare($1.file) == .orderedAscending }
+        }
+    }
+
+    func readAutomation(_ record: AgentImportCandidate, route: AgentImportRoute) async throws -> Data {
+        let explicit = Self.explicitAutomationFile(route), prefix = Self.prefix(route)
+        let path: String
+        if let explicit, record.file == route.root { path = explicit }
+        else if explicit == nil && record.file.hasPrefix(prefix) { path = String(record.file.dropFirst(prefix.count)) }
+        else { throw PetError("SSH 定时任务与原来源不符，请重新检测") }
+        guard record.sshHost == route.sshHost, record.source == route.source, record.category == .automations,
+              record.targetWorkspace == route.workspace, Self.validRelativePath(path), AgentAutomationDataImport.allows(path, source: route.source) else {
+            throw PetError("SSH 定时任务与原来源不符，请重新检测")
+        }
+        return try await automationResponse(route, explicit: explicit, wanted: path) { input in
+            let files: [Data] = try Self.scanFrames(input, maximum: AgentAutomationDataImport.maximumBytes(route.source),
+                                                                   oversized: "远端定时任务文件超过大小限制") { file, bytes in
+                guard file == path else { throw FrameError.invalid }
+                return try bytes.get()
+            }
+            guard files.count == 1, let data = files.first else { throw PetError("远端定时任务文件已移除或离开检测目录") }
+            return data
+        }
+    }
+
+    private static func explicitAutomationFile(_ route: AgentImportRoute) -> String? {
+        let name = AgentAutomationDataImport.fileName(route.source)
+        return route.root.hasSuffix("/" + name) ? name : nil
+    }
+
+    private func automationResponse<Value>(_ route: AgentImportRoute, explicit: String?, wanted: String,
+                                          decode: @escaping @Sendable (FileHandle) throws -> Value) async throws -> Value {
+        guard route.category == .automations, let host = route.sshHost, Self.valid(host: host, root: route.root) else {
+            throw PetError("缺少有效的 SSH 定时任务来源")
+        }
+        let directory = explicit.map { String(route.root.dropLast($0.count)) } ?? route.root
+        let transfer = AgentImportRoute(source: route.source, category: route.category, root: directory, workspace: route.workspace, sshHost: host)
+        let arguments = [String(AgentAutomationDataImport.maximumBytes(route.source)), AgentAutomationDataImport.fileName(route.source),
+                         route.source.rawValue, explicit ?? "", wanted, String(AgentAutomationDataImport.maximumRows)]
+        return try await response(transfer, script: Self.scanAutomations, arguments: arguments,
+                                  timeout: wanted.isEmpty ? 1800 : 60, decode: decode)
     }
 
     private static func prefix(_ route: AgentImportRoute) -> String {
@@ -383,7 +440,9 @@ struct AgentSSHImport: Sendable {
             if result.exitCode == 42 { throw PetError("找不到远程" + (category == .tasks ? "会话" : category.title) + "目录，或目录不可读取") }
             if result.exitCode == 43 { throw PetError("远端来源文件已移动、不可读取或是链接，请重新检测") }
             if result.exitCode == 44 { throw PetError("未找到远程记忆文件夹，请核对 SSH 来源目录") }
-            if result.exitCode == 45 { throw PetError("Skill 来源项目过多，请选择较小的目录") }
+            if result.exitCode == 45 {
+                throw PetError((category == .automations ? "定时任务" : "Skill") + "来源项目过多，请选择较小的目录")
+            }
             if result.exitCode == 46 { throw PetError("请为 Qoder 项目记忆选择目标项目") }
             throw PetError("无法读取 SSH 来源，请检查连接与远端目录后重试")
         }
@@ -591,6 +650,57 @@ struct AgentSSHImport: Sendable {
         if [ "$found" = no ] && [ "${here##*/}" != "$home_name" ] && [ "${here##*/}" != .agents ]; then
             list_packages . || exit $?
         fi
+    fi
+    printf '\0'
+    """#
+
+    private static let scanAutomations = emitRecord + #"""
+    limit=$1
+    filename=$2
+    source=$3
+    explicit=$4
+    wanted=$5
+    folder_limit=$6
+    here=$(pwd -P) || exit 42
+    [ "$here" != / ] || [ -n "$explicit" ] || exit 42
+
+    read_plan() {
+        relative=${1#./}
+        [ -z "$wanted" ] || [ "$wanted" = "$relative" ] || return 0
+        [ -e "$1" ] || [ -L "$1" ] || return 0
+        parent=${1%/*}
+        expected=$here
+        if [ "$parent" != . ]; then expected="${here%/}/${parent#./}"; fi
+        if [ -L "$1" ] || [ ! -f "$1" ] || [ "$(cd -P "$parent" && pwd -P)" != "$expected" ]; then
+            printf '%s\0?\0' "$relative"
+        else
+            emit_file "$1"
+        fi
+    }
+
+    printf 'BFF-SESSIONS-1\0'
+    if [ -n "$explicit" ]; then
+        [ -e "./$filename" ] || [ -L "./$filename" ] || exit 43
+        read_plan "./$filename" || exit 43
+    elif [ "$source" = qoder ]; then
+        read_plan "./$filename" || exit 43
+        read_plan "./.qoder/$filename" || exit 43
+    elif [ -e "./$filename" ] || [ -L "./$filename" ]; then
+        read_plan "./$filename" || exit 43
+    else
+        if [ -L ./automations ]; then exit 43; fi
+        directory=.
+        if [ -d ./automations ]; then directory=./automations
+        elif [ -e ./automations ]; then exit 43; fi
+        [ -r "$directory" ] && [ -x "$directory" ] || exit 42
+        count=0
+        for folder in "$directory"/*; do
+            [ -e "$folder" ] || [ -L "$folder" ] || continue
+            count=$((count + 1))
+            [ "$count" -le "$folder_limit" ] || exit 45
+            [ -d "$folder" ] && [ ! -L "$folder" ] || continue
+            read_plan "$folder/$filename" || exit 43
+        done
     fi
     printf '\0'
     """#

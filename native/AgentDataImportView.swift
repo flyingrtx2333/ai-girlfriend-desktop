@@ -155,7 +155,7 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         for index in 0..<sources.segmentCount { sources.setWidth(76, forSegment: index) }
         connection.orientation = .vertical; connection.alignment = .leading; connection.spacing = 6
         for (label, field, hint, id) in [("SSH 主机", sshHost, "别名或用户@主机", "import-ssh-host"),
-                                          ("远程目录", sshRoot, "~/" + selectedSource.homeName, "import-ssh-directory")] {
+                                          ("远程路径", sshRoot, "~/" + selectedSource.homeName, "import-ssh-directory")] {
             field.placeholderString = hint; field.delegate = self
             field.outlined = true
             field.setAccessibilityLabel(label); field.setAccessibilityIdentifier(id)
@@ -429,7 +429,9 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         if canStop { detect.title = "停止检测" }
         else { detect.title = preview == nil && !usesSSH ? "检测此类" : "重新检测" }
         destinationControl.isHidden = route.category.globalTarget == nil
-        if let title = route.category.globalTarget { updateDestinations(globalTitle: title) }
+        if let title = route.category.globalTarget {
+            updateDestinations(globalTitle: route.category == .automations && route.sshHost != nil ? "选择本机项目" : title)
+        }
         table.setAccessibilityLabel("可导入" + route.category.title)
         let available = preview?.available.count ?? 0
         selectAll.isEnabled = canConfigure && available > 0
@@ -548,14 +550,15 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
             return
         }
         if let plan = record.automation {
-            var lines = [record.title, "来源 · " + record.file]
+            var lines = [record.title, "来源 · " + source]
             if let workspace = plan.workspace { lines.append("目标项目 · " + workspace) }
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             if record.issue == nil && states[record.id] == nil { lines.append("导入后为停用状态") }
             lines.append(contentsOf: record.warnings)
             setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             open.isEnabled = store.automations.values.contains { $0.id == record.targetID }
-            original.isEnabled = (try? AgentAutomationDataImport.reveal(record, root: root)) != nil
+            original.isHidden = record.sshHost != nil
+            original.isEnabled = record.sshHost == nil && (try? AgentAutomationDataImport.reveal(record, root: root)) != nil
             return
         }
         if let plan = record.plugin {
@@ -696,7 +699,7 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         window?.makeFirstResponder(nil)
         let confirmed = categories.map(route)
         guard let first = confirmed.first, let host = first.sshHost, AgentSSHImport.valid(host: host, root: first.root) else {
-            inputIssue = "请填写 SSH 主机和远程目录（绝对路径或 ~/）"
+            inputIssue = "请填写 SSH 主机和远程路径（绝对路径或 ~/）"
             refresh()
             if editing == nil { window?.makeFirstResponder(sshHost) }
             return

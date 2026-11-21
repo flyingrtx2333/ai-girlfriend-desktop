@@ -168,7 +168,9 @@ struct AgentImportBatch: Codable {
             let records = try await Task.detached(priority: .utility) { try AgentMCPDataImport.discover(source, root: root, workspace: workspace) }.value
             return try AgentMCPDataImport.plan(records, workspace: workspace, store: store)
         case .automations:
-            let records = try await Task.detached(priority: .utility) { try AgentAutomationDataImport.discover(source, root: root, workspace: workspace) }.value
+            let records: [AgentImportCandidate]
+            if route.sshHost != nil { records = try await ssh.discoverAutomations(route) }
+            else { records = try await Task.detached(priority: .utility) { try AgentAutomationDataImport.discover(source, root: root, workspace: workspace) }.value }
             return try AgentAutomationDataImport.plan(records, workspace: workspace, store: store)
         case .plugins:
             return try await AgentPluginDataImport.discover(source, root: root, workspace: workspace, store: store)
@@ -291,6 +293,12 @@ struct AgentImportBatch: Codable {
                     } else {
                         try await AgentSkillImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                     }
+                } else if candidate.automation != nil {
+                    if route.sshHost != nil || candidate.sshHost != nil {
+                        try await AgentAutomationDataImport.install(candidate, store: store) { try await ssh.readAutomation(candidate, route: route) }
+                    } else {
+                        try await AgentAutomationDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
+                    }
                 } else if route.sshHost != nil || candidate.sshHost != nil {
                     let document = try await ssh.read(candidate, route: route)
                     guard batch?.state == "running" else { return }
@@ -299,8 +307,6 @@ struct AgentImportBatch: Codable {
                     try install(document, candidate: candidate)
                 } else if candidate.connector != nil {
                     try await AgentMCPDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
-                } else if candidate.automation != nil {
-                    try await AgentAutomationDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                 } else if candidate.plugin != nil {
                     try await AgentPluginDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                 } else if candidate.configuration != nil {

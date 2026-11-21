@@ -60,6 +60,145 @@ import AppKit
         let importer = tasks.dataImport
         let root = output.appendingPathComponent("Codex '公开样例'")
         let route = AgentImportRoute(source: .codex, category: .tasks, root: root.path, workspace: nil, sshHost: "whale-import")
+        if CommandLine.arguments.contains("--ssh-automation-import-check") {
+            guard let runtime = agentRuntime else { throw PetError("缺少定时任务运行时") }
+            let schedules = tasks.automations, fm = FileManager.default
+            schedules.start(store: tasks, runtime: runtime)
+            defer { schedules.stop() }
+            guard schedules.isStarted else { throw PetError(schedules.error ?? "定时任务服务未启动") }
+            let phase = output.appendingPathComponent("ssh-automation-paused.json")
+            let target = output.appendingPathComponent("本机定时任务项目")
+            let decoy = output.appendingPathComponent("本机同路径项目")
+            let original = AgentImportRoute(source: .codex, category: .automations, root: route.root, workspace: nil, sshHost: route.sshHost)
+            let mapped = AgentImportRoute(source: .codex, category: .automations, root: route.root, workspace: target.path, sshHost: route.sshHost)
+            let changed = root.appendingPathComponent("automations/update-check/automation.toml")
+            func write(_ value: [String: Any], to file: URL) throws {
+                try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: file, options: .atomic)
+            }
+            func chooseProject(_ project: URL) throws {
+                guard let picker = find(content, NSPopUpButton.self, { $0.accessibilityLabel() == "定时任务目标" }),
+                      let item = picker.itemArray.first(where: { $0.representedObject as? String == project.path }),
+                      let action = picker.action else { throw PetError("缺少定时任务项目选择") }
+                picker.select(item)
+                NSApp.sendAction(action, to: picker.target, from: picker)
+            }
+            if !fm.fileExists(atPath: phase.path) {
+                for project in [target, decoy] {
+                    try fm.createDirectory(at: project, withIntermediateDirectories: true)
+                    try tasks.organization.register(project.path, mode: .coding)
+                }
+                try chooseSSH(route)
+                try button("检测可导入内容").performClick(nil)
+                try await settle { importer.scanning || importer.preview(for: original) == nil }
+                let memory = AgentImportRoute(source: .codex, category: .memory, root: route.root, workspace: nil, sshHost: route.sshHost)
+                let skills = AgentImportRoute(source: .codex, category: .skills, root: route.root, workspace: nil, sshHost: route.sshHost)
+                let detected = importer.preview(for: original)
+                checks["overviewDetectsFourCompatibleCategories"] = importer.preview(for: route)?.available.count == 2 &&
+                    importer.preview(for: memory)?.available.count == 1 && importer.preview(for: skills)?.available.count == 1 && detected?.records.count == 4
+                checks["remoteProjectPathNeverImplicitlyBecomesLocalTarget"] = detected?.available.isEmpty == true &&
+                    detected?.records.contains { $0.title == "远端每周核对" && $0.preview.contains(decoy.path) &&
+                        $0.automation?.workspace == nil && $0.issue == "请选择本机目标项目" } == true && schedules.values.isEmpty
+                try openCategory(.automations)
+                try chooseProject(target)
+                try button("重新检测").performClick(nil)
+                try await settle { importer.scanning || importer.preview(for: mapped) == nil }
+                guard let preview = importer.preview(for: mapped), let index = preview.records.firstIndex(where: { $0.title == "远端每周核对" }),
+                      let list = find(content, NSTableView.self, { $0.accessibilityLabel() == "可导入定时任务" }) else {
+                    throw PetError(importer.preview(for: mapped)?.issue ?? "缺少 SSH 定时任务预览")
+                }
+                checks["unsupportedExecutionAndLinkedFilesRemainSeparateSkippedRows"] = preview.available.count == 2 &&
+                    preview.records.contains { $0.issue?.contains("本机项目目录执行") == true } &&
+                    preview.records.contains { $0.file.contains("/linked/") && $0.issue?.contains("无法读取远端文件") == true }
+                list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+                content.layoutSubtreeIfNeeded()
+                let detail = find(content, NSTextView.self, { $0.accessibilityLabel() == "导入预览" })
+                let confirm = try button("导入 6 项")
+                checks["narrowPreviewShowsScheduleSourceTargetAndDisabledImport"] = detail?.string.contains("whale-import:" + root.path) == true &&
+                    detail?.string.contains(target.path) == true && detail?.string.contains("Asia/Shanghai") == true &&
+                    detail?.string.contains("导入后为停用状态") == true && detail?.string.contains("启用前请核对执行时区") == true &&
+                    confirm.visibleRect.width >= confirm.bounds.width - 1 && confirm.visibleRect.height >= confirm.bounds.height - 1 &&
+                    find(content, NSButton.self, { $0.title == "来源文件" }) == nil
+                checks["reviewKeepsRemoteHostLocalTargetAndTwoSelections"] = control.captureSettingsNavigation()?.dataImport?.routes
+                    .first(where: { $0.route == mapped })?.checked?.count == 2
+                try button("返回导入").performClick(nil)
+                let notify = importer.onChange
+                importer.onChange = { [weak importer] in
+                    notify?()
+                    if let importer, importer.batch?.state == "running", importer.batch?.items.filter({ $0.state == "imported" }).count == 4 {
+                        importer.pause()
+                    }
+                }
+                defer { importer.onChange = notify }
+                try button("导入 6 项").performClick(nil)
+                try await settle { importer.active || importer.batch == nil }
+                guard let batch = importer.batch, batch.state == "paused" else { throw PetError("SSH 定时任务批次没有暂停") }
+                checks["mixedBatchFreezesTwoSchedulesAfterOtherCategories"] = batch.items.filter { $0.state == "imported" && $0.record.category != .automations }.count == 4 &&
+                    batch.items.filter { $0.state == "pending" && batch.route(for: $0) == mapped }.count == 2 && schedules.values.isEmpty
+                let before = try String(contentsOf: changed, encoding: .utf8)
+                let after = before.replacingOccurrences(of: "检查未更新的公开内容", with: "预览后写入的公开提示词")
+                guard before != after else { throw PetError("定时任务变更样例有误") }
+                try Data(after.utf8).write(to: changed)
+                try write(["batch": batch.id, "pid": getpid(), "checks": checks, "modelRequests": requests], to: phase)
+                return
+            }
+            let previous = try JSONSerialization.jsonObject(with: Data(contentsOf: phase)) as? [String: Any] ?? [:]
+            checks = previous["checks"] as? [String: Bool] ?? [:]
+            checks["restartRestoresFrozenRemoteSchedulesAndTarget"] = previous["pid"] as? Int != Int(getpid()) &&
+                importer.batch?.id == previous["batch"] as? String && importer.unfinished &&
+                importer.batch?.items.filter { $0.record.automation?.workspace == target.path && $0.record.sshHost == route.sshHost && $0.state == "pending" }.count == 2
+            guard control.showSettingsCategory("imports") else { throw PetError("不能恢复 SSH 定时任务导入页") }
+            try button("继续导入").performClick(nil)
+            try await settle { importer.active }
+            guard let batch = importer.batch, let copied = batch.items.first(where: { $0.record.title == "远端每周核对" }),
+                  let weekly = schedules.values.first(where: { $0.id == copied.record.targetID }) else { throw PetError("缺少已导入计划") }
+            checks["changedRemotePromptIsRejectedWithoutBlockingTheBatch"] = batch.state == "completed" &&
+                batch.items.filter { $0.state == "imported" }.count == 5 && batch.items.contains {
+                    $0.record.title == "远端改动计划" && $0.state == "failed" && $0.detail.contains("已变化")
+                } && schedules.values.count == 1
+            let clock = ISO8601DateFormatter()
+            let sample = clock.date(from: "2030-01-07T01:16:00Z")!, expected = clock.date(from: "2030-01-11T01:15:00Z")!
+            checks["codexCalendarKeepsExplicitZonePromptAndNextOccurrence"] = weekly.workspace == target.path &&
+                weekly.prompt == "在选定项目核对公开 README" && weekly.schedule.timeZone == "Asia/Shanghai" &&
+                weekly.schedule.cronExpression == "15 9 * * 1,5" && weekly.schedule.next(after: sample) == expected
+
+            let qoderFile = output.appendingPathComponent("Qoder 会话/.qoder/scheduled_tasks.json")
+            let qoderTarget = output.appendingPathComponent("本机 Qoder 项目")
+            let qoder = AgentImportRoute(source: .qoder, category: .automations, root: qoderFile.path, workspace: qoderTarget.path, sshHost: route.sshHost)
+            try fm.createDirectory(at: qoderTarget, withIntermediateDirectories: true)
+            try tasks.organization.register(qoderTarget.path, mode: .coding)
+            try chooseSSH(qoder)
+            try openCategory(.automations)
+            try chooseProject(qoderTarget)
+            try button("重新检测").performClick(nil)
+            try await settle { importer.scanning || importer.preview(for: qoder) == nil }
+            guard let result = importer.preview(for: qoder), let selected = result.records.first(where: { $0.title == "Qoder 远端定时检查" }),
+                  let list = find(content, NSTableView.self, { $0.accessibilityLabel() == "可导入定时任务" }),
+                  let index = result.records.firstIndex(where: { $0.id == selected.id }) else {
+                throw PetError(importer.preview(for: qoder)?.issue ?? "缺少 Qoder 定时任务预览")
+            }
+            checks["explicitQoderFileShowsCronAndSourceRunWithoutChangingPath"] = result.available.count == 2 &&
+                selected.file == qoderFile.path && selected.preview.contains("0,30 9-11 * * 1-5") && selected.preview.contains("来源最近运行") &&
+                result.records.contains { $0.issue?.contains("Cron") == true }
+            try button("全选").performClick(nil)
+            list.scrollRowToVisible(index)
+            guard let checkbox = list.view(atColumn: 0, row: index, makeIfNecessary: true) as? NSButton else { throw PetError("缺少计划勾选入口") }
+            checkbox.performClick(nil)
+            try button("导入 1 项").performClick(nil)
+            try await settle { importer.active }
+            let qoderValue = schedules.values.first { $0.id == selected.targetID }
+            checks["onlySelectedQoderPlanAppearsInTheChosenProject"] = importer.batch?.items.count == 1 &&
+                importer.batch?.items.first?.state == "imported" && qoderValue?.workspace == qoderTarget.path &&
+                qoderValue?.schedule.cronExpression == "0,30 9-11 * * 1-5" && schedules.values.count == 2
+            checks["importedSchedulesStayDisabledWithNoHistoryOrDispatch"] = try schedules.history().runs.isEmpty &&
+                schedules.values.allSatisfy { !$0.enabled && $0.nextRun == nil && $0.current == nil && $0.readOnly && !$0.network && $0.permission == .review }
+            let profile = tasks.directory.deletingLastPathComponent()
+            checks["noTransferScratchRemains"] = try !fm.contentsOfDirectory(atPath: profile.path).contains { $0.hasPrefix("ssh-import-transfer-") }
+            let success = checks.values.allSatisfy { $0 } && requests == 0 && previous["modelRequests"] as? Int == 0
+            try write(["checks": checks, "binaryHash": binaryHash, "appPID": getpid(), "modelRequests": requests, "success": success],
+                      to: output.appendingPathComponent("ssh-automation-report.json"))
+            guard success else { throw PetError("SSH 定时任务导入检查失败") }
+            return
+        }
         if CommandLine.arguments.contains("--ssh-skills-import-check") {
             let skills = AgentImportRoute(source: .codex, category: .skills, root: root.path, workspace: nil, sshHost: route.sshHost)
             let memory = AgentImportRoute(source: .codex, category: .memory, root: root.path, workspace: nil, sshHost: route.sshHost)
@@ -199,7 +338,7 @@ import AppKit
                 let categories = AgentImportCategory.allCases.filter { category in
                     find(content, NSButton.self, { $0.accessibilityIdentifier() == "import-category-" + category.rawValue }) != nil
                 }
-                checks["overviewShowsSupportedSSHCategories"] = Set(categories) == Set([.tasks, .memory, .skills])
+                checks["overviewShowsSupportedSSHCategories"] = Set(categories) == Set([.tasks, .memory, .skills, .automations])
                 try button("检测可导入内容").performClick(nil)
                 try await settle { importer.scanning || importer.preview(for: memory) == nil }
                 let records = importer.preview(for: memory)?.records ?? [], valid = records.filter { $0.issue == nil }

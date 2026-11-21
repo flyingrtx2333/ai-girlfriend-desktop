@@ -8,7 +8,19 @@ struct AgentAutomationImportPlan: Codable {
 }
 
 enum AgentAutomationDataImport {
-    private static let maximumRows = 256
+    static let maximumRows = 256
+
+    static func fileName(_ source: AgentImportSource) -> String {
+        source == .qoder ? "scheduled_tasks.json" : "automation.toml"
+    }
+
+    static func maximumBytes(_ source: AgentImportSource) -> Int { source == .qoder ? 512_000 : 128_000 }
+
+    static func allows(_ relative: String, source: AgentImportSource) -> Bool {
+        let parts = relative.split(separator: "/")
+        if source == .qoder { return parts == ["scheduled_tasks.json"] || parts == [".qoder", "scheduled_tasks.json"] }
+        return parts.last == "automation.toml" && (parts.count <= 2 || parts.count == 3 && parts.first == "automations")
+    }
 
     private struct Definition: Codable {
         let id: String
@@ -43,7 +55,7 @@ enum AgentAutomationDataImport {
         let explicit: URL?
 
         init(_ root: URL, source: AgentImportSource) throws {
-            let fileName = source == .qoder ? "scheduled_tasks.json" : "automation.toml"
+            let fileName = AgentAutomationDataImport.fileName(source)
             var directory = ObjCBool(false)
             guard root.path != "/", FileManager.default.fileExists(atPath: root.path, isDirectory: &directory) else {
                 throw PetError("找不到定时任务来源，请选择 " + fileName + " 或来源目录")
@@ -90,11 +102,8 @@ enum AgentAutomationDataImport {
             if let explicit {
                 guard url.path == explicit.path else { throw PetError("定时任务来源已变化，请重新检测") }
             } else {
-                let relative = url.path.dropFirst(files.root.path.count + 1).split(separator: "/")
-                let allowed = source == .qoder
-                    ? relative == ["scheduled_tasks.json"] || relative == [".qoder", "scheduled_tasks.json"]
-                    : relative.last == "automation.toml" && (relative.count <= 2 || relative.count == 3 && relative.first == "automations")
-                guard allowed else { throw PetError("定时任务来源已变化，请重新检测") }
+                let relative = String(url.path.dropFirst(files.root.path.count + 1))
+                guard AgentAutomationDataImport.allows(relative, source: source) else { throw PetError("定时任务来源已变化，请重新检测") }
             }
             guard try files.entryMetadata(url).kind == "file" else { throw PetError("来源需要是普通文件") }
             return url
@@ -121,7 +130,7 @@ enum AgentAutomationDataImport {
         let lastFiredAt: Double?
     }
 
-    private static func qoder(_ object: Any, file: URL) throws -> Definition {
+    private static func qoder(_ object: Any, file: String) throws -> Definition {
         guard JSONSerialization.isValidJSONObject(object),
               let value = try? JSONDecoder().decode(QoderRow.self, from: JSONSerialization.data(withJSONObject: object)),
               value.id.utf8.count == 8, value.id.unicodeScalars.allSatisfy({ "0123456789abcdefABCDEF".unicodeScalars.contains($0) }),
@@ -138,31 +147,30 @@ enum AgentAutomationDataImport {
             schedule.frequency = .once; schedule.date = first
         }
         let label = title(value.name ?? String(value.prompt.split(whereSeparator: \.isNewline).first ?? ""))
-        let parent = file.deletingLastPathComponent()
-        let project = parent.lastPathComponent == ".qoder" ? parent.deletingLastPathComponent() : parent
+        let parent = (file as NSString).deletingLastPathComponent as NSString
+        let project = parent.lastPathComponent == ".qoder" ? parent.deletingLastPathComponent : parent as String
         return Definition(id: value.id.lowercased(), title: label.isEmpty ? "Qoder · " + value.id : label, prompt: value.prompt, schedule: schedule,
-                          workspaces: [project.path], created: created, lastFired: value.lastFiredAt.flatMap(qoderDate),
+                          workspaces: [project], created: created, lastFired: value.lastFiredAt.flatMap(qoderDate),
                           originalCron: value.recurring == true ? nil : value.cron)
     }
 
-    private static func codex(_ data: Data, file: URL) throws -> Definition {
+    private static func codex(_ data: Data, file: String) throws -> Definition {
         guard let value = try? CodexAutomationConfiguration.read(data) else { throw PetError("Codex 定时任务 TOML 无法读取") }
         guard value.version == nil || value.version == 1 else { throw PetError("此 Codex 配置版本暂不支持") }
         guard value.kind == nil || value.kind == "cron", value.targetThreadID?.isEmpty != false else { throw PetError("绑定对话的 Codex 任务暂不支持") }
         guard value.executionEnvironment == nil || value.executionEnvironment == "local" else { throw PetError("仅支持在本机项目目录执行的 Codex 计划") }
         let schedule = try AgentAutomationRecurrence.codex(value.rrule, created: value.createdAt, zone: value.timeZone)
         let workspaces = Array(Set((value.cwds ?? []).filter { $0.hasPrefix("/") && !$0.contains("\0") && $0.utf8.count <= 4096 })).sorted()
-        return Definition(id: value.id ?? file.deletingLastPathComponent().lastPathComponent, title: title(value.name), prompt: value.prompt,
+        let folder = (file as NSString).deletingLastPathComponent as NSString
+        return Definition(id: value.id ?? folder.lastPathComponent, title: title(value.name), prompt: value.prompt,
                           schedule: schedule, workspaces: workspaces, created: value.createdAt)
     }
 
-    private static func definitions(_ source: AgentImportSource, file: URL, root: SourceRoot) throws -> [Result<Definition, Error>] {
-        let url = try root.requireFile(file.path, source: source)
-        let data = try root.files.readData(url, maximum: source == .qoder ? 512_000 : 128_000)
-        if source == .codex { return [Result { try codex(data, file: url) }] }
+    private static func definitions(_ source: AgentImportSource, file: String, data: Data) throws -> [Result<Definition, Error>] {
+        if source == .codex { return [Result { try codex(data, file: file) }] }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tasks = json["tasks"] as? [Any], tasks.count <= maximumRows else { throw PetError("Qoder 定时任务列表无效或过大") }
-        return tasks.map { entry in Result { try qoder(entry, file: url) } }
+        return tasks.map { entry in Result { try qoder(entry, file: file) } }
     }
 
     static func discover(_ source: AgentImportSource, root: URL, workspace: String?) throws -> [AgentImportCandidate] {
@@ -171,42 +179,61 @@ enum AgentAutomationDataImport {
         for file in try base.locations(source) {
             try Task.checkCancellation()
             let time = (try? base.files.entryMetadata(file).modified) ?? .distantPast
-            let values: [Result<Definition, Error>]
-            do { values = try definitions(source, file: file, root: base) }
-            catch { values = [.failure(error)] }
-            for (index, value) in values.enumerated() {
-                switch value {
-                case .failure(let error):
-                    let key = AgentFiles.hash(Data((file.path + "\0invalid\0" + String(index)).utf8))
-                    var record = AgentImportCandidate(source: source, sourceID: "automation:" + key, file: file.path,
-                                                      rawHash: "", sourceHash: "", title: file.lastPathComponent, created: time, updated: time)
-                    record.automation = AgentAutomationImportPlan(workspaceOverride: workspace, workspace: workspace, definitionID: "")
-                    record.issue = error.localizedDescription; rows.append(record)
-                case .success(let definition):
-                    let destinations: [String?] = workspace.map { [$0] } ?? (definition.workspaces.isEmpty ? [nil] : definition.workspaces.map(Optional.some))
-                    let hash = try definition.hash()
-                    let hasFuture = definition.schedule.next(after: Date()) != nil
-                    for destination in destinations {
-                        let key = AgentFiles.hash(Data([file.path, definition.id, destination ?? ""].joined(separator: "\0").utf8))
-                        var record = AgentImportCandidate(source: source, sourceID: "automation:" + key, file: file.path,
-                                                          rawHash: hash, sourceHash: hash, title: definition.title,
-                                                          created: definition.created ?? time, updated: time)
-                        if destinations.count > 1, let destination {
-                            record.title = title(String(record.title.prefix(53)) + " · " + URL(fileURLWithPath: destination).lastPathComponent)
-                        }
-                        record.targetID = AgentImportReaders.targetID(record.id)
-                        record.automation = AgentAutomationImportPlan(workspaceOverride: workspace, workspace: destination, definitionID: definition.id)
-                        record.preview = definition.preview
-                        if definition.prompt.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") { record.warnings.append("启用前请检查来源斜杠指令") }
-                        if !hasFuture { record.warnings.append("没有未来运行时段，启用前请选择新时间") }
-                        if definition.title.isEmpty || definition.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || definition.prompt.utf8.count > 40_000 {
-                            record.issue = "定时任务名称或提示词无效"
-                        }
-                        rows.append(record)
-                    }
-                }
-                guard rows.count <= maximumRows else { throw PetError("计划项目过多，请分别选择来源文件") }
+            rows += try preview(source, file: file.path, workspace: workspace, time: time) {
+                let url = try base.requireFile(file.path, source: source)
+                return try base.files.readData(url, maximum: maximumBytes(source))
             }
+            guard rows.count <= maximumRows else { throw PetError("计划项目过多，请分别选择来源文件") }
+        }
+        return rows
+    }
+
+    static func preview(_ source: AgentImportSource, file: String, workspace: String?, sshHost: String? = nil,
+                        time: Date = .distantPast, read: () throws -> Data) throws -> [AgentImportCandidate] {
+        let values: [Result<Definition, Error>]
+        do { values = try definitions(source, file: file, data: read()) }
+        catch { values = [.failure(error)] }
+        var rows: [AgentImportCandidate] = []
+        for (index, value) in values.enumerated() {
+            switch value {
+            case .failure(let error):
+                let key = AgentFiles.hash(Data((file + "\0invalid\0" + String(index)).utf8))
+                var record = AgentImportCandidate(source: source, sourceID: "automation:" + key, file: file, rawHash: "", sourceHash: "",
+                    title: (file as NSString).lastPathComponent, created: time, updated: time, sshHost: sshHost)
+                record.automation = AgentAutomationImportPlan(workspaceOverride: workspace, workspace: workspace, definitionID: "")
+                record.issue = error.localizedDescription
+                rows.append(record)
+            case .success(let definition):
+                let destinations: [String?] = sshHost != nil || workspace != nil ? [workspace] :
+                    (definition.workspaces.isEmpty ? [nil] : definition.workspaces.map(Optional.some))
+                let hash = try definition.hash()
+                let hasFuture = definition.schedule.next(after: Date()) != nil
+                for destination in destinations {
+                    let key = AgentFiles.hash(Data([file, definition.id, destination ?? ""].joined(separator: "\0").utf8))
+                    var record = AgentImportCandidate(source: source, sourceID: "automation:" + key, file: file, rawHash: hash, sourceHash: hash,
+                        title: definition.title, created: definition.created ?? time, updated: time, sshHost: sshHost)
+                    if destinations.count > 1, let destination {
+                        record.title = title(String(record.title.prefix(53)) + " · " + URL(fileURLWithPath: destination).lastPathComponent)
+                    }
+                    record.targetID = AgentImportReaders.targetID(record.id)
+                    record.automation = AgentAutomationImportPlan(workspaceOverride: workspace, workspace: destination, definitionID: definition.id)
+                    record.preview = definition.preview
+                    if sshHost != nil {
+                        record.warnings.append("启用前请核对执行时区")
+                        if !definition.workspaces.isEmpty {
+                            let paths = definition.workspaces.prefix(3).joined(separator: "、")
+                            record.preview = "来源项目 · " + paths + (definition.workspaces.count > 3 ? " 等" : "") + "\n" + record.preview
+                        }
+                    }
+                    if definition.prompt.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") { record.warnings.append("启用前请检查来源斜杠指令") }
+                    if !hasFuture { record.warnings.append("没有未来运行时段，启用前请选择新时间") }
+                    if definition.title.isEmpty || definition.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || definition.prompt.utf8.count > 40_000 {
+                        record.issue = "定时任务名称或提示词无效"
+                    }
+                    rows.append(record)
+                }
+            }
+            guard rows.count <= maximumRows else { throw PetError("计划项目过多，请分别选择来源文件") }
         }
         return rows
     }
@@ -227,7 +254,7 @@ enum AgentAutomationDataImport {
             }
             guard let workspace = record.automation?.workspace, projects.contains(workspace),
                   (try? AgentFiles(workspace: workspace, followParentLinks: false).root.path) == URL(fileURLWithPath: workspace).standardizedFileURL.path else {
-                record.issue = "请选择可用的目标项目"; return record
+                record.issue = record.sshHost == nil ? "请选择可用的目标项目" : "请选择本机目标项目"; return record
             }
             if keys[record.id, default: []].count > 1 { record.issue = "来源计划编号重复"; return record }
             if titles[record.title.lowercased(), default: []].count > 1 {
@@ -241,10 +268,21 @@ enum AgentAutomationDataImport {
     }
 
     static func reveal(_ record: AgentImportCandidate, root: URL) throws -> URL {
-        try SourceRoot(root, source: record.source).requireFile(record.file, source: record.source)
+        guard record.sshHost == nil else { throw PetError("缺少本机定时任务来源") }
+        return try SourceRoot(root, source: record.source).requireFile(record.file, source: record.source)
     }
 
     @MainActor static func install(_ record: AgentImportCandidate, root: URL, store: AgentStore) async throws {
+        try await install(record, store: store) {
+            try await Task.detached(priority: .utility) {
+                let base = try SourceRoot(root, source: record.source)
+                let file = try base.requireFile(record.file, source: record.source)
+                return try base.files.readData(file, maximum: maximumBytes(record.source))
+            }.value
+        }
+    }
+
+    @MainActor static func install(_ record: AgentImportCandidate, store: AgentStore, load: () async throws -> Data) async throws {
         guard let plan = record.automation, let workspace = plan.workspace,
               record.targetID == AgentImportReaders.targetID(record.id) else { throw PetError("定时任务目标无效") }
         let service = store.automations
@@ -253,16 +291,16 @@ enum AgentAutomationDataImport {
             return
         }
         try AgentMCPDataImport.requireDestination(workspace, store: store)
+        let data = try await load()
         let definition = try await Task.detached(priority: .utility) {
-            let base = try SourceRoot(root, source: record.source)
-            let file = URL(fileURLWithPath: record.file)
-            let matches = try definitions(record.source, file: file, root: base).compactMap { try? $0.get() }.filter { $0.id == plan.definitionID }
+            let matches = try definitions(record.source, file: record.file, data: data).compactMap { try? $0.get() }.filter { $0.id == plan.definitionID }
             guard matches.count == 1, let definition = matches.first, try definition.hash() == record.sourceHash,
-                  plan.workspaceOverride == workspace || plan.workspaceOverride == nil && definition.workspaces.contains(workspace) else {
+                  plan.workspaceOverride == workspace || record.sshHost == nil && plan.workspaceOverride == nil && definition.workspaces.contains(workspace) else {
                 throw PetError("来源计划已变化，请重新检测")
             }
             return definition
         }.value
+        try Task.checkCancellation()
         try AgentMCPDataImport.requireDestination(workspace, store: store)
         var value = AgentAutomation(name: record.title, prompt: definition.prompt, workspace: workspace)
         value.id = record.targetID; value.schedule = definition.schedule
