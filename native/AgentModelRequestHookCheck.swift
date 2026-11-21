@@ -247,6 +247,26 @@ import AppKit
             && compacted.contextSummary == "PUBLIC_COMPACTION_RESULT" && compacted.messages.map(\.id) == original.map(\.id)
             && compacted.modelReceipts?.map(\.finishReason) == ["length", "stop"]
 
+        var visualHistory = compacted
+        guard let archivedInput = visualHistory.messages.first, AgentContext.offset(visualHistory) > 0 else {
+            throw PetError("压缩样例未保留可核对的原始输入")
+        }
+        let reference = AgentVisualPart(id: UUID().uuidString, part: 1)
+        visualHistory.messages[0].attachmentIDs = [reference.id]
+        visualHistory.messages[0].visuals = [reference]
+        visualHistory.messages[0].visualsDelivered = true
+        let usual = AgentContext.window(visualHistory, maximumImages: 1)
+        let limited = AgentContext.window(visualHistory, maximumImages: 1, includeDeliveredImages: false)
+        checks["budgetFallbackDropsArchivedDeliveredImageButKeepsInputAndAttachment"] =
+            AgentAttachmentVisuals.references(usual, maximum: 1).values.flatMap { $0 } == [reference]
+            && AgentAttachmentVisuals.references(limited, maximum: 1).isEmpty
+            && limited.first?.id == archivedInput.id && limited.first?.content == archivedInput.content
+            && limited.first?.attachmentIDs == [reference.id] && visualHistory.messages[0].visuals == [reference]
+        visualHistory.messages[0].visualsDelivered = false
+        let undelivered = AgentContext.window(visualHistory, maximumImages: 1, includeDeliveredImages: false)
+        checks["budgetFallbackKeepsArchivedUndeliveredImage"] =
+            AgentAttachmentVisuals.references(undelivered, maximum: 1).values.flatMap { $0 } == [reference]
+
         let beforeRecap = try rows().count
         guard runtime.analyze(truncated, recap: true) else { throw PetError("回顾样例未开始") }
         let recapped = try await settled(truncated), recap = try ordered(since: beforeRecap)
@@ -333,7 +353,7 @@ import AppKit
         store.preferences.model = "fixture-observer"
         store.preferences.contextTokens = 8192
         store.preferences.replyTokens = 512
-        store.preferences.visionMode = "off"
+        store.preferences.visionMode = CommandLine.arguments.contains("--vision-context-ui") ? "on" : "off"
         var settings = AgentGeneralSettings.Settings()
         settings.runningInput = .queue
         settings.promptSuggestions = false; settings.skillEvolutionSuggestions = false

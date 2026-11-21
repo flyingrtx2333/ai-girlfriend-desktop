@@ -51,7 +51,6 @@ import Foundation
         var messages = task.messages.dropFirst(offset(task)).filter {
             $0.responseState == nil && $0.hookRejected != true && !(task.importOrigin != nil && $0.isImportedContext)
         }
-        if !includeDeliveredImages { for i in messages.indices where messages[i].visualsDelivered != false { messages[i].visuals = nil } }
         if let summary = task.contextSummary, !summary.isEmpty {
             let inputs = task.messages.prefix(offset(task)).filter(\.isHumanInput)
             let plan = task.plan.map { "[\($0.status)] \($0.title)" }.joined(separator: "\n")
@@ -68,6 +67,9 @@ import Foundation
             messages.insert(contentsOf: inputs + [AgentMessage(role: "assistant", content: context, nativeContext: true)], at: 0)
             let facts = archivedFacts(task, budget: archivedFactBudget)
             if !facts.isEmpty { messages.insert(AgentMessage(role: "assistant", content: facts, nativeContext: true), at: inputs.count + 1) }
+        }
+        if !includeDeliveredImages {
+            for i in messages.indices where messages[i].visualsDelivered != false { messages[i].visuals = nil }
         }
         let pendingImages = task.messages.filter { $0.visualsDelivered == false && $0.visuals?.isEmpty == false }
         let imageHistory = pendingImages.isEmpty && includeDeliveredImages ? task.messages : pendingImages
