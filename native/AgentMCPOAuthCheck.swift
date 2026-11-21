@@ -61,7 +61,7 @@ private struct MCPOAuthFixture: Decodable, Sendable {
                 guard (rejection as? HTTPURLResponse)?.statusCode == 400 else { throw PetError("应拒绝不匹配的授权会话") }
                 try Data("true\n".utf8).write(to: output.appendingPathComponent("mismatched-state-rejected"), options: .atomic)
                 var approval = URLComponents(url: address, resolvingAgainstBaseURL: false)!
-                approval.queryItems = fields + [.init(name: "fixture_decision", value: "allow")]
+                approval.percentEncodedQuery = (approval.percentEncodedQuery.map { $0 + "&" } ?? "") + "fixture_decision=allow"
                 let (_, accepted) = try await URLSession.shared.data(from: approval.url!)
                 guard (accepted as? HTTPURLResponse)?.statusCode == 200 else { throw PetError("本机授权回调未接收") }
             }

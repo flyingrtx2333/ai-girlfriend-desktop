@@ -181,9 +181,13 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
         let verifier = PKCE.makeVerifier(), nonce = UUID().uuidString
         let challenge = try PKCE.makeChallenge(from: verifier), flow = OAuthAuthorizationCodeFlow()
         let scopeSelector = DefaultOAuthScopeSelector()
-        let url = try flow.buildURL(authorizationEndpoint: authorization, resource: service.resource, redirectURI: redirect,
-                                    clientID: clientID, codeChallenge: challenge, scopes: context.requestedScopes,
-                                    state: nonce, scopeSerializer: scopeSelector)
+        let requestURL = try flow.buildURL(authorizationEndpoint: authorization, resource: service.resource, redirectURI: redirect,
+                                           clientID: clientID, codeChallenge: challenge, scopes: context.requestedScopes,
+                                           state: nonce, scopeSerializer: scopeSelector)
+        guard var browserURL = URLComponents(url: requestURL, resolvingAgainstBaseURL: false) else { throw MCPConnectionError("浏览器授权地址无效") }
+        // URLComponents permits a literal plus in queries. OAuth form decoding treats it as a space.
+        browserURL.percentEncodedQuery = browserURL.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        guard let url = browserURL.url else { throw MCPConnectionError("浏览器授权地址无效") }
         let code = try await flow.perform(authorizationURL: url, redirectURI: redirect, state: nonce, delegate: callback, session: session)
         var fields = ["grant_type": "authorization_code", "code": code, "code_verifier": verifier, "redirect_uri": redirect.absoluteString,
                       "client_id": clientID, "resource": service.resource.absoluteString]
