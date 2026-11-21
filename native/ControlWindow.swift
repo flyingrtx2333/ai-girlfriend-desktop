@@ -111,6 +111,8 @@ final class FormDocumentView: NSView {
     private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory", "git", "worktrees"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
+    private enum BasicSettingsPage: String { case model, voice, persona, screen, desktop }
+    private var basicPreferencesBaseline: PetPreferences?
     private var savedBasicSettings: [String] = []
     private var savedWakeEnabled: NSControl.StateValue = .off
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView, key: String?)] = []
@@ -2388,7 +2390,7 @@ final class FormDocumentView: NSView {
         }
         group("model", "服务", "模型 模型列表 接口 地址 URL Token 密钥 连接 检测 API")
         endpoint.delegate = self; model.delegate = self; apiKey.delegate = self
-        model.setAccessibilityLabel("模型 ID")
+        endpoint.setAccessibilityLabel("模型接口"); apiKey.setAccessibilityLabel("模型 Token"); model.setAccessibilityLabel("模型 ID")
         model.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         AgentDialogStyle.action(checkModelButton); checkModelButton.target = self; checkModelButton.action = #selector(checkModel)
         AgentDialogStyle.action(modelDirectoryButton); modelDirectoryButton.target = self; modelDirectoryButton.action = #selector(openModelDirectory)
@@ -2441,7 +2443,8 @@ final class FormDocumentView: NSView {
         AgentDialogStyle.action(voiceStopButton); row("", voiceStopButton)
         group("screen", "闲置时陪你看看", "屏幕 陪伴 观察 视觉 视频 评论 自动 间隔 免打扰 授权 权限")
         screenEnabled.setAccessibilityLabel("闲置时观察屏幕"); row("自动观察", screenEnabled)
-        screenInterval.addItems(withTitles: ["1 分钟", "3 分钟", "5 分钟", "10 分钟", "15 分钟"]); row("观察间隔", screenInterval)
+        screenInterval.addItems(withTitles: ["1 分钟", "3 分钟", "5 分钟", "10 分钟", "15 分钟"])
+        screenInterval.setAccessibilityLabel("观察间隔"); row("观察间隔", screenInterval)
         screenTarget.font = .systemFont(ofSize: 12); screenTarget.textColor = AgentWorkbenchTheme.secondaryText
         screenTarget.lineBreakMode = .byTruncatingMiddle; screenTarget.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         row("图像发送至", screenTarget)
@@ -2455,7 +2458,8 @@ final class FormDocumentView: NSView {
         let screenScope = NSTextField(wrappingLabelWithString: "只看当前应用窗口的一帧，不保存截图。")
         screenScope.font = .systemFont(ofSize: 12); screenScope.textColor = AgentWorkbenchTheme.secondaryText; row("", screenScope)
         group("desktop", "显示与动画", "桌面 宠物 角色 置顶 动画 性能 节能 大小 缩放 复位 位置")
-        row("窗口置顶", onTop); performance.addItems(withTitles: ["自动节能", "流畅", "暂停"]); row("动画", performance)
+        row("窗口置顶", onTop); performance.addItems(withTitles: ["自动节能", "流畅", "暂停"])
+        performance.setAccessibilityLabel("桌宠动画"); row("动画", performance)
         sizeValue.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); sizeValue.textColor = AgentWorkbenchTheme.secondaryText
         sizeValue.widthAnchor.constraint(equalToConstant: 42).isActive = true
         scale.target = self; scale.action = #selector(scaleChanged); row("大小", stack([scale, sizeValue], spacing: 12))
@@ -2503,6 +2507,7 @@ final class FormDocumentView: NSView {
         }
         group("persona", "人设", "角色 人设 性格 提示词 persona")
         persona.usesSingleLineMode = false; persona.lineBreakMode = .byWordWrapping
+        persona.setAccessibilityLabel("角色设定")
         persona.heightAnchor.constraint(equalToConstant: 120).isActive = true; row("", persona)
         for (category, key, title, keywords) in [
             ("extensions", "plugins", "插件", "Plugin 安装 更新 扩展"),
@@ -2593,6 +2598,12 @@ final class FormDocumentView: NSView {
         let footerSpacer = NSView()
         savedStatus.onChange = { [weak footerSpacer] text in footerSpacer?.isHidden = !text.isEmpty }
         let bottom = stack([savedStatus, footerSpacer, rebaseBasicDraftButton, save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 16)
+        bottom.distribution = .fill
+        savedStatus.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        for button in [rebaseBasicDraftButton, save] {
+            button.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
         settingsColumn = column
         settingsFooter = bottom
         settings.addSubview(column); pin(column, to: settings)
@@ -2688,6 +2699,7 @@ final class FormDocumentView: NSView {
         screenTarget.stringValue = (try? CompanionService.endpoint(p.endpoint).host) ?? "未配置"
         screenTarget.toolTip = p.model
         updateScreenStatus(companion.screenCompanion.status)
+        basicPreferencesBaseline = p
         savedBasicSettings = basicSettingsValues()
         modelDraftBase = AgentModelSettingsRecovery.Draft.fingerprint(p)
         voiceDraftBase = AgentVoiceSettingsDraft.fingerprint(p)
@@ -2811,14 +2823,19 @@ final class FormDocumentView: NSView {
         return result.valid ? result : nil
     }
     private var hasModelDraftConflict: Bool {
-        guard let companion, let modelDraftBase else { return false }
         let values = modelSettingsForm().values
-        return values != Array(savedBasicSettings.prefix(values.count)) && modelDraftBase != AgentModelSettingsRecovery.Draft.fingerprint(companion.store.preferences)
+        return modelBaseChanged && (values != Array(savedBasicSettings.prefix(values.count)) || removeChatKey || !apiKey.stringValue.isEmpty)
+    }
+    private var modelBaseChanged: Bool {
+        guard let companion, let modelDraftBase else { return false }
+        return modelDraftBase != AgentModelSettingsRecovery.Draft.fingerprint(companion.store.preferences)
     }
     private func updateBasicDraftControls() {
         let modelConflict = settingsCategory == "model" && hasModelDraftConflict
         let voiceConflict = settingsCategory == "voice" && hasVoiceDraftConflict
         let conflict = modelConflict || voiceConflict
+        if modelConflict { showModelDraftStatus() }
+        if voiceConflict { showVoiceDraftStatus() }
         rebaseBasicDraftButton.isHidden = !conflict
         rebaseBasicDraftButton.isEnabled = (modelConflict && captureModelSettings()?.draft != nil) ||
             (voiceConflict && captureVoiceDraft() != nil)
@@ -2917,6 +2934,7 @@ final class FormDocumentView: NSView {
     @objc private func removeAPI() {
         editToken(apiKey, preview: apiPreview, replace: apiReplace); apiKey.stringValue = ""
         apiKey.placeholderString = "保存后移除"; removeChatKey = true; invalidateModelCheck(sourceChanged: true)
+        updateBasicDraftControls(); workspaceSession?.changed()
     }
     @objc private func removeVoice() {
         editToken(voiceKey, preview: voicePreview, replace: voiceReplace); voiceKey.stringValue = ""
@@ -2978,10 +2996,11 @@ final class FormDocumentView: NSView {
     @objc private func reasoningChanged() { invalidateModelCheck(); updateBasicDraftControls(); workspaceSession?.changed() }
     @objc private func voiceSettingsChanged() { updateBasicDraftControls(); workspaceSession?.changed() }
 
-    private func chatPreferences() throws -> PetPreferences {
+    private func chatPreferences(includePersona: Bool = false) throws -> PetPreferences {
         guard var p = companion?.store.preferences else { throw PetError("设置不可用。") }
         p.endpoint = endpoint.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        p.model = model.stringValue.trimmingCharacters(in: .whitespacesAndNewlines); p.persona = persona.stringValue
+        p.model = model.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if includePersona { p.persona = persona.stringValue }
         p.visionMode = ["auto", "on", "off"][max(0, vision.indexOfSelectedItem)]
         p.reasoningEffort = effortValues[max(0, reasoning.indexOfSelectedItem)]
         let context = contextTokens.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3090,54 +3109,106 @@ final class FormDocumentView: NSView {
             }
         } catch { failure(error) }
     }
+    private func credentialEdit(_ input: NSSecureTextField, remove: Bool, account: String) -> (account: String, value: String)? {
+        let value = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty && !remove ? nil : (account, value)
+    }
+    private func readVoiceSettings(into p: inout PetPreferences, keychain: PetKeychain, editedToken: String?) throws {
+        let voice = voiceSettingsForm()
+        p.voiceEnabled = voice.voiceEnabled
+        p.voiceEndpoint = voice.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = try CompanionService.endpoint(p.voiceEndpoint)
+        p.voiceModel = voice.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        p.voiceID = voice.voiceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        p.wakeEnabled = voice.wakeEnabled
+        p.wakePhrase = voice.wakePhrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        p.voicePauseSeconds = voice.pauseSeconds
+        guard (2...12).contains(p.wakePhrase.filter({ $0.isLetter || $0.isNumber }).count) else { throw PetError("唤醒词请用 2–12 个字") }
+        if p.wakeEnabled, let directory = Bundle.main.resourceURL?.appendingPathComponent("wake-model") {
+            _ = try SherpaWake.tokenLine(p.wakePhrase, directory: directory)
+        }
+        guard !p.voiceID.isEmpty, !p.voiceModel.isEmpty else { throw PetError("请填写语音模型和音色。") }
+        if p.voiceEnabled && !(editedToken.map { !$0.isEmpty } ?? keychain.contains("voice")) {
+            throw PetError("请先填写 MiniMax 密钥。")
+        }
+    }
+    private func scopedSetting<Value: Equatable>(_ entered: Value, originally: Value, latest: Value) throws -> Value {
+        guard entered != originally else { return latest }
+        guard latest == originally || entered == latest else {
+            throw PetError("这项设置已在另一窗口更改。请重新打开此页核对后再保存。")
+        }
+        return entered
+    }
+    private func readScreenSettings(into p: inout PetPreferences, baseline: PetPreferences) throws {
+        let interval = [60.0, 180.0, 300.0, 600.0, 900.0][max(0, screenInterval.indexOfSelectedItem)]
+        p.screenObservationEnabled = try scopedSetting(screenEnabled.state == .on, originally: baseline.screenObservationEnabled, latest: p.screenObservationEnabled)
+        p.screenObservationInterval = try scopedSetting(interval, originally: baseline.screenObservationInterval, latest: p.screenObservationInterval)
+        if p.screenObservationEnabled && p.visionSupported != true { throw PetError("请在模型页确认视觉理解能力") }
+    }
+    private func readDesktopSettings(into p: inout PetPreferences, baseline: PetPreferences) throws {
+        let animation = ["auto", "smooth", "paused"][max(0, performance.indexOfSelectedItem)]
+        p.alwaysOnTop = try scopedSetting(onTop.state == .on, originally: baseline.alwaysOnTop, latest: p.alwaysOnTop)
+        p.performance = try scopedSetting(animation, originally: baseline.performance, latest: p.performance)
+        p.scale = try scopedSetting(scale.doubleValue, originally: baseline.scale, latest: p.scale)
+    }
+    private func saveCompanionSettings(_ store: PreferencesStore) throws {
+        let baseline = store.preferences
+        var p = try chatPreferences(includePersona: true)
+        let voice = credentialEdit(voiceKey, remove: removeVoiceKey, account: "voice")
+        try readVoiceSettings(into: &p, keychain: store.keychain, editedToken: voice?.value)
+        try readScreenSettings(into: &p, baseline: baseline)
+        try readDesktopSettings(into: &p, baseline: baseline)
+        let chat = credentialEdit(apiKey, remove: removeChatKey, account: "chat")
+        let credentials = Dictionary(uniqueKeysWithValues: [chat, voice].compactMap { $0 }.map { ($0.account, $0.value) })
+        try store.saveFormPreferences(p, credentials: credentials)
+    }
     @objc private func saveSettings() {
         guard selectedTab == "settings", settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               generalSettingsSave?.isHidden == false, let companion else { return }
+        let store = companion.store
         do {
-            if settingsCategory == "model", hasModelDraftConflict { showModelDraftStatus(); updateBasicDraftControls(); return }
-            let scopedVoice = settingsCategory == "voice" && companion.usesAgent
-            if scopedVoice, voiceBaseChanged {
-                if hasVoiceDraftConflict { showVoiceDraftStatus(); updateBasicDraftControls() }
-                else { refreshPreferences(); savedStatus.stringValue = "已载入最新设置" }
-                return
+            if !companion.usesAgent { try saveCompanionSettings(store) }
+            else {
+                guard let page = BasicSettingsPage(rawValue: settingsCategory) else { return }
+                var updated = store.preferences
+                let baseline = basicPreferencesBaseline ?? updated
+                var credential: (account: String, value: String)?
+                switch page {
+                case .model:
+                    if modelBaseChanged {
+                        if hasModelDraftConflict { showModelDraftStatus(); updateBasicDraftControls() }
+                        else { refreshPreferences(); savedStatus.stringValue = "已载入最新设置" }
+                        return
+                    }
+                    updated = try chatPreferences()
+                    if updated.screenObservationEnabled && updated.visionSupported != true {
+                        throw PetError("请先在「屏幕陪伴」关闭自动观察，再保存该模型设置。")
+                    }
+                    credential = credentialEdit(apiKey, remove: removeChatKey, account: "chat")
+                case .voice:
+                    if voiceBaseChanged {
+                        if hasVoiceDraftConflict { showVoiceDraftStatus(); updateBasicDraftControls() }
+                        else { refreshPreferences(); savedStatus.stringValue = "已载入最新设置" }
+                        return
+                    }
+                    credential = credentialEdit(voiceKey, remove: removeVoiceKey, account: "voice")
+                    try readVoiceSettings(into: &updated, keychain: store.keychain, editedToken: credential?.value)
+                case .persona:
+                    guard persona.stringValue.count < 8000 else { throw PetError("角色设定请少于 8000 字。") }
+                    updated.persona = try scopedSetting(persona.stringValue, originally: baseline.persona, latest: updated.persona)
+                case .screen:
+                    try readScreenSettings(into: &updated, baseline: baseline)
+                case .desktop:
+                    try readDesktopSettings(into: &updated, baseline: baseline)
+                }
+                let credentials = credential.map { [$0.account: $0.value] } ?? [:]
+                try store.saveFormPreferences(updated, credentials: credentials)
             }
-            var p = scopedVoice ? companion.store.preferences : try chatPreferences()
-            let voice = voiceSettingsForm()
-            p.voiceEnabled = voice.voiceEnabled
-            p.voiceEndpoint = voice.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-            _ = try CompanionService.endpoint(p.voiceEndpoint)
-            p.voiceModel = voice.model.trimmingCharacters(in: .whitespacesAndNewlines)
-            p.voiceID = voice.voiceID.trimmingCharacters(in: .whitespacesAndNewlines)
-            p.wakeEnabled = voice.wakeEnabled; p.wakePhrase = voice.wakePhrase.trimmingCharacters(in: .whitespacesAndNewlines)
-            p.voicePauseSeconds = voice.pauseSeconds
-            if !scopedVoice {
-                p.screenObservationEnabled = screenEnabled.state == .on
-                p.screenObservationInterval = [60.0, 180.0, 300.0, 600.0, 900.0][max(0, screenInterval.indexOfSelectedItem)]
-                if p.screenObservationEnabled && p.visionSupported != true { throw PetError("请在模型页确认视觉理解能力") }
-            }
-            guard (2...12).contains(p.wakePhrase.filter({ $0.isLetter || $0.isNumber }).count) else { throw PetError("唤醒词请用 2–12 个字") }
-            if p.wakeEnabled, let directory = Bundle.main.resourceURL?.appendingPathComponent("wake-model") {
-                _ = try SherpaWake.tokenLine(p.wakePhrase, directory: directory)
-            }
-            guard !p.voiceID.isEmpty, !p.voiceModel.isEmpty else { throw PetError("请填写语音模型和音色。") }
-            if p.voiceEnabled && voiceKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && (removeVoiceKey || !companion.store.keychain.contains("voice")) {
-                throw PetError("请先填写 MiniMax 密钥。")
-            }
-            if !scopedVoice {
-                p.alwaysOnTop = onTop.state == .on; p.performance = ["auto", "smooth", "paused"][max(0, performance.indexOfSelectedItem)]
-                p.scale = scale.doubleValue
-                if removeChatKey || !apiKey.stringValue.isEmpty { try companion.store.keychain.write(apiKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), account: "chat") }
-            }
-            if removeVoiceKey || !voiceKey.stringValue.isEmpty { try companion.store.keychain.write(voiceKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), account: "voice") }
-            let previous = companion.store.preferences
-            companion.store.preferences = p
-            do { try companion.store.savePreferences() }
-            catch { companion.store.preferences = previous; throw error }
             companion.applyPreferences()
-            refreshPreferences(); savedStatus.stringValue = "已保存"; savedStatus.textColor = AgentWorkbenchTheme.secondaryText
+            refreshPreferences()
+            savedStatus.stringValue = "已保存"
             workspaceSession?.changed()
-        } catch { savedStatus.stringValue = error.localizedDescription; savedStatus.textColor = .systemRed }
+        } catch { savedStatus.showSaveFailure(error) }
     }
     @objc private func send() {
         guard let companion else { return }
@@ -3265,10 +3336,7 @@ final class FormDocumentView: NSView {
         companion?.updatePetWorkspaceOcclusion()
         companion?.focusedTaskControl = self
         updateWorkbenchLayout()
-        if selectedTab == "settings", settingsCategory == "voice" {
-            if hasVoiceDraftConflict { showVoiceDraftStatus() }
-            updateBasicDraftControls()
-        }
+        if selectedTab == "settings" { updateBasicDraftControls() }
         if let task = currentAgentTask {
             if companion?.agentStore?.selectedID != task.id { companion?.agentStore?.selectedID = task.id }
             refreshBranch(task, force: true)
@@ -3811,8 +3879,10 @@ final class FormDocumentView: NSView {
             }
             generalSettingsSave?.performClick(nil)
             window.contentView?.layoutSubtreeIfNeeded()
-            checks["basicSaveFailureKeepsDraftAndSavedMemory"] = endpoint.stringValue == draft && companion.store.preferences.endpoint == original.endpoint && basicSettingsValues() != savedBasicSettings && savedStatus.textColor == .systemRed
-            checks["basicSaveFailureRemainsReadableAt780By540"] = window.frame.size == NSSize(width: 780, height: 540) && savedStatus.cell?.wraps == true && savedStatus.isSelectable && savedStatus.toolTip == savedStatus.stringValue
+            checks["basicSaveFailureKeepsDraftAndSavedMemory"] = endpoint.stringValue == draft && companion.store.preferences.endpoint == original.endpoint && basicSettingsValues() != savedBasicSettings && savedStatus.textColor == AgentDialogStyle.error
+            checks["basicSaveFailureRemainsReadableAt780By540"] = window.frame.size == NSSize(width: 780, height: 540) &&
+                savedStatus.cell?.wraps == true && savedStatus.isSelectable && savedStatus.visibleRect.height >= 12 &&
+                savedStatus.stringValue.contains("保存位置不是普通文件") && savedStatus.toolTip?.isEmpty == false
         }
         checks["basicSaveFailureLeavesOriginalFileIntact"] = (try? Data(contentsOf: file)) == before
         checks["basicSaveUsesCommandS"] = generalSettingsSave?.keyEquivalent == "s" && generalSettingsSave?.keyEquivalentModifierMask == .command

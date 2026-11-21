@@ -169,12 +169,15 @@ struct PetCredentialConfig {
         return old
     }
     func write(_ value: String?, account: String) throws {
+        try write([account: value])
+    }
+    fileprivate func write(_ updates: [String: String?]) throws {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let (before, mode) = try bytes()
         guard mode == nil || mode! & 0o200 != 0 else { throw PetError("API Key 配置为只读，未保存。") }
         var next = try document(before)
         // Empty entries intentionally prevent a removed key being re-imported.
-        next.tokens[account] = value
+        for (account, value) in updates { next.tokens[account] = value }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(next)
         guard data.count <= 131_072 else { throw PetError("API Key 配置过大，未保存。") }
@@ -222,5 +225,47 @@ final class PreferencesStore {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
     func savePreferences() throws { try save(preferences, file: "settings.json") }
+    func saveFormPreferences(_ value: PetPreferences, credentials: [String: String]) throws {
+        let files = try AgentFiles(workspace: directory.path, followParentLinks: false)
+        let url = files.root.appendingPathComponent("settings.json")
+        let original = try files.entryMetadata(url)
+        guard ["file", "missing"].contains(original.kind) else {
+            throw AgentSaveFailure(reason: .invalidFile, diagnostic: url.path)
+        }
+        if let permissions = original.permissions, permissions & 0o200 == 0 {
+            throw AgentSaveFailure(reason: .readOnly, diagnostic: url.path)
+        }
+        let previous = try !credentials.isEmpty && original.kind == "file" ? files.readData(url, maximum: 20_000_000) : nil
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(value)
+        try files.writeData(data, to: url, permissions: 0o600, expectedTarget: original.signature)
+        if !credentials.isEmpty {
+            do {
+                let config = PetCredentialConfig(file: directory.appendingPathComponent("credentials.json"))
+                try config.write(credentials.mapValues { Optional($0) })
+            }
+            catch {
+                do {
+                    let written = try files.entryMetadata(url)
+                    guard try files.readData(url, maximum: 20_000_000) == data else {
+                        throw AgentSaveFailure(reason: .changed, diagnostic: url.path)
+                    }
+                    if let previous {
+                        try files.writeData(previous, to: url, permissions: original.permissions ?? 0o600, expectedTarget: written.signature)
+                    } else {
+                        guard try files.entryMetadata(url).signature == written.signature else {
+                            throw AgentSaveFailure(reason: .changed, diagnostic: url.path)
+                        }
+                        try files.remove(url)
+                    }
+                } catch {
+                    throw PetError("Token 未保存，设置文件未能恢复。请重启应用核对保存结果。")
+                }
+                throw error
+            }
+        }
+        preferences = value
+    }
     func saveHistory() throws { messages = Array(messages.suffix(80)); try save(messages, file: "history.json") }
 }
