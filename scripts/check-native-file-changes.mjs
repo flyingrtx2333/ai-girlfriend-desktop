@@ -56,12 +56,22 @@ console.log(JSON.stringify({ output, live, hold, resume, officialServerVersion: 
 try {
   if (!resume) {
   launch(['--capture-interrupt']); const owner = await reportFile('interruption-owner.json', 30);
-  const commandPID = await until(30, async () => { try { const value = Number((await readFile(path.join(repo, 'interruption-process.pid'), 'utf8')).trim()); const task = JSON.parse(await readFile(taskFile(owner.taskID), 'utf8')); return Number.isInteger(value) && value > 1 && task.pendingFileCapture ? value : null; } catch { return null; } });
+  const [commandPID, childPID] = await until(30, async () => {
+    try {
+      const ids = await Promise.all(['interruption-process.pid', 'interruption-child.pid'].map(name => readFile(path.join(repo, name), 'utf8').then(Number)));
+      const task = JSON.parse(await readFile(taskFile(owner.taskID), 'utf8'));
+      return ids.every(value => Number.isInteger(value) && value > 1) && task.pendingFileCapture ? ids : null;
+    } catch { return null; }
+  });
   const args = spawnSync('/bin/ps', ['-p', String(owner.appPID), '-o', 'args='], { encoding: 'utf8' }).stdout;
-  if (!alive(owner.appPID) || !args.includes(output) || !args.includes('--capture-interrupt') || !alive(commandPID)) throw new Error('Interruption owner is not the actual isolated app/command');
-  process.kill(owner.appPID, 'SIGKILL'); try { process.kill(-commandPID, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-  await until(10, () => !alive(owner.appPID) && !alive(commandPID));
-  await writeFile(path.join(output, 'actual-interruption.json'), JSON.stringify({ appPID: owner.appPID, commandPID, appExited: true, ownedCommandExited: true, taskID: owner.taskID }, null, 2));
+  const relation = pid => spawnSync('/bin/ps', ['-p', String(pid), '-o', 'ppid=,pgid='], { encoding: 'utf8' }).stdout.trim().split(/\s+/).map(Number);
+  const [supervisorPID, commandGroup] = relation(commandPID), [childParent, childGroup] = relation(childPID);
+  if (!alive(owner.appPID) || !args.includes(output) || !args.includes('--capture-interrupt') ||
+      relation(supervisorPID)[0] !== owner.appPID || commandGroup !== commandPID ||
+      childParent !== commandPID || childGroup !== commandPID) throw new Error('Interruption owner is not the actual isolated app/command');
+  process.kill(owner.appPID, 'SIGKILL');
+  await until(10, () => [owner.appPID, supervisorPID, commandPID, childPID].every(pid => !alive(pid)));
+  await writeFile(path.join(output, 'actual-interruption.json'), JSON.stringify({ appPID: owner.appPID, supervisorPID, commandPID, childPID, appExited: true, ownedCommandExited: true, taskID: owner.taskID }, null, 2));
   launch(['--capture-recover']); const recovered = await reportFile('interruption-report.json', 30); if (!recovered.success || recovered.recoveryAppPID === owner.appPID) throw new Error('Actual interrupted task did not recover without replay');
   await until(10, () => !alive(recovered.recoveryAppPID));
   } else {

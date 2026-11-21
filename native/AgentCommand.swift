@@ -1,18 +1,18 @@
 import Foundation
 import Darwin
 
-// Each command owns a process group. Dispatch sources sleep until output,
-// termination or the deadline; cancelling never leaves shell children behind.
+// A separate supervisor owns the command process group and outlives an app crash.
 final class AgentCommand: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.xjs.bluefatfish.command.\(UUID().uuidString)", qos: .utility)
     private var pid: pid_t = 0, descriptor: Int32 = -1, errorDescriptor: Int32 = -1
+    private var lifetimeDescriptor: Int32 = -1
     private var output = Data(), standardOutput = Data(), errorOutput = Data(), discarded = 0, maximumOutput = 100_000
     private var processSource: DispatchSourceProcess?, readSource: DispatchSourceRead?, errorSource: DispatchSourceRead?
     private var deadline: DispatchWorkItem?, killDeadline: DispatchWorkItem?
     private var cancelled = false, timedOut = false
     private var continuation: CheckedContinuation<AgentToolResult, Error>?
 
-    func cancel() { queue.sync { self.cancelled = true; if self.pid > 0 { kill(-self.pid, SIGKILL) } } }
+    func cancel() { queue.sync { self.cancelled = true; self.closeLifetime() } }
     func snapshot() -> (running: Bool, output: String) { queue.sync { (self.pid > 0, String(decoding: self.output, as: UTF8.self)) } }
     func run(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool = false, gitDirectory: URL? = nil, gitWrite: Bool = false, gitConfiguration: Bool = false, maximumOutput: Int = 100_000, protectedData: URL? = nil, inputFile: URL? = nil, readRoots: [URL] = [], writeRoots: [URL] = [], protectedWrites: [URL] = [], gitTransportAuth: Bool = false, sshClient: Bool = false, listSnapshotParents: Bool = false, environment: [String: String] = [:], arguments: [String]? = nil, shell: String? = nil, inheritEnvironment: Bool = false, workspaceRoots: [URL] = [], leaseDescriptor: Int32? = nil) async throws -> AgentToolResult {
         try await withTaskCancellationHandler(operation: {
@@ -31,6 +31,8 @@ final class AgentCommand: @unchecked Sendable {
         guard !command.contains("\0"), arguments?.contains(where: { $0.contains("\0") }) != true else { throw PetError("命令或参数不能包含空字符") }
         guard extraEnvironment.allSatisfy({ Self.validEnvironmentName($0.key) && !$0.value.contains("\0") && !Self.launcherEnvironment($0.key) }) else { throw PetError("环境变量名称无效或试图修改隔离启动器") }
         guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { throw PetError("当前系统不支持工作区隔离，终端未执行") }
+        guard let supervisor = Bundle.main.url(forAuxiliaryExecutable: "BlueFatFishCommand"),
+              FileManager.default.isExecutableFile(atPath: supervisor.path) else { throw PetError("终端进程监控不可用，未执行命令") }
         // Foundation keeps /var as an alias on macOS. Sandbox path filters
         // must instead match the kernel's /private/var path, including denies.
         func kernelPath(_ path: String) -> String {
@@ -73,9 +75,14 @@ final class AgentCommand: @unchecked Sendable {
         (deny file-write* (subpath \(quote(kernelPath(Bundle.main.bundleURL.path)))))
         \(network ? "(allow network*)" : "")
         """
-        var descriptors: [Int32] = [0, 0], errors: [Int32] = [0, 0]
+        var descriptors: [Int32] = [0, 0], errors: [Int32] = [0, 0], lifetime: [Int32] = [0, 0]
         guard pipe(&descriptors) == 0 else { throw PetError("终端输出管道不可用") }
         guard pipe(&errors) == 0 else { descriptors.forEach { close($0) }; throw PetError("终端错误管道不可用") }
+        guard pipe(&lifetime) == 0 else { (descriptors + errors).forEach { close($0) }; throw PetError("终端进程监控管道不可用") }
+        var spawned = false
+        defer { if !spawned { (descriptors + errors + lifetime).forEach { close($0) } } }
+        guard fcntl(lifetime[0], F_SETFD, FD_CLOEXEC) == 0, fcntl(lifetime[1], F_SETFD, FD_CLOEXEC) == 0,
+              fcntl(lifetime[1], F_SETNOSIGPIPE, 1) == 0 else { throw PetError("无法配置终端进程监控管道") }
         var actions: posix_spawn_file_actions_t?, attributes: posix_spawnattr_t?
         posix_spawn_file_actions_init(&actions); posix_spawnattr_init(&attributes)
         defer { posix_spawn_file_actions_destroy(&actions); posix_spawnattr_destroy(&attributes) }
@@ -85,13 +92,14 @@ final class AgentCommand: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&actions, errors[1], STDERR_FILENO)
         posix_spawn_file_actions_addclose(&actions, descriptors[0]); posix_spawn_file_actions_addclose(&actions, descriptors[1])
         posix_spawn_file_actions_addclose(&actions, errors[0]); posix_spawn_file_actions_addclose(&actions, errors[1])
-        if let leaseDescriptor, posix_spawn_file_actions_adddup2(&actions, leaseDescriptor, leaseDescriptor == 9 ? 10 : 9) != 0 {
-            (descriptors + errors).forEach { close($0) }
-            throw PetError("无法为终端保留操作锁")
+        if let leaseDescriptor {
+            let target = [Int32(9), 10, 11].first { $0 != leaseDescriptor && $0 != lifetime[0] }!
+            guard posix_spawn_file_actions_adddup2(&actions, leaseDescriptor, target) == 0 else { throw PetError("无法为终端保留操作锁") }
         }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)); posix_spawnattr_setpgroup(&attributes, 0)
+        guard posix_spawn_file_actions_addinherit_np(&actions, lifetime[0]) == 0,
+              posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0 else { throw PetError("无法配置终端进程监控") }
         let invocation = arguments.map { [command] + $0 } ?? [shell ?? "/bin/sh", "-c", command]
-        let launchArguments = ["/usr/bin/sandbox-exec", "-p", profile] + invocation
+        let launchArguments = [supervisor.path, String(getpid()), String(lifetime[0]), "-p", profile] + invocation
         var environment = inheritEnvironment ? ProcessInfo.processInfo.environment.filter { Self.validEnvironmentName($0.key) && !Self.launcherEnvironment($0.key) && !$0.value.contains("\0") } : [:]
         // The system Git shim runs xcrun and needs a cache outside this command's
         // writable roots. Reuse the resolved executable without widening access.
@@ -105,9 +113,10 @@ final class AgentCommand: @unchecked Sendable {
         defer { argv.forEach { free($0) }; env.forEach { free($0) } }
         var child: pid_t = 0
         let error = argv.withUnsafeBufferPointer { a in env.withUnsafeBufferPointer { e in posix_spawn(&child, launchArguments[0], &actions, &attributes, a.baseAddress!, e.baseAddress!) } }
-        close(descriptors[1]); close(errors[1])
-        guard error == 0 else { close(descriptors[0]); close(errors[0]); throw PetError("终端无法启动（\(error)）") }
-        pid = child; descriptor = descriptors[0]; errorDescriptor = errors[0]
+        guard error == 0 else { throw PetError("终端无法启动（\(error)）") }
+        spawned = true
+        close(descriptors[1]); close(errors[1]); close(lifetime[0])
+        pid = child; descriptor = descriptors[0]; errorDescriptor = errors[0]; lifetimeDescriptor = lifetime[1]
         for fd in [descriptor, errorDescriptor] { _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) }
         let reader = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
         reader.setEventHandler { [weak self] in guard let self else { return }; self.drain(self.descriptor) }
@@ -135,13 +144,21 @@ final class AgentCommand: @unchecked Sendable {
         }
     }
     private func terminate() {
-        guard pid > 0 else { return }; kill(-pid, SIGTERM)
-        let child = pid, work = DispatchWorkItem { kill(-child, SIGKILL) }
+        guard pid > 0, lifetimeDescriptor >= 0 else { return }
+        var request: UInt8 = 1
+        guard write(lifetimeDescriptor, &request, 1) == 1 else { closeLifetime(); return }
+        let work = DispatchWorkItem { [weak self] in self?.closeLifetime() }
         killDeadline = work; queue.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+    private func closeLifetime() {
+        guard lifetimeDescriptor >= 0 else { return }
+        close(lifetimeDescriptor)
+        lifetimeDescriptor = -1
     }
     private func finish() {
         guard pid > 0 else { return }
-        let child = pid; var status: Int32 = 0; waitpid(child, &status, 0); kill(-child, SIGKILL)
+        let child = pid; var status: Int32 = 0; waitpid(child, &status, 0)
+        closeLifetime()
         drain(descriptor); drain(errorDescriptor, isError: true); pid = 0; descriptor = -1; errorDescriptor = -1
         deadline?.cancel(); killDeadline?.cancel(); readSource?.cancel(); errorSource?.cancel(); processSource?.cancel()
         readSource = nil; errorSource = nil; processSource = nil

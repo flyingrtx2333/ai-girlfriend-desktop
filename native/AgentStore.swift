@@ -170,10 +170,11 @@ import Foundation
         let interrupted = !hooks.isRunning(id) && (!awaitingSlot || archiveIsBusy?(id) != true) &&
             (awaitingSlot || task.status == .running || hasWaitingSupplements || task.pendingFileCapture != nil ||
             !task.unfinishedResponseIDs.isEmpty || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
+        let recoveredEventStates = Self.recoverLegacyToolEvents(&task)
         if interrupted { Self.recover(&task) }
         cache[id] = task
         rememberStoredTask(id, hash: AgentFiles.hash(data))
-        if interrupted {
+        if interrupted || recoveredEventStates {
             if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index] = Self.metadata(task) }
             recoveringRecords.insert(id); defer { recoveringRecords.remove(id) }
             do { try save(id) } catch { writeError = error.localizedDescription }
@@ -216,6 +217,19 @@ import Foundation
             }; return true
         } catch { writeError = error.localizedDescription; return false }
     }
+    private static let interruptedOperation = "应用中断，此操作的执行结果未知。继续前检查实际状态，不直接重放。"
+    private static func recoverLegacyToolEvents(_ task: inout AgentTaskRecord) -> Bool {
+        guard task.events.contains(where: { $0.status == "waiting" && $0.toolCallID != nil }) else { return false }
+        let interrupted = Set(task.messages.lazy.filter { $0.role == "tool" && $0.content == interruptedOperation }.compactMap(\.toolCallID))
+        var changed = false
+        for index in task.events.indices where task.events[index].status == "waiting" {
+            guard let callID = task.events[index].toolCallID, interrupted.contains(callID) else { continue }
+            task.events[index].status = "stopped"
+            task.events[index].detail += "\n" + interruptedOperation
+            changed = true
+        }
+        return changed
+    }
     private static func recover(_ task: inout AgentTaskRecord) {
         if let capture = task.pendingFileCapture {
             let warning = "执行中断，文件归属尚未确认；请先在“未提交”中核对实际内容。执行前快照已保留：" + capture.manifest
@@ -243,11 +257,7 @@ import Foundation
         }
         task.status = .stopped; task.goalAccepted = nil; task.completionEvidence = nil
         task.hookSession = nil
-        for call in task.pendingCalls {
-            task.messages.append(AgentMessage(role: "tool", content: "应用中断，此操作的执行结果未知。继续前检查实际状态，不直接重放。", toolCallID: call.id))
-            if !task.events.contains(where: { $0.toolCallID == call.id }) { task.events.append(AgentEvent(kind: "tool", title: call.name, detail: "应用中断，执行结果未知", status: "stopped", toolCallID: call.id)) }
-        }
-        task.pendingCalls = []
+        task.skipPendingCalls(reason: interruptedOperation)
         task.flushQueuedInputs()
         for i in task.events.indices where task.events[i].status == "running" { task.events[i].status = "stopped" }
         task.events.append(AgentEvent(kind: "state", title: "应用中断，检查后可继续", detail: "未确认的操作不会自动重放。", status: "stopped"))

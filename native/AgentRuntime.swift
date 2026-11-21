@@ -937,8 +937,12 @@ import Foundation
                     }
                     if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
                     let started = Date()
-                    let eventID = task.events.last(where: { $0.toolCallID == call.id })?.id ?? UUID().uuidString
-                    if !task.events.contains(where: { $0.id == eventID }) {
+                    let existing = task.events.lastIndex { $0.toolCallID == call.id }
+                    let eventID = existing.map { task.events[$0].id } ?? UUID().uuidString
+                    if let existing, task.events[existing].status == "waiting" {
+                        store.update(id) { $0.events[existing].status = "running" }
+                        notifyChange(id)
+                    } else if existing == nil {
                         store.update(id) { $0.events.append(AgentEvent(id: eventID, kind: "tool", title: call.name, detail: Self.description(call), toolCallID: call.id)) }
                     }
                     if let error = store.writeError { throw PetError("任务记录未保存：" + error) }

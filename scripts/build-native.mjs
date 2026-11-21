@@ -57,6 +57,9 @@ run('npm', ['run', 'build:office']);
 run('npm', ['run', 'build:diagrams']);
 run('npm', ['run', 'build:wiki']);
 await mkdir(path.join(contents, 'MacOS'), { recursive: true });
+const commandSupervisor = path.join(contents, 'MacOS', 'BlueFatFishCommand');
+run('xcrun', ['clang', '-O2', '-Wall', '-Wextra', '-Werror', '-arch', 'arm64', '-mmacosx-version-min=14.0', 'native/AgentCommandSupervisor.c', '-o', commandSupervisor]);
+signBuildArtifact(commandSupervisor);
 await mkdir(path.join(resources, 'web'), { recursive: true });
 run('xcrun', ['actool', 'native/Assets.xcassets', '--compile', resources, '--platform', 'macosx', '--minimum-deployment-target', '14.0', '--output-format', 'human-readable-text']);
 for (const scanner of scanners) {

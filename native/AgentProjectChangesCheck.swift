@@ -37,7 +37,16 @@ import Darwin
                 let id = tasks.create(title: "实际中断的文件命令", workspace: repo.path)
                 tasks.update(id) { $0.messages.append(AgentMessage(role: "user", content: "写入公开中断标记后等待")); $0.status = .running }
                 try write(["appPID": ProcessInfo.processInfo.processIdentifier, "taskID": id], "interruption-owner.json")
-                _ = try await AgentTools(store: tasks, taskID: id).execute(call("run_command", ["command": "printf 'written-before-kill\\n' > interrupt.txt\nprintf '%s\\n' \"$$\" > interruption-process.pid\n/bin/sleep 30", "timeout_seconds": 40]))
+                let command = """
+                printf 'written-before-kill\\n' > interrupt.txt
+                /bin/sleep 30 &
+                child=$!
+                printf '%s\\n' "$child" > interruption-child.pid
+                printf '%s\\n' "$$" > interruption-process.pid
+                wait "$child"
+                printf 'written-after-exit\\n' > interruption-late.txt
+                """
+                _ = try await AgentTools(store: tasks, taskID: id).execute(call("run_command", ["command": command, "timeout_seconds": 40]))
                 throw PetError("中断验收未终止实际应用进程")
             }
             if CommandLine.arguments.contains("--capture-recover") {
@@ -50,7 +59,8 @@ import Darwin
                 let previous = values[try files.literalURL("interrupt.txt").path]
                 let recovered = task.status == .stopped && task.pendingFileCapture == nil && task.changes.isEmpty && event != nil && !warning.isEmpty && previous?.state.hash == AgentFiles.hash(Data("original-before-interrupt\n".utf8))
                 let current = try files.readData(files.resolve("interrupt.txt"))
-                try write(["success": recovered && current == Data("written-before-kill\n".utf8), "taskID": id, "recoveryAppPID": ProcessInfo.processInfo.processIdentifier, "beforeManifest": manifest.path, "originalBackupHash": previous?.state.hash ?? "", "currentHash": AgentFiles.hash(current), "replayed": false], "interruption-report.json")
+                let wroteAfterExit = fm.fileExists(atPath: repo.appendingPathComponent("interruption-late.txt").path)
+                try write(["success": recovered && current == Data("written-before-kill\n".utf8) && !wroteAfterExit, "taskID": id, "recoveryAppPID": ProcessInfo.processInfo.processIdentifier, "beforeManifest": manifest.path, "originalBackupHash": previous?.state.hash ?? "", "currentHash": AgentFiles.hash(current), "replayed": false], "interruption-report.json")
                 return
             }
             func git(_ args: [String]) async throws -> String {
