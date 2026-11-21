@@ -309,8 +309,9 @@ import Darwin
         try handle.synchronize()
         try handle.close()
         if file.pathExtension.lowercased() == "xlsx", let edits = result["noteEdits"] {
+            let required: Set<String> = ["sheet", "cell", "original", "text"]
             guard let changes = edits as? [[String: Any]], changes.count <= 5_000,
-                  changes.allSatisfy({ Set($0.keys) == ["sheet", "cell", "original", "text"] }) else {
+                  changes.allSatisfy({ Set($0.keys) == required || Set($0.keys) == required.union(["rich"]) }) else {
                 throw PetError("备注编辑记录无法读取，原草稿已保留")
             }
             if !changes.isEmpty {
@@ -516,19 +517,37 @@ import Darwin
         guard let captured = try await evaluate("return await BlueFatFishOffice.captureView()") as? [String: Any], let view = captured["view"] as? [String: Any] else { throw PetError("办公位置没有实际回读") }
         return view
     }
-    func checkSpreadsheetNotes(show: Bool = false, address: String? = nil, newAddress: String? = nil, edit: String? = nil) async throws -> [String: Any] {
+    func checkSpreadsheetNotes(show: Bool = false, address: String? = nil, newAddress: String? = nil, edit: String? = nil,
+                               range: Range<Int>? = nil, action: String? = nil) async throws -> [String: Any] {
         guard CommandLine.arguments.contains("--spreadsheet-notes-check"), AgentTaskWorkspace.readbackEnabled,
               file.pathExtension.lowercased() == "xlsx" else { throw PetError("仅限备注验收") }
         if show {
             spreadsheetNotes.performClick(nil)
             await uiTask?.value
         }
-        let args: [String: Any] = ["address": address as Any? ?? NSNull(), "newAddress": newAddress as Any? ?? NSNull(), "edit": edit as Any? ?? NSNull()]
+        let args: [String: Any] = ["address": address as Any? ?? NSNull(), "newAddress": newAddress as Any? ?? NSNull(),
+                                   "edit": edit as Any? ?? NSNull(), "range": range.map { [$0.lowerBound, $0.upperBound] } as Any? ?? NSNull(),
+                                   "action": action as Any? ?? NSNull()]
         guard let value = try await evaluate("""
             const panel = document.querySelector('.spreadsheet-notes');
             if (!panel || panel.hidden) throw new Error('备注栏没有显示');
             const list = panel.querySelector('.spreadsheet-notes-list');
-            const text = panel.querySelector('textarea');
+            const text = panel.querySelector('.spreadsheet-note-body');
+            const settled = () => new Promise(resolve => setTimeout(resolve, 75));
+            const select = async ([from, to]) => {
+              const point = index => {
+                const walker = document.createTreeWalker(text, NodeFilter.SHOW_TEXT);
+                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                  if (index <= node.length) return [node, index];
+                  index -= node.length;
+                }
+                const body = text.firstElementChild ?? text;
+                return [body, body.childNodes.length];
+              };
+              text.focus();
+              getSelection().setBaseAndExtent(...point(from), ...point(to));
+              await settled();
+            };
             if (address !== null) {
               const row = Array.from(list.querySelectorAll('button')).find(b => b.title === address);
               if (!row) throw new Error('目标备注没有显示');
@@ -546,17 +565,39 @@ import Darwin
                 throw new Error(panel.querySelector('[role="status"]').textContent || '新备注未绑定原单元格');
               }
             }
+            if (range !== null) await select(range);
             if (edit !== null) {
-              if (text.hidden || text.readOnly) throw new Error('备注不可编辑');
-              text.value = edit;
+              if (text.closest('[hidden]') || text.getAttribute('aria-readonly') === 'true') throw new Error('备注不可编辑');
+              if (range === null) await select([0, text.textContent.length]);
+              if (edit.includes('\\n')) {
+                const clipboardData = new DataTransfer();
+                clipboardData.setData('text/plain', edit);
+                text.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
+              } else if (!document.execCommand(edit ? 'insertText' : 'delete', false, edit)) {
+                throw new Error('备注输入失败');
+              }
+              await settled();
+              if (range === null) await select([0, Math.min(2, edit.length)]);
+            }
+            if (action !== null) {
               text.focus();
-              text.setSelectionRange(0, 2);
-              text.dispatchEvent(new InputEvent('input', {bubbles: true}));
+              const button = panel.querySelector('.spreadsheet-note-format button[data-format="' + action + '"]');
+              if (button && !button.disabled) button.click();
+              else {
+                const key = { undo: 'z', redo: 'z', boldKey: 'b', enter: 'Enter' }[action];
+                if (!key) throw new Error('备注格式操作不可用');
+                text.dispatchEvent(new KeyboardEvent('keydown', { key, code: key.length === 1 ? 'Key' + key.toUpperCase() : key,
+                  bubbles: true, cancelable: true, metaKey: action !== 'enter', shiftKey: action === 'redo' }));
+              }
+              await settled();
             }
             const frame = panel.getBoundingClientRect(), grid = document.getElementById('office-root').getBoundingClientRect();
-            return {entries: Array.from(list.querySelectorAll('button')).map(b => b.title), value: text.value,
+            const marks = selector => Array.from(text.querySelectorAll(selector), node => node.textContent);
+            return {entries: Array.from(list.querySelectorAll('button')).map(b => b.title), value: text.textContent,
                     author: panel.querySelector('.spreadsheet-note-author').textContent,
-                    focused: document.activeElement === text, readOnly: text.readOnly,
+                    focused: document.activeElement === text, readOnly: text.getAttribute('aria-readonly') === 'true',
+                    bold: marks('strong'), italic: marks('em'), underline: marks('u'),
+                    doubleUnderline: marks('.spreadsheet-note-double u'), selection: getSelection().toString(),
                     grid: grid.width, left: frame.left, right: frame.right, width: innerWidth};
             """, args: args) as? [String: Any] else { throw PetError("无法读取当前备注栏") }
         return value

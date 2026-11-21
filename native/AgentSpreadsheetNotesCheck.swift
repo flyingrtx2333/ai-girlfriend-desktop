@@ -5,6 +5,144 @@ import AppKit
         let task: String, window: String, tab: String, hash: String
     }
 
+    func runSpreadsheetRichNoteCheck(_ output: URL) async {
+        let args = CommandLine.arguments
+        let stage = args.firstIndex(of: "--recovery-stage").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil } ?? "seed"
+        let project = output.appendingPathComponent("project")
+        let document = project.appendingPathComponent("sample.xlsx")
+        let fixtureFile = output.appendingPathComponent("rich-notes-fixture.json")
+        let journal = AgentWorkspaceRecovery(profile: store.directory)
+        let original = "核对合同 🌊，复查日期"
+        let draft = "核对订单 🌊，复查日期"
+        let finished = "核对订单 🌊，复核\n  对齐日期"
+        let plain = "核对税前金额\n保留样例"
+        let newNote = "补充凭据"
+        var checks: [String: Bool] = [:], failure: String?, modelRequests = 0
+
+        do {
+            ensureAgent()
+            guard checkDirectory == output, let tasks = agentStore, let runtime = agentRuntime,
+                  tasks.extensions.sharedHome?.standardizedFileURL == output.appendingPathComponent("shared-home").standardizedFileURL else {
+                throw PetError("备注验收需要独立资料")
+            }
+            runtime.modelRequestCheck = { modelRequests += 1; throw PetError("备注验收禁止模型请求") }
+            let files = try AgentFiles(workspace: project.path)
+            if stage == "seed" {
+                let hash = try files.fileHash(document)
+                let task = tasks.create(title: "公开富文本备注", workspace: project.path, draft: "保留原任务输入")
+                control.showAgentTask(task); control.show(tab: "chat")
+                control.window?.appearance = NSAppearance(named: .aqua)
+                control.window?.setContentSize(NSSize(width: 1320, height: 800))
+                let editor = try await tasks.offices.show(document.path, taskID: task)
+                guard let window = control.workspaceSession?.id,
+                      let tab = control.taskWorkspace.recoveryLayouts.first(where: { $0.taskID == task })?.tabs.first(where: { $0.root == "document:" + document.path }) else {
+                    throw PetError("原备注文件标签缺失")
+                }
+                let opened = try await editor.checkSpreadsheetNotes(show: true, address: "审阅 · E35")
+                checks["originalNoteShowsItsOwnInlineFormatting"] = opened["value"] as? String == original && opened["readOnly"] as? Bool == false &&
+                    opened["bold"] as? [String] == ["核对合同 🌊"] && opened["italic"] as? [String] == ["，复查日期"] &&
+                    opened["doubleUnderline"] as? [String] == ["，复查日期"]
+                let typed = try await editor.checkSpreadsheetNotes(edit: "订单", range: 2..<4)
+                checks["typingInsideBoldRunKeepsTheOtherRuns"] = typed["value"] as? String == draft &&
+                    typed["bold"] as? [String] == ["核对订单 🌊"] && typed["italic"] as? [String] == ["，复查日期"]
+                let formatted = try await editor.checkSpreadsheetNotes(range: 0..<2, action: "underline")
+                checks["toolbarFormatsOnlyTheSelectedCharacters"] = formatted["underline"] as? [String] == ["核对", "，复查日期"]
+                let undone = try await editor.checkSpreadsheetNotes(action: "undo")
+                let redone = try await editor.checkSpreadsheetNotes(action: "redo")
+                checks["formatCanBeUndoneAndRedone"] = undone["underline"] as? [String] == ["，复查日期"] &&
+                    redone["underline"] as? [String] == ["核对", "，复查日期"]
+                let at = (draft as NSString).range(of: "复查").location
+                let split = try await editor.checkSpreadsheetNotes(range: at..<at, action: "enter")
+                let unsplit = try await editor.checkSpreadsheetNotes(action: "undo")
+                checks["enterInsertsOneLineBreakWithoutDroppingTheStyle"] = split["value"] as? String == "核对订单 🌊，\n复查日期" &&
+                    split["doubleUnderline"] as? [String] == ["，\n复查日期"] && unsplit["value"] as? String == draft
+                _ = try await editor.checkSpreadsheetNotes(range: 0..<2)
+                checks["positionedAtOriginalCell"] = try await editor.checkSpreadsheetNoteVisible(sheet: "审阅", cell: "E35")
+                try await editor.checkSpreadsheetNotesImage(output.appendingPathComponent("rich-notes-wide.png"))
+                guard await flushWorkspaceWindows(), let entry = try journal.loadPage(windowID: window, pageID: tab.id, taskID: task),
+                      let asset = entry.asset else { throw PetError("富文本备注草稿未写入恢复文件") }
+                let note = try await AgentSpreadsheetNotes.read(asset).first { $0.cell == "E35" }
+                checks["checkpointContainsStyledDraftOnly"] = try entry.saved.value.dirty && note?.text == draft &&
+                    note?.runs?.map(\.underline) == [true, false, true] && files.fileHash(document) == hash
+                let assets = try AgentFiles(workspace: asset.deletingLastPathComponent().path)
+                let evidence = try AgentFiles(workspace: output.path)
+                try evidence.copyFile(asset, from: assets, to: output.appendingPathComponent("rich-note-checkpoint.xlsx"),
+                                      permissions: 0o600, expectedHash: entry.saved.value.asset?.hash, maximum: AgentOffice.maximum)
+                try JSONEncoder().encode(SpreadsheetNotesFixture(task: task, window: window, tab: tab.id, hash: hash)).write(to: fixtureFile, options: .atomic)
+            } else {
+                let fixture = try JSONDecoder().decode(SpreadsheetNotesFixture.self, from: Data(contentsOf: fixtureFile))
+                control.window?.appearance = NSAppearance(named: .darkAqua)
+                control.show(tab: "chat"); control.window?.setContentSize(NSSize(width: 780, height: 540))
+                guard await flushWorkspaceWindows() else { throw PetError("办公标签尚未恢复") }
+                if control.taskWorkspace.currentController as? AgentOfficeWindow == nil {
+                    control.taskWorkspace.checkSelect(.document(document.path))
+                    guard await flushWorkspaceWindows() else { throw PetError("原备注标签未恢复") }
+                }
+                guard let editor = control.taskWorkspace.currentController as? AgentOfficeWindow, editor.file == document else { throw PetError("原备注窗口缺失") }
+                let visible = try await editor.checkSpreadsheetNotes()
+                let noteView = try await editor.checkWorkspaceView()["notes"] as? [String: Any]
+                let selection = noteView?["selected"] as? [String: Any]
+                checks["windowAndTaskDraftRestore"] = control.workspaceSession?.id == fixture.window && control.agentTaskID == fixture.task &&
+                    tasks.task(fixture.task)?.draft == "保留原任务输入"
+                checks["narrowWindowShowsNoteAndGrid"] = (visible["grid"] as? Double ?? 0) > 230 &&
+                    (visible["right"] as? Double ?? 0) - (visible["left"] as? Double ?? 0) >= 180
+                checks["restoredNoteStillLocatesItsCell"] = try await editor.checkSpreadsheetNoteVisible(sheet: "审阅", cell: "E35")
+                if stage == "resume" {
+                    checks["styledDraftReopensWithOriginalSelection"] = try editor.dirty && visible["value"] as? String == draft &&
+                        visible["underline"] as? [String] == ["核对", "，复查日期"] && visible["selection"] as? String == "核对" &&
+                        selection?["cell"] as? String == "E35" && selection?["focused"] as? Bool == true && files.fileHash(document) == fixture.hash
+                    try await editor.checkSpreadsheetNotesImage(output.appendingPathComponent("rich-notes-narrow.png"))
+                    let replace = (draft as NSString).range(of: "复查")
+                    let pasted = try await editor.checkSpreadsheetNotes(edit: "复核\n  对齐", range: replace.location..<(replace.location + replace.length))
+                    checks["multilinePasteRetainsInlineStyleAndSpaces"] = pasted["value"] as? String == finished &&
+                        pasted["doubleUnderline"] as? [String] == ["，复核\n  对齐日期"]
+                    let end = (finished as NSString).length
+                    let restyled = try await editor.checkSpreadsheetNotes(range: (end - 2)..<end, action: "italic")
+                    checks["removingItalicRetainsDoubleUnderline"] = restyled["italic"] as? [String] == ["，复核\n  对齐"] &&
+                        (restyled["doubleUnderline"] as? [String])?.joined() == "，复核\n  对齐日期"
+                    _ = try await editor.checkSpreadsheetNotes(address: "销售 · C3")
+                    let promoted = try await editor.checkSpreadsheetNotes(range: 0..<2, action: "boldKey")
+                    checks["keyboardCanStyleAnExistingPlainNote"] = promoted["bold"] as? [String] == ["核对"] && promoted["value"] as? String == plain
+                    var view = try await editor.checkWorkspaceView()
+                    let cell = ["row": 5, "col": 1]
+                    view["selection"] = ["sheetIndex": 0, "sheetName": "销售", "cells": ["anchor": cell, "focus": cell]]
+                    view["scroll"] = []
+                    _ = try await editor.checkWorkspaceView(view)
+                    _ = try await editor.checkSpreadsheetNotes(newAddress: "销售 · B6", edit: newNote)
+                    let created = try await editor.checkSpreadsheetNotes(range: 0..<2, action: "bold")
+                    checks["newNoteCanContainFormattedText"] = created["value"] as? String == newNote && created["bold"] as? [String] == ["补充"]
+                    _ = try await editor.checkSpreadsheetNotes(address: "审阅 · E35")
+                    try await editor.saveDocument()
+                    let query = try await editor.inspect(["sheet": "销售", "range": "C4"])
+                    guard let sheet = query["sheet"], let version = query["version"] else { throw PetError("原工作表不可读") }
+                    try await editor.checkWorkspaceEdit(["expectVersion": version, "steps": [
+                        ["op": "setCellInputs", "target": ["sheetId": sheet, "range": ["kind": "a1", "a1": "C4"]], "inputs": [["29.6"]]]
+                    ]])
+                    try await editor.saveDocument()
+                    let notes = try await AgentSpreadsheetNotes.read(document)
+                    checks["cellSaveKeepsAllThreeNotes"] = !editor.dirty && notes.count == 3 &&
+                        notes.contains { $0.cell == "E35" && $0.text == finished && $0.runs?.count == 4 } &&
+                        notes.contains { $0.cell == "B6" && $0.runs?.first?.bold == true } &&
+                        notes.contains { $0.cell == "C3" && $0.runs?.first?.bold == true }
+                } else {
+                    checks["finalReopenRendersSavedRichText"] = !editor.dirty && visible["value"] as? String == finished &&
+                        visible["italic"] as? [String] == ["，复核\n  对齐"] && visible["underline"] as? [String] == ["核对", "，复核\n  对齐", "日期"]
+                }
+            }
+            checks["workspaceStateFlushed"] = await flushWorkspaceWindows()
+        } catch {
+            failure = error.localizedDescription
+            for editor in agentStore?.offices.windows.values.map({ $0 }) ?? [] { editor.finishClose() }
+        }
+        checks["zeroModelRequests"] = modelRequests == 0
+        var report: [String: Any] = ["stage": stage, "pid": getpid(), "checks": checks, "modelRequests": modelRequests,
+                                     "success": failure == nil && checks.values.allSatisfy { $0 }]
+        report["error"] = failure
+        if let bytes = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? bytes.write(to: output.appendingPathComponent("spreadsheet-rich-notes-" + stage + ".json"), options: .atomic)
+        }
+    }
+
     func runSpreadsheetNotesCheck(_ output: URL) async {
         var checks: [String: Bool] = [:], failure: String?, modelRequests = 0
         let stage = CommandLine.arguments.firstIndex(of: "--recovery-stage").flatMap { CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil } ?? "seed"

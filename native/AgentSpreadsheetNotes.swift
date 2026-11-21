@@ -2,10 +2,27 @@ import Foundation
 
 struct AgentSpreadsheetNote: Encodable, Sendable {
     let sheet: String, cell: String, author: String, text: String, editable: Bool
+    let runs: [AgentSpreadsheetNoteRun]?
+    let formatVersion: String?
+}
+
+struct AgentSpreadsheetNoteRun: Encodable, Sendable {
+    let text: String
+    let bold: Bool, italic: Bool, underline: Bool, doubleUnderline: Bool, strike: Bool
+    let font: String?, size: Double?, rgb: String?, vertical: String?
 }
 
 struct AgentSpreadsheetNoteEdit: Decodable, Sendable {
+    struct RichText: Decodable, Sendable {
+        struct Run: Decodable, Sendable {
+            let text: String, source: Int?
+            let bold: Bool, italic: Bool, underline: Bool
+        }
+        let version: String?
+        let runs: [Run]
+    }
     let sheet: String, cell: String, original: String?, text: String
+    let rich: RichText?
 }
 
 struct AgentSpreadsheetNoteCatalog: Encodable, Sendable {
@@ -34,7 +51,8 @@ enum AgentSpreadsheetNotes {
     }
     private struct Note {
         let value: AgentSpreadsheetNote
-        let text: XMLElement?
+        let content: XMLElement
+        let runs: [XMLElement]
     }
     private struct Package {
         let archive: URL, scratch: URL, entries: Set<String>
@@ -108,12 +126,20 @@ enum AgentSpreadsheetNotes {
                 }
                 let authorID = attribute(item, "authorId").flatMap(Int.init)
                 let author = authorID.flatMap { authorList.indices.contains($0) ? authorList[$0] : nil } ?? ""
-                let fields = children(content, "t") + children(content, "r").flatMap { children($0, "t") }
-                let plain = children(content, "t").count == 1 && children(content, "r").isEmpty && fields.count == 1
+                let direct = children(content, "t"), runs = children(content, "r")
+                let fields = direct + runs.flatMap { children($0, "t") }
                 let text = fields.map { $0.stringValue ?? "" }.joined()
-                let editable = editAllowed && plain && validText(text)
-                return Note(value: .init(sheet: sheet.name, cell: cell, author: author, text: text, editable: editable),
-                            text: editable ? fields.first : nil)
+                let knownElements = elements(content).count == direct.count + runs.count
+                let plain = knownElements && direct.count == 1 && runs.isEmpty && elements(direct[0]).isEmpty
+                let displayRuns = !runs.isEmpty ? direct.map { runStyle(nil, text: $0.stringValue ?? "") } + runs.map { run in
+                    runStyle(children(run, "rPr").first, text: children(run, "t").first?.stringValue ?? "")
+                } : nil
+                let rich = knownElements && direct.count <= 1 && direct.allSatisfy { $0.uri == sheetURI && elements($0).isEmpty } &&
+                    !runs.isEmpty && content.uri == sheetURI && runs.allSatisfy(validRun)
+                let editable = editAllowed && (plain || rich) && validText(text)
+                let version = rich ? AgentFiles.hash(Data(content.xmlString(options: [.nodePreserveAll]).utf8)) : nil
+                return Note(value: .init(sheet: sheet.name, cell: cell, author: author, text: text, editable: editable,
+                                         runs: displayRuns, formatVersion: version), content: content, runs: direct + runs)
             }
             guard items.count <= limit, Set(items.map { $0.value.cell }).count == items.count else {
                 throw PetError("工作表包含重复备注或备注过多")
@@ -136,7 +162,10 @@ enum AgentSpreadsheetNotes {
             if !sheet.supportsCreation || hasThreadedComments(links) { unavailable.append(sheet.name) }
             guard let entry = try await package.notes(on: sheet, relations: links) else { continue }
             let notes = entry.entries.map(\.value)
-            bytes += notes.reduce(0) { $0 + $1.text.utf8.count + $1.author.utf8.count + $1.sheet.utf8.count }
+            bytes += notes.reduce(0) { size, note in
+                size + note.text.utf8.count + note.author.utf8.count + note.sheet.utf8.count +
+                    (note.runs?.reduce(0) { $0 + $1.text.utf8.count + ($1.font?.utf8.count ?? 0) + 192 } ?? 0)
+            }
             guard result.count + notes.count <= limit, bytes <= 4_000_000 else { throw PetError("工作簿备注超过可显示大小") }
             result.append(contentsOf: notes)
         }
@@ -145,7 +174,7 @@ enum AgentSpreadsheetNotes {
 
     static func apply(_ edits: [AgentSpreadsheetNoteEdit], to archive: URL) async throws {
         guard !edits.isEmpty else { return }
-        guard edits.count <= limit, edits.allSatisfy({ validCell($0.cell) && $0.original.map(validText) != false && validText($0.text) }),
+        guard edits.count <= limit, edits.allSatisfy(validEdit),
               Set(edits.map { $0.sheet + "\0" + $0.cell }).count == edits.count else { throw PetError("备注修改格式无效") }
         let package = try await Package(archive)
         let sheets = try await package.sheets()
@@ -163,10 +192,10 @@ enum AgentSpreadsheetNotes {
             let existing = try await package.notes(on: sheet, relations: links)
             let notes = Dictionary(uniqueKeysWithValues: (existing?.entries ?? []).map { ($0.value.cell, $0) })
             for edit in changes where edit.original != nil {
-                guard let note = notes[edit.cell], let node = note.text, note.value.text == edit.original else {
+                guard let note = notes[edit.cell], note.value.editable, note.value.text == edit.original else {
                     throw PetError("单元格备注已变化，草稿已保留")
                 }
-                writeText(edit.text, to: node)
+                try writeBody(edit, to: note.content, original: note)
             }
             let additions = changes.filter { $0.original == nil }
             if additions.isEmpty, let existing {
@@ -322,8 +351,94 @@ enum AgentSpreadsheetNotes {
         for edit in edits {
             let note = append("comment", to: list)
             set("ref", edit.cell, on: note); set("authorId", String(authorID), on: note)
-            writeText(edit.text, to: append("t", to: append("text", to: note)))
+            try writeBody(edit, to: append("text", to: note))
         }
+    }
+
+    private static func validEdit(_ edit: AgentSpreadsheetNoteEdit) -> Bool {
+        guard validCell(edit.cell), validText(edit.text), edit.original.map(validText) != false else { return false }
+        guard let rich = edit.rich else { return true }
+        return rich.runs.count <= 32_767 && rich.runs.map(\.text).joined() == edit.text &&
+            rich.runs.allSatisfy { !$0.text.isEmpty && validText($0.text) && ($0.source ?? 0) >= 0 }
+    }
+
+    private static func validRun(_ run: XMLElement) -> Bool {
+        let text = children(run, "t"), preferences = children(run, "rPr")
+        return run.uri == sheetURI && text.count == 1 && text[0].uri == sheetURI && elements(text[0]).isEmpty &&
+            preferences.count <= 1 && preferences.allSatisfy { $0.uri == sheetURI } &&
+            elements(run).count == text.count + preferences.count
+    }
+
+    private static func runStyle(_ properties: XMLElement?, text: String) -> AgentSpreadsheetNoteRun {
+        func member(_ key: String) -> XMLElement? { children(properties, key).first }
+        func value(_ key: String) -> String? { member(key).flatMap { attribute($0, "val") } }
+        func enabled(_ key: String) -> Bool { member(key) != nil && !["0", "false", "off", "none"].contains(value(key) ?? "") }
+        let rgb = member("color").flatMap { attribute($0, "rgb") }
+        let color = rgb.flatMap { $0.range(of: "^[0-9a-fA-F]{8}$", options: .regularExpression) != nil ? String($0.suffix(6)) : nil }
+        return .init(text: text, bold: enabled("b"), italic: enabled("i"), underline: enabled("u"),
+                     doubleUnderline: ["double", "doubleAccounting"].contains(value("u") ?? ""), strike: enabled("strike"),
+                     font: value("rFont"), size: value("sz").flatMap(Double.init).flatMap { $0.isFinite && $0 > 0 ? $0 : nil },
+                     rgb: color, vertical: value("vertAlign"))
+    }
+
+    private static func writeBody(_ edit: AgentSpreadsheetNoteEdit, to content: XMLElement, original: Note? = nil) throws {
+        let format = original?.value.formatVersion
+        guard format == edit.rich?.version else { throw PetError("单元格备注格式已变化，草稿已保留") }
+        guard let rich = edit.rich, !rich.runs.isEmpty else {
+            if let existing = children(content, "t").first {
+                writeText(edit.text, to: existing)
+            } else {
+                content.setChildren(nil)
+                writeText(edit.text, to: append("t", to: content))
+            }
+            return
+        }
+        let templates = format == nil ? [] : original?.runs ?? []
+        let rendered = try rich.runs.map { patch -> XMLElement in
+            let run: XMLElement, template: XMLElement?
+            if let index = patch.source {
+                guard templates.indices.contains(index), let clone = templates[index].copy() as? XMLElement else {
+                    throw PetError("无法读回原备注格式，草稿已保留")
+                }
+                template = clone
+            } else {
+                template = nil
+            }
+            if let template, template.localName == "r" {
+                run = template
+            } else {
+                run = XMLElement(name: qualified("r", in: content), uri: content.uri)
+                if let template { run.addChild(template) }
+            }
+            let oldProperties = children(run, "rPr").first
+            let style = runStyle(oldProperties, text: "")
+            let changes = [("b", style.bold, patch.bold), ("i", style.italic, patch.italic), ("u", style.underline, patch.underline)]
+                .filter { $0.1 != $0.2 }
+            if !changes.isEmpty {
+                let properties = oldProperties ?? XMLElement(name: qualified("rPr", in: run), uri: run.uri)
+                if oldProperties == nil { run.insertChild(properties, at: 0) }
+                for (name, _, enabled) in changes {
+                    for child in children(properties, name) { child.detach() }
+                    if enabled { insertRunProperty(name, into: properties) }
+                }
+            }
+            let body = children(run, "t").first ?? append("t", to: run)
+            if body.stringValue != patch.text { writeText(patch.text, to: body) }
+            return run
+        }
+        content.setChildren(rendered)
+    }
+
+    private static func insertRunProperty(_ name: String, into properties: XMLElement) {
+        // Excel expects this order even though the ISO schema uses a choice.
+        let order = ["b", "i", "strike", "condense", "extend", "outline", "shadow", "u", "vertAlign", "sz", "color",
+                     "rFont", "family", "charset", "scheme"]
+        let rank = order.firstIndex(of: name)!
+        let index = properties.children?.firstIndex {
+            guard let child = $0.localName, let childRank = order.firstIndex(of: child) else { return false }
+            return childRank > rank
+        } ?? properties.childCount
+        properties.insertChild(XMLElement(name: qualified(name, in: properties), uri: properties.uri), at: index)
     }
 
     private struct CellPosition: Hashable {
@@ -457,7 +572,10 @@ enum AgentSpreadsheetNotes {
         return path
     }
     private static func children(_ node: XMLElement?, _ name: String) -> [XMLElement] {
-        (node?.children ?? []).compactMap { $0 as? XMLElement }.filter { $0.localName == name }
+        elements(node).filter { $0.localName == name }
+    }
+    private static func elements(_ node: XMLElement?) -> [XMLElement] {
+        (node?.children ?? []).compactMap { $0 as? XMLElement }
     }
     private static func attribute(_ node: XMLElement, _ name: String) -> String? { node.attribute(forName: name)?.stringValue }
     private static func validCell(_ value: String) -> Bool { cellPosition(value) != nil }

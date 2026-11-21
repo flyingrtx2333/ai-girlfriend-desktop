@@ -109,6 +109,7 @@ import WebKit
         if CommandLine.arguments.contains("--workspace-browser-recovery-ui") { await runBrowserRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--spreadsheet-notes-check") {
             if CommandLine.arguments.contains("--spreadsheet-notes-create") { await runSpreadsheetNoteCreationCheck(output) }
+            else if CommandLine.arguments.contains("--spreadsheet-notes-rich") { await runSpreadsheetRichNoteCheck(output) }
             else { await runSpreadsheetNotesCheck(output) }
             NSApp.terminate(nil); return
         }

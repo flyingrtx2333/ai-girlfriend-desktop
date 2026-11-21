@@ -1,3 +1,5 @@
+@import 'prosemirror-view/style/prosemirror.css';
+
 * { box-sizing: border-box; }
 html, body, #office-root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #f2f3f5; }
 body { color: #202528; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; }
@@ -34,7 +36,17 @@ body { display: flex; }
 .spreadsheet-notes-list button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--note-secondary); }
 .spreadsheet-note-author, .spreadsheet-notes-status { margin: 0; color: var(--note-secondary); overflow-wrap: anywhere; }
 .spreadsheet-notes-status:empty { display: none; }
-.spreadsheet-notes textarea { flex: 1; min-height: 48px; width: 100%; padding: 9px; resize: none; border: 1px solid var(--note-stroke); border-radius: 6px; background: var(--note-input); color: inherit; font: inherit; line-height: 1.5; }
+.spreadsheet-note-composer { flex: 1; min-height: 84px; display: flex; flex-direction: column; gap: 6px; }
+.spreadsheet-note-composer > :last-child { flex: 1; min-height: 0; display: flex; }
+.spreadsheet-note-format { display: flex; gap: 4px; }
+.spreadsheet-note-format button { width: 26px; height: 24px; }
+.spreadsheet-note-format button[data-format='bold'] { font-weight: 700; }
+.spreadsheet-note-format button[data-format='italic'] { font-style: italic; }
+.spreadsheet-note-format button[data-format='underline'] { text-decoration: underline; }
+.spreadsheet-note-format button:hover:not(:disabled), .spreadsheet-note-format button[aria-pressed='true'] { background: var(--note-selection); }
+.spreadsheet-note-body { flex: 1; min-width: 0; padding: 9px; overflow: auto; overflow-wrap: anywhere; border: 1px solid var(--note-stroke); border-radius: 6px; background: var(--note-input); color: inherit; line-height: 1.5; }
+.spreadsheet-note-body :where(span[data-note-source]) { color: var(--note-run-color, inherit); }
+.spreadsheet-note-double u { text-decoration-style: double; }
 .spreadsheet-notes :focus-visible { outline: 2px solid #51947b; outline-offset: -1px; }
 @media (prefers-color-scheme: dark) {
   .spreadsheet-notes {
@@ -45,6 +57,7 @@ body { display: flex; }
     --note-text: #e1ebe5;
     --note-secondary: #a1b5aa;
   }
+  .spreadsheet-note-body span[data-note-source] { color: color-mix(in srgb, var(--note-run-color, var(--note-text)), var(--note-text) 55%); }
 }
 /* The SDK scopes its utilities but leaves browser form defaults to the host. */
 .oox-root *, .oox-root ::before, .oox-root ::after { border-width: 0; border-style: solid; }

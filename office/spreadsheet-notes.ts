@@ -1,5 +1,7 @@
+import { createNoteEditor, type NoteRun, type NoteRunEdit } from './spreadsheet-note-editor';
+
 type Cell = { sheet: string; cell: string };
-type Note = Cell & { author: string; text: string; editable: boolean; created?: true };
+type Note = Cell & { author: string; text: string; editable: boolean; runs?: NoteRun[]; formatVersion?: string; created?: true };
 type NoteCatalog = { notes: Note[]; author: string; creationUnavailable: string[] };
 type NoteSelection = Cell & { start: number; end: number; focused: boolean };
 export type SpreadsheetNotesLocation = { selected: NoteSelection | null; listY: number };
@@ -48,25 +50,24 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
   const list = document.createElement('div'); list.className = 'spreadsheet-notes-list'; list.setAttribute('aria-label', '备注列表');
   const status = document.createElement('p'); status.className = 'spreadsheet-notes-status'; status.setAttribute('role', 'status');
   const author = document.createElement('p'); author.className = 'spreadsheet-note-author'; author.hidden = true;
-  const text = document.createElement('textarea');
-  text.setAttribute('aria-label', '备注正文'); text.spellcheck = false; text.maxLength = 32_767; text.hidden = true;
-  panel.append(heading, add, list, author, text, status); root.after(panel);
   let notes: Note[] = [], selected: Note | null = null, locked = true, issue = '';
   let defaultAuthor = '', unavailable = new Set<string>();
   let loaded = false, navigation = 0;
-  const replacements = new Map<Note, string>();
+  const replacements = new Map<Note, NoteRunEdit[]>();
   const buttons = new Map<Note, HTMLButtonElement>();
+  const editor = createNoteEditor(updateDraft, viewed, message => { status.textContent = message; });
+  panel.append(heading, add, list, author, editor.container, status); root.after(panel);
 
   function updateControls() {
     add.disabled = locked || !loaded || !!issue;
-    text.readOnly = locked || selected?.editable !== true;
+    editor.setLocked(locked || selected?.editable !== true);
   }
   function refreshEditor() {
     const value = selected;
     author.hidden = !value?.author; author.textContent = value?.author ?? '';
-    text.hidden = value === null;
+    editor.container.hidden = value === null;
     updateControls();
-    text.value = value ? replacements.get(value) ?? value.text : '';
+    editor.show(value?.text ?? '', value?.runs, value ? replacements.get(value) : undefined);
     status.textContent = issue || (!notes.length ? '暂无单元格备注' : value && !value.editable ? '此备注只读' : '');
     for (const [note, button] of buttons) button.setAttribute('aria-pressed', String(note === value));
   }
@@ -94,7 +95,7 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
       const existing = notes.find(note => note.sheet === target.sheet && note.cell === target.cell);
       if (existing) {
         showNote(existing, true);
-        text.focus();
+        editor.focus();
         return;
       }
       if (unavailable.has(target.sheet)) {
@@ -107,7 +108,7 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
       list.append(row); list.hidden = false;
       showNote(note, true);
       row.scrollIntoView({ block: 'nearest' });
-      text.focus();
+      editor.focus();
     } catch {
       if (navigation === token) status.textContent = '无法读取当前单元格，请重新选择';
     }
@@ -123,18 +124,17 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
 
   close.addEventListener('click', () => { panel.hidden = true; navigation += 1; viewed(); });
   panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); close.click(); } });
-  for (const event of ['select', 'focus', 'blur']) text.addEventListener(event, viewed);
   list.addEventListener('scroll', viewed);
-  text.addEventListener('input', () => {
-    if (!selected || text.readOnly) return;
+  function updateDraft(runs: NoteRunEdit[], modified: boolean) {
+    if (!selected?.editable || locked) return;
     if (selected.created) {
-      if (!replacements.has(selected) && !text.value.trim()) return;
-      // Keep an explicitly cleared note in later exports after it was saved.
-      replacements.set(selected, text.value);
-    } else if (text.value === selected.text) replacements.delete(selected);
-    else replacements.set(selected, text.value);
+      if (!replacements.has(selected) && !runs.some(run => run.text.trim())) return;
+      replacements.set(selected, runs);
+    } else if (modified) replacements.set(selected, runs);
+    else replacements.delete(selected);
+    status.textContent = '';
     edited();
-  });
+  }
 
   return {
     configure(catalog: NoteCatalog, warning: string) {
@@ -156,15 +156,18 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
       return !panel.hidden;
     },
     edits() {
-      return [...replacements].map(([note, text]) => ({ sheet: note.sheet, cell: note.cell, original: note.created ? null : note.text, text }));
+      return [...replacements].map(([note, runs]) => {
+        const rich = note.formatVersion || runs.some(run => run.bold || run.italic || run.underline);
+        return { sheet: note.sheet, cell: note.cell, original: note.created ? null : note.text, text: runs.map(run => run.text).join(''),
+          ...(rich ? { rich: { version: note.formatVersion ?? null, runs } } : {}) };
+      });
     },
     capture(): SpreadsheetNotesLocation | undefined {
       if (panel.hidden || !loaded) return undefined;
-      const retained = selected && (!selected.created || replacements.has(selected));
-      return { listY: list.scrollTop, selected: retained ? {
-        sheet: selected.sheet, cell: selected.cell, start: Math.min(text.selectionStart, 32_767),
-        end: Math.min(text.selectionEnd, 32_767), focused: document.activeElement === text
-      } : null };
+      const note = selected;
+      const retained = note && (!note.created || replacements.has(note))
+        ? { sheet: note.sheet, cell: note.cell, ...editor.selection() } : null;
+      return { listY: list.scrollTop, selected: retained };
     },
     restore(bookmark: SpreadsheetNotesLocation, focus: boolean) {
       if (!loaded) throw new Error('备注列表尚未加载');
@@ -174,8 +177,7 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
         const item = notes.find(note => note.sheet === sheet && note.cell === cell);
         if (item) {
           showNote(item, false);
-          if (focus && focused) text.focus();
-          text.setSelectionRange(start, end);
+          editor.restore(start, end, focus && focused);
         }
       }
       list.scrollTop = bookmark.listY;
