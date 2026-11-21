@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         if CommandLine.arguments.contains("--terminal-recovery-storage-check") { runTerminalRecoveryStorageCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--ssh-terminal-directory-check") { await runSSHTerminalDirectoryCheck(output); NSApp.terminate(nil); return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         if CommandLine.arguments.contains("--settings-editor-recovery-check") { await runSettingsEditorRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-editor-recovery-ui") { await runSettingsEditorRecoveryCheck(output, interactive: true); return }

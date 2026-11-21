@@ -115,6 +115,7 @@ struct AgentTerminalLayout: Codable, Equatable, Sendable {
         var directory: String
         var exitCode: Int32?
         var sshDestination: String? = nil
+        var sshDirectory: String? = nil
     }
     indirect enum Split: Codable, Equatable, Sendable {
         case pane(Pane)
@@ -147,7 +148,7 @@ struct AgentTerminalLayout: Codable, Equatable, Sendable {
     static func validPath(_ path: String) -> Bool { path.hasPrefix("/") && path.utf8.count < 8192 && !path.contains("\0") }
     func validate(windowID expected: String) throws {
         let invalid = PetError("终端恢复格式无效，原记录已保留")
-        guard [1, 2].contains(version), windowID == expected, UUID(uuidString: windowID)?.uuidString == windowID,
+        guard [1, 2, 3].contains(version), windowID == expected, UUID(uuidString: windowID)?.uuidString == windowID,
               (1..<Int.max).contains(nextNumber), tasks.count <= Self.maximumPanes,
               height.map({ $0.isFinite && $0 > 0 && $0 <= 16_384 }) ?? true,
               Set(tasks.map(\.id)).count == tasks.count else { throw invalid }
@@ -157,7 +158,8 @@ struct AgentTerminalLayout: Codable, Equatable, Sendable {
             switch node {
             case .pane(let pane):
                 guard Self.validPath(pane.directory), (1..<nextNumber).contains(pane.number),
-                      pane.sshDestination.map({ version == 2 && TerminalSurface.validSSHDestination($0) }) != false,
+                      pane.sshDestination.map({ version >= 2 && TerminalSurface.validSSHDestination($0) }) != false,
+                      pane.sshDirectory.map({ version == 3 && pane.sshDestination != nil && TerminalSurface.validSSHDirectory($0) }) != false,
                       seenIDs.insert(pane.id).inserted, seenNumbers.insert(pane.number).inserted else { throw invalid }
                 panes.insert(pane.id)
             case .branch(_, let fraction, let first, let second):

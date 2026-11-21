@@ -68,8 +68,14 @@ private final class WorkbenchTerminalView: TerminalView {
         return validName(host, limit: 255)
     }
 
-    public func startSSH(to destination: String, in directory: URL, checkHome: URL? = nil) throws {
-        guard Self.validSSHDestination(destination) else { throw POSIXError(.EINVAL) }
+    nonisolated public static func validSSHDirectory(_ directory: String) -> Bool {
+        directory.utf8.count <= 4096 &&
+            (directory == "~" || directory.hasPrefix("~/") || directory.hasPrefix("/")) &&
+            directory.rangeOfCharacter(from: .controlCharacters.union(.newlines)) == nil
+    }
+
+    public func startSSH(to destination: String, in directory: URL, remoteDirectory: String? = nil, checkHome: URL? = nil) throws {
+        guard Self.validSSHDestination(destination), remoteDirectory.map(Self.validSSHDirectory) != false else { throw POSIXError(.EINVAL) }
         let executable = "/usr/bin/ssh"
         var arguments = [executable, "-tt",
                          "-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no",
@@ -84,6 +90,24 @@ private final class WorkbenchTerminalView: TerminalView {
             arguments += ["-F", config.path]
         }
         arguments += ["--", destination]
+        if let remoteDirectory {
+            // OpenSSH passes the command to the remote login shell. Quote the
+            // path as one argument and change directory before starting a shell.
+            let enter = #"""
+            case "$1" in
+                "~") directory=${HOME:?} ;;
+                "~/"*) directory=${HOME:?}/${1#??} ;;
+                *) directory=$1 ;;
+            esac;
+            if ! CDPATH= cd "$directory"; then
+                printf '无法进入远程目录 %s\n' "$1" >&2;
+                exit 1;
+            fi;
+            exec "${SHELL:-/bin/sh}" -i
+            """#
+            func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            arguments.append("/bin/sh -c " + quote(enter.replacingOccurrences(of: "\n", with: " ")) + " ssh-directory " + quote(remoteDirectory))
+        }
         var environment = environment(shell: "/bin/zsh", checkHome: checkHome)
         environment["SSH_ASKPASS_REQUIRE"] = "never"
         try launch(executable, arguments: arguments, directory: directory, environment: environment)
