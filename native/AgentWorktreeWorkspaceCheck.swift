@@ -84,10 +84,14 @@ import AppKit
                             checks[name + "-" + appearance + "-" + kind + "-sharedControlProportions"] = inputs.count == 2 && inputs[0].count == 4 && inputs[0][3] == 28 && inputs[1].count == 4 && inputs[1][3] == 32 && actions.count == 2 && actions.allSatisfy { $0.count == 4 && $0[3] == 28 }
                         } else {
                             let controls = page["controls"] as? [[String: Any]] ?? []
-                            checks[name + "-" + appearance + "-" + kind + "-sharedControlProportions"] = controls.count >= 4 && controls.allSatisfy { let frame = $0["frame"] as? [CGFloat] ?? []; return frame.count == 4 && frame[3] == 28 } && page["rowHeight"] as? CGFloat == 56
+                            let minControls = page["reviewing"] as? Bool == true ? 3 : 4
+                            checks[name + "-" + appearance + "-" + kind + "-sharedControlProportions"] = controls.count >= minControls && controls.allSatisfy { let frame = $0["frame"] as? [CGFloat] ?? []; return frame.count == 4 && frame[3] == 28 } && page["rowHeight"] as? CGFloat == 56
                         }
                         let state = await control.taskWorkspaceReadback(); report[name + "-" + appearance + "-" + kind] = state
                         checks[name + "-" + appearance + "-" + kind + "-taskAndInputPreserved"] = state["selectedTask"] as? String == fixture.taskID && state["draft"] as? String == "保留工作树任务输入。" && state["conversationVisible"] as? Bool == (kind == "split" && !host.expanded)
+                        if appearance == "dark", kind == "narrow", name == "recycle-review" || name == "restore-review" {
+                            checks[name + "-nativeRender"] = renderWorktreeReview(output.appendingPathComponent(name + "-task-dark-narrow.png"))
+                        }
                     }
                 }
                 control.window?.setContentSize(NSSize(width: 1200, height: 774)); control.window?.contentView?.layoutSubtreeIfNeeded()
@@ -145,10 +149,29 @@ import AppKit
             checks["openAssociatedTaskAndReturnKeepsManagerSelection"] = openedTask == fixture.childID && host.currentController === manager && manager.workspaceReadback()["selectedPath"] as? String == fixture.child.path
             let tree = try AgentWorktreeSnapshot.read(fixture.child), index = try await actualIndex(fixture.child)
             report["childIndexBeforeSHA256"] = AgentFiles.hash(index)
+            control.window?.setContentSize(NSSize(width: 780, height: 540)); control.window?.contentView?.layoutSubtreeIfNeeded()
+            guard let managerView = manager.pageContentView,
+                  let reader = views(managerView).compactMap({ $0 as? NSTextView }).first(where: { $0.accessibilityLabel() == "工作树详情" }) else {
+                throw PetError("工作树详情阅读区不可用")
+            }
+            let range = (reader.string as NSString).range(of: "关联任务")
+            guard range.location != NSNotFound else { throw PetError("工作树详情缺少关联任务") }
+            control.window?.makeFirstResponder(reader)
+            reader.setSelectedRange(range); reader.scrollRangeToVisible(range)
+            let browsing = try AgentTextViewport(reader)
             await manager.checkWorkspace(action: "prepare-recycle"); await inspectLayout("recycle-review")
-            checks["recycleReviewNamesActualTargetAndLocksSelection"] = !(manager.workspaceReadback()["recycleReviewHash"] as? String ?? "").isEmpty && manager.workspaceReadback()["selectionEnabled"] as? Bool == false && (manager.workspaceReadback()["detail"] as? String)?.contains(fixture.child.path) == true
+            let recycle = manager.workspaceReadback(), reviewedText = recycle["detail"] as? String ?? ""
+            checks["recycleReviewNamesActualTargetAndLocksSelection"] = !(recycle["recycleReviewHash"] as? String ?? "").isEmpty && recycle["selectionEnabled"] as? Bool == false && reviewedText.contains(fixture.child.path)
+            checks["recycleReviewNamesAffectedTask"] = tasks.task(fixture.childID).map { reviewedText.contains($0.title) } == true && reviewedText.hasPrefix("备份包括忽略文件和暂存状态")
+            control.window?.setContentSize(NSSize(width: 780, height: 540)); control.window?.contentView?.layoutSubtreeIfNeeded()
             await manager.checkWorkspace(action: "cancel")
             checks["cancelRecycleReviewKeepsCheckoutAndTask"] = FileManager.default.fileExists(atPath: fixture.child.path) && tasks.task(fixture.childID)?.archived == false && manager.workspaceReadback()["selectionEnabled"] as? Bool == true
+            let returned = try AgentTextViewport(reader)
+            report["readingRestored"] = ["beforeY": browsing.y, "afterY": returned.y, "beforeFocused": browsing.focused,
+                "afterFocused": returned.focused, "sameContent": returned.hash == browsing.hash, "sameSelection": returned.selections == browsing.selections]
+            checks["cancelReviewRestoresSelectedTextScrollAndFocus"] = browsing.focused && browsing.y > 0 && returned.focused &&
+                returned.hash == browsing.hash && returned.selections == browsing.selections && abs(returned.y - browsing.y) < 2 &&
+                manager.workspaceReadback()["selectedPath"] as? String == fixture.child.path
             await manager.checkWorkspace(action: "recycle")
             checks["managerRecyclesActualCheckoutAndArchivesOnlyItsTask"] = !FileManager.default.fileExists(atPath: fixture.child.path) && tasks.task(fixture.childID)?.archived == true && tasks.task(fixture.taskID)?.archived == false && FileManager.default.fileExists(atPath: fixture.foreign.path)
             await manager.checkWorkspace(scope: 1)
@@ -156,6 +179,12 @@ import AppKit
             checks["actualBackupCanBeRestoredFromSamePage"] = manager.workspaceReadback()["restoreEnabled"] as? Bool == true
             await inspectLayout("backups"); await manager.checkWorkspace(action: "prepare-restore"); await inspectLayout("restore-review")
             checks["restoreReviewUsesSelectedActualBackup"] = manager.workspaceReadback()["restoreReviewID"] as? String == backupID && manager.workspaceReadback()["selectionEnabled"] as? Bool == false
+            let restoredDetail = reader.string as NSString
+            let taskName = tasks.task(fixture.childID)?.title ?? ""
+            let taskNameRange = restoredDetail.range(of: taskName)
+            let receiptRange = restoredDetail.range(of: "备份记录")
+            checks["restoreReviewPrioritizesAffectedTaskOverReceipt"] = !taskName.isEmpty && taskNameRange.location != NSNotFound &&
+                receiptRange.location != NSNotFound && taskNameRange.location < receiptRange.location
             await manager.checkWorkspace(action: "restore"); await manager.checkWorkspace(scope: 0)
             let restoredIndex = try await actualIndex(fixture.child)
             checks["managerRestoresExactFilesIndexAndTask"] = try FileManager.default.fileExists(atPath: fixture.child.path) && AgentWorktreeSnapshot.read(fixture.child).hash == tree.hash && restoredIndex == index && tasks.task(fixture.childID)?.archived == false
@@ -332,7 +361,10 @@ import AppKit
         let reviewed = manager.workspaceReadback()
         guard let reviewHash = reviewed["recycleReviewHash"] as? String, !reviewHash.isEmpty else { throw PetError("外部工作树未进入审阅：" + (reviewed["state"] as? String ?? "")) }
         let review = try restoreHelper.storedWorktreeReview(hash: reviewHash)
-        checks["externalReviewNamesActualTargetAndBackupSize"] = review.external != nil && review.path == path.path && review.branch == branch && review.files == original.count && review.bytes == original.bytes && (reviewed["detail"] as? String)?.contains("回收外部工作树") == true
+        let detail = reviewed["detail"] as? String ?? ""
+        checks["externalReviewNamesActualTargetAndBackupSize"] = review.external != nil && review.path == path.path && review.branch == branch &&
+            review.files == original.count && review.bytes == original.bytes && reviewed["heading"] as? String == "回收外部工作树" &&
+            detail.contains(path.path) && detail.contains("备份\n\(original.count) 项")
         do { _ = try ordinary.storedWorktreeReview(hash: reviewHash); checks["ordinaryHelperCannotUseManualReview"] = false }
         catch { checks["ordinaryHelperCannotUseManualReview"] = true }
         await manager.checkWorkspace(action: "cancel")
@@ -391,18 +423,32 @@ import AppKit
         guard let manager = control.checkWorktreeSettingsPage(open: false) as? AgentWorktreeWindow else { throw PetError("全局管理未进入同一设置页") }
         await manager.checkWorkspace(path: fixture.child.path)
         func inspect(_ label: String) async {
+            let review = label == "global-review"
+            let sizes = review ? [("normal", NSSize(width: 1320, height: 800)), ("narrow", NSSize(width: 780, height: 540))] :
+                [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))]
             for (appearance, theme) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
                 window.appearance = NSAppearance(named: theme)
-                for (kind, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
+                for (kind, size) in sizes {
                     window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); await wait(0.05)
                     let state = await control.taskWorkspaceReadback(); report[label + "-" + appearance + "-" + kind] = state
-                    let page = state[label == "global-manager" ? "settingsWorktreeManager" : "settingsWorktrees"] as? [String: Any] ?? [:]
+                    let page = state[label == "global-policy" ? "settingsWorktrees" : "settingsWorktreeManager"] as? [String: Any] ?? [:]
                     for (key, value) in page["checks"] as? [String: Bool] ?? [:] { checks[label + "-" + appearance + "-" + kind + "-" + key] = value }
                     checks[label + "-" + appearance + "-" + kind + "-sameSettingsWindow"] = state["mainPage"] as? String == "settings" && settings.presentingWindow === window && settings.window?.isVisible == false
+                    if review, (appearance == "dark" && kind == "narrow") || (appearance == "light" && kind == "normal") {
+                        let output = fixture.workspace.deletingLastPathComponent()
+                        let name = "recycle-review-settings-" + appearance + "-" + kind
+                        checks[name + "-nativeRender"] = renderWorktreeReview(output.appendingPathComponent(name + ".png"))
+                    }
                 }
             }
         }
         await inspect("global-manager")
+        await manager.checkWorkspace(action: "prepare-recycle"); await inspect("global-review")
+        checks["settingsReviewKeepsPolicyDraftAndActualCheckout"] = manager.workspaceReadback()["reviewing"] as? Bool == true &&
+            manager.workspaceReadback()["heading"] as? String == "回收工作树" && policy.hasPendingChanges && FileManager.default.fileExists(atPath: fixture.child.path)
+        await manager.checkWorkspace(action: "cancel")
+        checks["settingsCancelReturnsToSameManagerAndSelection"] = control.checkWorktreeSettingsPage(open: false) === manager &&
+            manager.workspaceReadback()["reviewing"] as? Bool == false && manager.workspaceReadback()["selectedPath"] as? String == fixture.child.path
         // Closing a hosted child uses the same callback as the Settings back button.
         manager.close()
         checks["globalManagerBackRetainsExactPolicyDraftAndProject"] = control.checkWorktreeSettingsPage(open: false) === settings && policy.hasPendingChanges && policy.workspaceReadback()["idleSeconds"] as? Double == 7 * 86400 && policy.workspaceReadback()["selectedProject"] as? String == fixture.workspace.path && tasks.worktreeRetention.policy == original
@@ -463,5 +509,13 @@ import AppKit
         report["actualHistoryReceipt"] = ["id": receipt.id, "workspace": historyChild.workspace, "backupID": backupID, "restoredExactIndexSHA256": AgentFiles.hash(historyRestoredIndex), "automaticPolicyFinallyDisabled": !service.policy.enabled]
         window.appearance = nil; window.setContentSize(NSSize(width: 1200, height: 774))
         return (checks, report)
+    }
+
+    private func renderWorktreeReview(_ output: URL) -> Bool {
+        guard let view = control.window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return false }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { return false }
+        do { try data.write(to: output, options: .atomic); return true }
+        catch { return false }
     }
 }
