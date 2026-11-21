@@ -6,6 +6,7 @@ import { sheetLocale, slidesLocale } from './locales';
 import { createOfficeView, validateOfficeView, type OfficeView } from './view-state';
 import { createDocxReview } from './docx-review';
 import { createSpreadsheetNotes, spreadsheetCell } from './spreadsheet-notes';
+import { createSpreadsheetThreads } from './spreadsheet-threads';
 import './style.css';
 
 configureDefaultFonts({ fonts });
@@ -18,16 +19,29 @@ let readOnly = true, operationBusy = 0, lockGeneration = 0, fatal: Error | null 
 const pendingOperations = new Set<(error: Error) => void>();
 let pendingReady: { resolve: () => void; reject: (error: Error) => void } | null = null;
 let workspaceView: ReturnType<typeof createOfficeView> | null = null;
-const sheetNotes = createSpreadsheetNotes(rootElement, async ({ sheet, cell }) => {
+let annotationNavigation: Promise<void> = Promise.resolve();
+let annotationRequest = 0;
+async function locateSheetAnnotation({ sheet, cell }: { sheet: string; cell: string }) {
   if (!ready || currentFormat !== 'xlsx' || !workspaceView) throw new Error('工作簿尚未就绪');
-  await perform(() => workspaceView!.locateSpreadsheetNote(sheet, cell));
-}, async () => {
+  const view = workspaceView, request = ++annotationRequest;
+  const selected = annotationNavigation.then(async () => {
+    if (view !== workspaceView || request !== annotationRequest) return;
+    await perform(() => view.locateSpreadsheetNote(sheet, cell));
+  });
+  annotationNavigation = selected.catch(() => {});
+  return selected;
+}
+function spreadsheetViewChanged() { if (ready && currentFormat === 'xlsx') notify('view-change'); }
+const sheetNotes = createSpreadsheetNotes(rootElement, locateSheetAnnotation, async () => {
   if (!ready || currentFormat !== 'xlsx' || !workspaceView) return null;
   return await perform(() => workspaceView!.activeSpreadsheetNoteCell());
-}, changed, () => { if (ready && currentFormat === 'xlsx') notify('view-change'); });
+}, changed, spreadsheetViewChanged);
+const sheetThreads = createSpreadsheetThreads(rootElement, locateSheetAnnotation, changed, spreadsheetViewChanged,
+  hasReviewDraft => { if (ready && currentFormat === 'xlsx') notify('review-draft', { hasReviewDraft }); });
 function updateInteraction() {
   rootElement.inert = !ready || readOnly || operationBusy > 0;
   sheetNotes.setLocked(rootElement.inert);
+  sheetThreads.setLocked(rootElement.inert);
 }
 async function perform<T>(operation: () => Promise<T>): Promise<T> {
   if (fatal) throw fatal;
@@ -141,7 +155,8 @@ async function load(url: string, name: string, locked: boolean) {
   const token = ++generation, format = name.split('.').pop()?.toLowerCase() ?? '';
   if (!['docx', 'xlsx', 'pptx'].includes(format)) throw new Error('不支持此办公文件格式');
   pendingReady?.reject(new Error('文档已切换')); pendingReady = null; rejectOperations(new Error('文档已切换'));
-  workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset();
+  workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); sheetThreads.reset();
+  annotationNavigation = Promise.resolve();
   ready = false; dirty = false; readOnly = locked; operationBusy = 0; lockGeneration += 1; fatal = null; editor = null; exported = null; currentFormat = format; updateInteraction(); root.render(null);
   const response = await fetch(url, { cache: 'no-store' });
   if (!response.ok) throw new Error('文档读取失败');
@@ -193,7 +208,7 @@ async function beginExport() {
     const captured = await captureView();
     if (captured.revision !== exportedRevision) throw new Error('导出期间办公内容已变化，请重试');
     return { bytes: exported.length, revision: exportedRevision, view: captured.view,
-      ...(currentFormat === 'xlsx' ? { noteEdits: sheetNotes.edits() } : {}) };
+      ...(currentFormat === 'xlsx' ? { noteEdits: sheetNotes.edits(), threadEdits: sheetThreads.edits() } : {}) };
   } finally { operationBusy = Math.max(0, operationBusy - 1); updateInteraction(); }
 }
 function exportChunk(offset: number, length: number) {
@@ -233,19 +248,26 @@ async function verifyClean() {
   else await perform(() => editor.version());
   return editorState();
 }
-function editorState() { return { ready, dirty, format: currentFormat, revision, readOnly, hasReviewDraft: workspaceView?.hasReviewDraft() === true }; }
+function editorState() { return { ready, dirty, format: currentFormat, revision, readOnly,
+  hasReviewDraft: currentFormat === 'xlsx' ? sheetThreads.hasDraft() : workspaceView?.hasReviewDraft() === true }; }
 async function captureView() {
-  if (!ready || !workspaceView) throw new Error('办公文件尚未打开');
-  const before = revision, view = await perform(() => workspaceView!.capture());
+  const controller = workspaceView;
+  if (!ready || !controller) throw new Error('办公文件尚未打开');
+  if (currentFormat === 'xlsx') await annotationNavigation;
+  if (!ready || controller !== workspaceView) throw new Error('文档已切换');
+  const before = revision, view = await perform(() => controller.capture());
   if (revision !== before) throw new Error('读取位置期间办公内容已变化，请重试');
   const notes = currentFormat === 'xlsx' ? sheetNotes.capture() : undefined;
   if (notes) view.notes = notes;
+  const threads = currentFormat === 'xlsx' ? sheetThreads.capture() : undefined;
+  if (threads) view.threads = threads;
   return { revision, view };
 }
 async function restoreView(view: OfficeView, focus = false) {
   if (!ready || !workspaceView) throw new Error('办公文件尚未打开');
   validateOfficeView(view, currentFormat);
   if (view.notes && currentFormat === 'xlsx') sheetNotes.restore(view.notes, false);
+  if (view.threads && currentFormat === 'xlsx') sheetThreads.restore(view.threads, false);
   operationBusy += 1; updateInteraction();
   try { await perform(() => workspaceView!.restore(view)); }
   finally { operationBusy = Math.max(0, operationBusy - 1); updateInteraction(); }
@@ -255,8 +277,9 @@ async function restoreView(view: OfficeView, focus = false) {
     if (view.review?.some(draft => draft.focused)) await docxReview.show(editor);
   }
   if (view.notes && focus) sheetNotes.restore(view.notes, true);
-  const note = view.notes?.selected, grid = view.selection;
-  if (note?.focused && grid?.sheetName === note.sheet) {
+  if (view.threads && focus) sheetThreads.restore(view.threads, true);
+  const note = view.notes?.selected?.focused ? view.notes.selected : sheetThreads.selectedCell(), grid = view.selection;
+  if (note && grid?.sheetName === note.sheet) {
     const cell = spreadsheetCell(note.cell);
     if (grid.cells?.anchor.row === cell.row && grid.cells.anchor.col === cell.col) {
       await perform(() => workspaceView!.locateSpreadsheetNote(note.sheet, note.cell, true));
@@ -315,7 +338,8 @@ async function inspectContent(request: any = {}) {
 }
 async function inspect(request: any = {}) { return await perform(() => inspectContent(request)); }
 (window as any).BlueFatFishOffice = { load, beginExport, exportChunk, finishExport, read, inspect, edit, verifyClean, captureView, restoreView, selectionInfo, focusEditor, setInteractionLocked, navigateDocxReview, docxReviewGeometry: docxReview.geometry,
-  setSpreadsheetNotes: sheetNotes.configure, toggleSpreadsheetNotes: sheetNotes.toggle,
+  setSpreadsheetNotes: sheetNotes.configure, toggleSpreadsheetNotes: () => { sheetThreads.hide(); return sheetNotes.toggle(); },
+  setSpreadsheetThreads: sheetThreads.configure, toggleSpreadsheetThreads: () => { sheetNotes.hide(); return sheetThreads.toggle(); },
   spreadsheetNoteVisible: (sheet: string, cell: string) => perform(() => workspaceView!.isSpreadsheetNoteVisible(sheet, cell)), state: editorState,
-  close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
+  close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); sheetThreads.reset(); ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
 notify('shell-ready');

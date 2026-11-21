@@ -5,7 +5,7 @@ html, body, #office-root { width: 100%; height: 100%; margin: 0; overflow: hidde
 body { color: #202528; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; }
 body { display: flex; }
 #office-root { flex: 1; min-width: 0; }
-.spreadsheet-notes {
+.spreadsheet-annotation {
   --note-surface: #f8faf9;
   --note-input: #fff;
   --note-stroke: #d9dfdb;
@@ -23,13 +23,13 @@ body { display: flex; }
   border-left: 1px solid var(--note-stroke);
   font-size: 13px;
 }
-.spreadsheet-notes [hidden], .spreadsheet-notes[hidden] { display: none; }
-.spreadsheet-notes header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.spreadsheet-notes h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.spreadsheet-notes button { font: inherit; color: inherit; cursor: pointer; background: var(--note-input); border: 1px solid var(--note-stroke); border-radius: 6px; }
-.spreadsheet-notes header button { padding: 3px 8px; }
+.spreadsheet-annotation [hidden], .spreadsheet-annotation[hidden] { display: none; }
+.spreadsheet-annotation header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.spreadsheet-annotation h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.spreadsheet-annotation button { font: inherit; color: inherit; cursor: pointer; background: var(--note-input); border: 1px solid var(--note-stroke); border-radius: 6px; }
+.spreadsheet-annotation header button { padding: 3px 8px; }
 .spreadsheet-notes .spreadsheet-note-add { align-self: flex-start; padding: 5px 10px; }
-.spreadsheet-notes button:disabled { color: var(--note-secondary); opacity: .65; cursor: default; }
+.spreadsheet-annotation button:disabled { color: var(--note-secondary); opacity: .65; cursor: default; }
 .spreadsheet-notes-list { display: grid; gap: 4px; max-height: 40%; overflow: auto; padding: 2px; }
 .spreadsheet-notes-list button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 9px; }
 .spreadsheet-notes-list button:hover, .spreadsheet-notes-list button[aria-pressed='true'] { background: var(--note-selection); }
@@ -47,9 +47,26 @@ body { display: flex; }
 .spreadsheet-note-body { flex: 1; min-width: 0; padding: 9px; overflow: auto; overflow-wrap: anywhere; border: 1px solid var(--note-stroke); border-radius: 6px; background: var(--note-input); color: inherit; line-height: 1.5; }
 .spreadsheet-note-body :where(span[data-note-source]) { color: var(--note-run-color, inherit); }
 .spreadsheet-note-double u { text-decoration-style: double; }
-.spreadsheet-notes :focus-visible { outline: 2px solid #51947b; outline-offset: -1px; }
+.spreadsheet-annotation :focus-visible { outline: 2px solid #51947b; outline-offset: -1px; }
+.spreadsheet-thread-list { max-height: 33%; }
+.spreadsheet-thread-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.spreadsheet-thread-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.spreadsheet-thread-header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spreadsheet-thread-header button, .spreadsheet-thread-reply { padding: 4px 8px; white-space: nowrap; }
+.spreadsheet-thread-messages { min-height: 0; flex: 1; overflow: auto; border-block: 1px solid var(--note-stroke); }
+.spreadsheet-thread-message { padding: 9px 1px; overflow-wrap: anywhere; }
+.spreadsheet-thread-message[data-parent] { margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--note-stroke); }
+.spreadsheet-thread-message + .spreadsheet-thread-message { border-top: 1px solid var(--note-stroke); }
+.spreadsheet-thread-message > div { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; }
+.spreadsheet-thread-message time { font-size: 11px; color: var(--note-secondary); }
+.spreadsheet-thread-message p { margin: 5px 0 0; line-height: 1.5; white-space: pre-wrap; }
+.spreadsheet-thread-composer { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.spreadsheet-thread-composer textarea { width: 100%; min-height: 45px; padding: 6px 8px; resize: none; border: 1px solid var(--note-stroke);
+  border-radius: 6px; background: var(--note-input); color: inherit; font: inherit; }
+.spreadsheet-thread-composer textarea::placeholder { color: var(--note-secondary); }
+.spreadsheet-thread-reply:not(:disabled) { background: var(--note-selection); }
 @media (prefers-color-scheme: dark) {
-  .spreadsheet-notes {
+  .spreadsheet-annotation {
     --note-surface: #202824;
     --note-input: #19201d;
     --note-stroke: #3a4840;

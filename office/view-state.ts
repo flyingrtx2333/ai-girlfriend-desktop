@@ -1,11 +1,13 @@
 import { createDocxReviewDrafts, type DocxReviewDraft } from './docx-review-drafts';
 import { spreadsheetAddress, spreadsheetCell, validSpreadsheetNotesLocation, type SpreadsheetNotesLocation } from './spreadsheet-notes';
+import { validSpreadsheetThreadsLocation, type SpreadsheetThreadsLocation } from './spreadsheet-threads';
 
 // View coordinates belong to the exact document bytes stored by the native
 // journal. Session IDs are resolved again after opening those bytes.
 type Point = { part: string; ordinal: number; paragraphID: string | null; storyKind: string | null; itemID: string | null; offset: number; sourceHash?: string | null };
 export type WordRange = { anchor: Point; focus: Point };
-export type OfficeView = { version: 1; format: string; zoom: number | 'fit'; selection: any; scroll: { path: number[]; x: number; y: number }[]; review?: DocxReviewDraft[]; notes?: SpreadsheetNotesLocation };
+export type OfficeView = { version: 1; format: string; zoom: number | 'fit'; selection: any; scroll: { path: number[]; x: number; y: number }[];
+  review?: DocxReviewDraft[]; notes?: SpreadsheetNotesLocation; threads?: SpreadsheetThreadsLocation };
 const issue = () => new Error('办公位置记录无效，原草稿已保留');
 const integer = (value: any, maximum = 100_000_000) => Number.isSafeInteger(value) && value >= 0 && value <= maximum;
 const text = (value: any, maximum = 2048) => typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\0');
@@ -13,8 +15,12 @@ function keys(value: any, names: string[]) { return value && typeof value === 'o
 function path(value: any) { return Array.isArray(value) && value.length > 0 && value.length <= 40 && value.every((n: any) => integer(n, 1_000_000)); }
 export function validateOfficeView(value: any, format: string): asserts value is OfficeView {
   const fields = ['version', 'format', 'zoom', 'selection', 'scroll'];
+  const spreadsheetFields = [...fields];
+  if (format === 'xlsx' && value?.notes) spreadsheetFields.push('notes');
+  if (format === 'xlsx' && value?.threads) spreadsheetFields.push('threads');
   if (!(keys(value, fields) || format === 'docx' && keys(value, [...fields, 'review']) ||
-      format === 'xlsx' && keys(value, [...fields, 'notes']) && validSpreadsheetNotesLocation(value.notes)) ||
+      format === 'xlsx' && keys(value, spreadsheetFields) && (!value.notes || validSpreadsheetNotesLocation(value.notes)) &&
+        (!value.threads || validSpreadsheetThreadsLocation(value.threads)) && !(value.notes && value.threads?.open)) ||
       value.version !== 1 || value.format !== format || !['docx', 'xlsx', 'pptx'].includes(format) ||
       !(typeof value.zoom === 'number' && Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 5 || format === 'pptx' && value.zoom === 'fit') ||
       !Array.isArray(value.scroll) || value.scroll.length > 32 || value.scroll.some((s: any) => !keys(s, ['path', 'x', 'y']) || !path(s.path) || ![s.x, s.y].every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1e9)) ||

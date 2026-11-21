@@ -40,7 +40,7 @@ export function validSpreadsheetNotesLocation(value: any): value is SpreadsheetN
 export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) => Promise<void>,
   activeCell: () => Promise<Cell | null>, edited: () => void, viewed: () => void) {
   const panel = document.createElement('aside');
-  panel.className = 'spreadsheet-notes'; panel.hidden = true; panel.setAttribute('aria-label', '单元格备注');
+  panel.className = 'spreadsheet-annotation spreadsheet-notes'; panel.hidden = true; panel.setAttribute('aria-label', '单元格备注');
   const heading = document.createElement('header');
   const title = document.createElement('h2'); title.textContent = '单元格备注';
   const close = document.createElement('button'); close.type = 'button'; close.textContent = '关闭';
@@ -117,12 +117,18 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
   function showNote(note: Note, seek: boolean) {
     const token = ++navigation;
     selected = note; refreshEditor(); viewed();
-    if (seek) void locate(note).catch(() => {
+    if (seek) void locate(note).then(() => {
+      if (token === navigation) viewed();
+    }, () => {
       if (token === navigation) status.textContent = '无法定位原单元格，请核对工作表';
     });
   }
 
-  close.addEventListener('click', () => { panel.hidden = true; navigation += 1; viewed(); });
+  function hide() {
+    if (panel.hidden) return;
+    panel.hidden = true; navigation += 1; viewed();
+  }
+  close.addEventListener('click', hide);
   panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); close.click(); } });
   list.addEventListener('scroll', viewed);
   function updateDraft(runs: NoteRunEdit[], modified: boolean) {
@@ -148,12 +154,14 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
     },
     get loaded() { return loaded; },
     visible() { return !panel.hidden; },
+    hide,
     setLocked(value: boolean) { locked = value; updateControls(); },
     toggle() {
-      panel.hidden = !panel.hidden;
-      if (!panel.hidden) (selected ? buttons.get(selected) : buttons.values().next().value ?? close)?.focus();
+      if (!panel.hidden) { hide(); return false; }
+      panel.hidden = false;
+      (selected ? buttons.get(selected) : buttons.values().next().value ?? close)?.focus();
       viewed();
-      return !panel.hidden;
+      return true;
     },
     edits() {
       return [...replacements].map(([note, runs]) => {

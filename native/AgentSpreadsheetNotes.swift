@@ -32,7 +32,7 @@ struct AgentSpreadsheetNoteCatalog: Encodable, Sendable {
 }
 
 enum AgentSpreadsheetNotes {
-    private static let limit = 5_000
+    static let limit = 5_000
     private static let xmlLimit = 2_000_000
     private static let sheetURI = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
     private static let relationshipURI = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -42,19 +42,19 @@ enum AgentSpreadsheetNotes {
     private static let vmlURI = "urn:schemas-microsoft-com:vml"
     private static let vmlOfficeURI = "urn:schemas-microsoft-com:office:office"
     private static let vmlExcelURI = "urn:schemas-microsoft-com:office:excel"
-    private static let noteAuthor = "小鲸"
-    private struct Relation {
+    static let noteAuthor = "小鲸"
+    struct Relation {
         let id: String, kind: String, target: String
     }
-    private struct Sheet {
+    struct Sheet {
         let name: String, part: String, visible: Bool, supportsCreation: Bool
     }
-    private struct Note {
+    fileprivate struct Note {
         let value: AgentSpreadsheetNote
         let content: XMLElement
         let runs: [XMLElement]
     }
-    private struct Package {
+    struct Package {
         let archive: URL, scratch: URL, entries: Set<String>
 
         init(_ archive: URL) async throws {
@@ -95,10 +95,14 @@ enum AgentSpreadsheetNotes {
             return relations
         }
 
-        func sheets() async throws -> [Sheet] {
+        func workbookPart() async throws -> String {
             let root = try await relationships("").filter { $0.kind == "officeDocument" }
             guard root.count == 1, let workbook = root.first else { throw PetError("工作簿来源无法识别") }
-            let path = try part(workbook.target, from: "")
+            return try part(workbook.target, from: "")
+        }
+
+        func sheets() async throws -> [Sheet] {
+            let path = try await workbookPart()
             let manifest = try await xml(path)
             let links = try await relationships(path)
             let target = Dictionary(uniqueKeysWithValues: links.filter { $0.kind == "worksheet" }.map { ($0.id, $0.target) })
@@ -110,22 +114,29 @@ enum AgentSpreadsheetNotes {
             }
         }
 
-        func notes(on sheet: Sheet, relations: [Relation]) async throws -> (part: String, document: XMLDocument, entries: [Note])? {
+        func legacyComments(on sheet: Sheet, relations: [Relation]) async throws -> (part: String, document: XMLDocument)? {
             let notes = relations.filter { $0.kind == "comments" }
             guard !notes.isEmpty else { return nil }
             guard notes.count == 1, let relation = notes.first else { throw PetError("同一工作表包含多份备注文件") }
             let path = try part(relation.target, from: sheet.part)
             let document = try await xml(path)
-            let root = document.rootElement()
-            guard root?.localName == "comments" else { throw PetError("单元格备注格式无法识别") }
+            guard document.rootElement()?.localName == "comments" else { throw PetError("单元格备注格式无法识别") }
+            return (path, document)
+        }
+
+        fileprivate func notes(on sheet: Sheet, relations: [Relation]) async throws -> (part: String, document: XMLDocument, entries: [Note])? {
+            guard let legacy = try await legacyComments(on: sheet, relations: relations) else { return nil }
+            let root = legacy.document.rootElement()
             let authorList = children(children(root, "authors").first, "author").map { $0.stringValue ?? "" }
-            let editAllowed = !hasThreadedComments(relations)
-            let items = try children(children(root, "commentList").first, "comment").map { item -> Note in
+            let threaded = hasThreadedComments(relations)
+            let items = try children(children(root, "commentList").first, "comment").compactMap { item -> Note? in
+                let authorID = attribute(item, "authorId").flatMap(Int.init)
+                let author = authorID.flatMap { authorList.indices.contains($0) ? authorList[$0] : nil } ?? ""
+                let placeholder = threadPlaceholderID(author) != nil
+                if threaded && placeholder { return nil }
                 guard let cell = attribute(item, "ref"), validCell(cell), let content = children(item, "text").first else {
                     throw PetError("单元格备注的位置或正文无法识别")
                 }
-                let authorID = attribute(item, "authorId").flatMap(Int.init)
-                let author = authorID.flatMap { authorList.indices.contains($0) ? authorList[$0] : nil } ?? ""
                 let direct = children(content, "t"), runs = children(content, "r")
                 let fields = direct + runs.flatMap { children($0, "t") }
                 let text = fields.map { $0.stringValue ?? "" }.joined()
@@ -136,7 +147,7 @@ enum AgentSpreadsheetNotes {
                 } : nil
                 let rich = knownElements && direct.count <= 1 && direct.allSatisfy { $0.uri == sheetURI && elements($0).isEmpty } &&
                     !runs.isEmpty && content.uri == sheetURI && runs.allSatisfy(validRun)
-                let editable = editAllowed && (plain || rich) && validText(text)
+                let editable = !placeholder && (plain || rich) && validText(text)
                 let version = rich ? AgentFiles.hash(Data(content.xmlString(options: [.nodePreserveAll]).utf8)) : nil
                 return Note(value: .init(sheet: sheet.name, cell: cell, author: author, text: text, editable: editable,
                                          runs: displayRuns, formatVersion: version), content: content, runs: direct + runs)
@@ -144,7 +155,7 @@ enum AgentSpreadsheetNotes {
             guard items.count <= limit, Set(items.map { $0.value.cell }).count == items.count else {
                 throw PetError("工作表包含重复备注或备注过多")
             }
-            return (path, document, items)
+            return (legacy.part, legacy.document, items)
         }
     }
 
@@ -226,7 +237,7 @@ enum AgentSpreadsheetNotes {
         try await write(documents, to: package)
     }
 
-    private static func write(_ documents: [String: XMLDocument], to package: Package) async throws {
+    static func write(_ documents: [String: XMLDocument], to package: Package) async throws {
         let folder = package.scratch.appendingPathComponent("spreadsheet-notes-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -311,7 +322,7 @@ enum AgentSpreadsheetNotes {
         if changedLinks { documents[relationshipPart] = relationships }
     }
 
-    private static func requireUnshared(_ target: String, kind: String, on sheet: Sheet, sheets: [Sheet], package: Package) async throws {
+    static func requireUnshared(_ target: String, kind: String, on sheet: Sheet, sheets: [Sheet], package: Package) async throws {
         for other in sheets where other.part != sheet.part {
             let links = try await package.relationships(other.part)
             for link in links where link.kind == kind {
@@ -524,19 +535,16 @@ enum AgentSpreadsheetNotes {
             """)
     }
 
-    private static func hasThreadedComments(_ relations: [Relation]) -> Bool {
-        relations.contains { $0.kind == "threadedComment" || $0.kind == "threadedComments" }
-    }
     private static func qualified(_ name: String, in element: XMLElement) -> String {
         if let prefix = element.prefix, !prefix.isEmpty { return prefix + ":" + name }
         return name
     }
-    private static func append(_ name: String, to parent: XMLElement) -> XMLElement {
+    static func append(_ name: String, to parent: XMLElement) -> XMLElement {
         let child = XMLElement(name: qualified(name, in: parent), uri: parent.uri)
         parent.addChild(child)
         return child
     }
-    private static func set(_ name: String, _ value: String, on node: XMLElement) {
+    static func set(_ name: String, _ value: String, on node: XMLElement) {
         if let attribute = node.attribute(forName: name) { attribute.stringValue = value }
         else if let attribute = XMLNode.attribute(withName: name, stringValue: value) as? XMLNode { node.addAttribute(attribute) }
     }
@@ -555,7 +563,7 @@ enum AgentSpreadsheetNotes {
         }
         return data
     }
-    private static func part(_ target: String, from source: String) throws -> String {
+    static func part(_ target: String, from source: String) throws -> String {
         var segments = target.hasPrefix("/") ? [] : Array(source.split(separator: "/").dropLast()).map(String.init)
         for name in target.split(separator: "/").map(String.init) {
             if name == "." { continue }
@@ -571,14 +579,14 @@ enum AgentSpreadsheetNotes {
         guard !path.isEmpty, path.count <= 1024 else { throw PetError("工作簿的备注路径无效") }
         return path
     }
-    private static func children(_ node: XMLElement?, _ name: String) -> [XMLElement] {
+    static func children(_ node: XMLElement?, _ name: String) -> [XMLElement] {
         elements(node).filter { $0.localName == name }
     }
     private static func elements(_ node: XMLElement?) -> [XMLElement] {
         (node?.children ?? []).compactMap { $0 as? XMLElement }
     }
-    private static func attribute(_ node: XMLElement, _ name: String) -> String? { node.attribute(forName: name)?.stringValue }
-    private static func validCell(_ value: String) -> Bool { cellPosition(value) != nil }
+    static func attribute(_ node: XMLElement, _ name: String) -> String? { node.attribute(forName: name)?.stringValue }
+    static func validCell(_ value: String) -> Bool { cellPosition(value) != nil }
     private static func cellPosition(_ value: String) -> CellPosition? {
         guard value.range(of: "^[A-Z]{1,3}[1-9][0-9]{0,6}$", options: .regularExpression) != nil,
               let firstNumber = value.firstIndex(where: \.isNumber), let row = Int(value[firstNumber...]), row <= 1_048_576 else { return nil }
@@ -586,7 +594,7 @@ enum AgentSpreadsheetNotes {
         guard column <= 16_384 else { return nil }
         return CellPosition(row: row - 1, column: column - 1)
     }
-    private static func validText(_ text: String) -> Bool {
+    static func validText(_ text: String) -> Bool {
         text.utf16.count <= 32_767 && text.unicodeScalars.allSatisfy { scalar in
             let n = scalar.value
             return n == 9 || n == 10 || n == 13 || (32...0xD7FF).contains(n) || (0xE000...0xFFFD).contains(n) || n >= 0x10000
