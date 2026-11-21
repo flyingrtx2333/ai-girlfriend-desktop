@@ -1,6 +1,95 @@
-import Foundation
+import AppKit
 
 @MainActor extension AppDelegate {
+    func checkSSHImportWindow(_ output: URL, tasks: AgentStore, binaryHash: String) async throws {
+        let navigation = output.appendingPathComponent("ssh-window-navigation.json")
+        let reopening = FileManager.default.fileExists(atPath: navigation.path)
+        guard let window = control.window, let content = window.contentView else { throw PetError("设置窗口不可用") }
+        let size = reopening ? NSSize(width: 1320, height: 800) : NSSize(width: 780, height: 540)
+        window.setFrame(NSRect(origin: window.frame.origin, size: size), display: true)
+        window.makeKeyAndOrderFront(nil)
+
+        func find<T: NSView>(_ view: NSView, _ type: T.Type, _ match: (T) -> Bool) -> T? {
+            guard !view.isHiddenOrHasHiddenAncestor else { return nil }
+            if let result = view as? T, match(result) { return result }
+            for child in view.subviews {
+                if let result = find(child, type, match) { return result }
+            }
+            return nil
+        }
+        func button(_ title: String) throws -> NSButton {
+            guard let control = find(content, NSButton.self, { $0.title == title && $0.isEnabled }) else { throw PetError("缺少导入操作 " + title) }
+            return control
+        }
+        func settle(_ pending: () -> Bool) async throws {
+            let limit = Date().addingTimeInterval(20)
+            while pending(), Date() < limit { await wait(0.05) }
+            guard !pending() else { throw PetError("SSH 窗口操作未结束") }
+        }
+        var checks: [String: Bool] = [:]
+        var requests = 0
+        agentRuntime?.modelRequestCheck = { requests += 1; throw PetError("SSH 窗口检查无需模型") }
+        let importer = tasks.dataImport
+        let root = output.appendingPathComponent("Codex '公开样例'")
+        let route = AgentImportRoute(source: .codex, category: .tasks, root: root.path, workspace: nil, sshHost: "whale-import")
+        if reopening {
+            let saved = try JSONDecoder().decode(AgentSettingsRecovery.Navigation.self, from: Data(contentsOf: navigation))
+            try control.materializeSettingsNavigation(saved)
+            await wait(0.2)
+            let actual = control.captureSettingsNavigation()?.dataImport
+            checks["restoresTheOriginalSourceAndSingleChoice"] = actual?.category == .tasks && actual?.ssh == true && actual?.routes.first(where: { $0.route == route })?.checked?.count == 1
+            checks["openingThePageDoesNotConnect"] = importer.preview(for: route) == nil && !importer.scanning
+            try button("重新检测").performClick(nil)
+        } else {
+            guard control.showSettingsCategory("imports"),
+                  let location = find(content, NSSegmentedControl.self, { $0.accessibilityIdentifier() == "import-location" }),
+                  let action = location.action else { throw PetError("缺少 SSH 导入入口") }
+            location.selectedSegment = 1
+            NSApp.sendAction(action, to: location.target, from: location)
+            guard let host = find(content, NSTextField.self, { $0.accessibilityIdentifier() == "import-ssh-host" }),
+                  let directory = find(content, NSTextField.self, { $0.accessibilityIdentifier() == "import-ssh-directory" }) else { throw PetError("缺少 SSH 来源字段") }
+            host.stringValue = "whale-import"; directory.stringValue = root.path
+            try button("检测任务记录").performClick(nil)
+        }
+        try await settle { importer.scanning || importer.preview(for: route) == nil }
+        guard let records = importer.preview(for: route)?.records,
+              let archiveIndex = records.firstIndex(where: \.archived),
+              let choiceIndex = records.firstIndex(where: { $0.file.hasSuffix("/reviewed.jsonl") }),
+              let list = find(content, NSTableView.self, { $0.accessibilityLabel() == "可导入任务记录" }) else { throw PetError(importer.preview(for: route)?.issue ?? "缺少远端记录预览") }
+        let chosen = records[choiceIndex]
+        if !reopening {
+            guard let archive = list.view(atColumn: 0, row: archiveIndex, makeIfNecessary: true) as? NSButton else { throw PetError("缺少归档记录复选框") }
+            archive.performClick(nil)
+            list.selectRowIndexes(IndexSet(integer: choiceIndex), byExtendingSelection: false)
+        }
+        content.layoutSubtreeIfNeeded()
+        guard let confirm = find(content, NSButton.self, { $0.accessibilityIdentifier() == "import-ssh-confirm" }),
+              let detail = find(content, NSTextView.self, { $0.accessibilityLabel() == "导入预览" }) else { throw PetError("缺少页首确认或来源预览") }
+        checks["usesRequestedWindowSize"] = window.frame.size == size
+        checks["confirmationIsVisibleWithThePreviewExpanded"] = confirm.isEnabled && confirm.title == "导入 1 项" && confirm.bounds.height >= 26 &&
+            confirm.visibleRect.height >= confirm.bounds.height - 1 && confirm.visibleRect.width >= confirm.bounds.width - 1
+        checks["previewShowsTheOriginalRecordAndHost"] = list.selectedRow == choiceIndex && detail.string.contains(chosen.title) && detail.string.contains("whale-import:" + chosen.file)
+        if reopening {
+            confirm.performClick(nil)
+            try await settle { importer.active || importer.batch == nil }
+            let url = try importer.sourceURL(chosen.targetID)
+            let bytes = try Data(contentsOf: url)
+            checks["onlyTheReviewedItemIsImportedThroughThePage"] = importer.batch?.items.count == 1 && importer.batch?.items.first?.state == "imported" &&
+                tasks.task(chosen.targetID)?.importOrigin?.sshHost == "whale-import" && AgentFiles.hash(bytes) == chosen.rawHash &&
+                tasks.task(records[archiveIndex].targetID) == nil
+        } else {
+            guard let state = control.captureSettingsNavigation(), state.dataImport?.reading?.recordID == chosen.id else { throw PetError("预览续读记录缺失") }
+            try JSONEncoder().encode(state).write(to: navigation, options: .atomic)
+        }
+        let success = checks.values.allSatisfy { $0 } && requests == 0
+        let result: [String: Any] = ["appPID": getpid(), "binaryHash": binaryHash, "checks": checks, "width": size.width, "height": size.height,
+            "success": success, "modelRequests": requests]
+        let name = reopening ? "ssh-window-reopened.json" : "ssh-window-narrow.json"
+        try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .prettyPrinted])
+            .write(to: output.appendingPathComponent(name), options: .atomic)
+        guard success else { throw PetError("SSH 窗口检查失败：" + checks.filter { !$0.value }.keys.sorted().joined(separator: "、")) }
+    }
+
     func checkSSHImport(_ output: URL, tasks: AgentStore, binaryHash: String) async throws {
         let importer = tasks.dataImport, fm = FileManager.default
         let codexRoot = output.appendingPathComponent("Codex '公开样例'")

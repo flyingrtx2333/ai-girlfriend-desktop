@@ -14,6 +14,10 @@ import SQLite3
                 try await checkSSHImport(output, tasks: tasks, binaryHash: binaryHash)
                 return
             }
+            if CommandLine.arguments.contains("--ssh-import-window-native") {
+                try await checkSSHImportWindow(output, tasks: tasks, binaryHash: binaryHash)
+                return
+            }
             if CommandLine.arguments.contains("--mixed-import-native") {
                 try await checkMixedImport(output, tasks: tasks, binaryHash: binaryHash)
                 return

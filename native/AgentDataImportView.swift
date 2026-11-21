@@ -408,7 +408,7 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         folder.toolTip = route.sshHost.map { $0 + ":" + route.root } ?? root.path
         folder.setAccessibilityLabel(route.sshHost == nil ? "来源目录" : "SSH 来源")
         folder.isEnabled = canConfigure; detect.isEnabled = canConfigure
-        detect.title = preview == nil ? "检测此类" : "重新检测"
+        detect.title = preview == nil && !usesSSH ? "检测此类" : "重新检测"
         destinationControl.isHidden = route.category.globalTarget == nil
         if let title = route.category.globalTarget { updateDestinations(globalTitle: title) }
         table.setAccessibilityLabel("可导入" + route.category.title)
