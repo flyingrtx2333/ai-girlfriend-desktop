@@ -121,3 +121,109 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
         }
     }
 }
+
+@MainActor final class AgentImportSourcePage: AgentSettingsPageController {
+    let taskID: String
+    private let store: AgentStore, origin: AgentImportOrigin
+    private let status = NSTextField(wrappingLabelWithString: "")
+
+    init(store: AgentStore, taskID: String, origin: AgentImportOrigin) {
+        self.store = store
+        self.taskID = taskID
+        self.origin = origin
+        let bounds = NSRect(x: 0, y: 0, width: 620, height: 500)
+        let window = NSWindow(contentRect: bounds, styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "导入来源"
+        window.isReleasedWhenClosed = false
+        super.init(window: window)
+
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface)
+        window.contentView = content
+        let heading = NSTextField(labelWithString: origin.source.title)
+        heading.font = .systemFont(ofSize: 18, weight: .semibold)
+        let reveal = AgentDialogButton(title: "在访达中显示", target: self, action: #selector(revealSource))
+        reveal.setAccessibilityIdentifier("import-source-reveal")
+        AgentDialogStyle.action(reveal)
+        let header = NSStackView(views: [heading, NSView(), reveal])
+        header.alignment = .centerY
+        header.spacing = 8
+        status.font = .systemFont(ofSize: 12)
+        status.textColor = AgentDialogStyle.error
+        status.isHidden = true
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let fields = NSStackView()
+        fields.orientation = .vertical
+        fields.alignment = .leading
+        fields.spacing = 10
+        fields.edgeInsets = NSEdgeInsets(top: 6, left: 0, bottom: 14, right: 2)
+        func label(_ text: String, heading: Bool = false) {
+            let line = NSTextField(wrappingLabelWithString: text)
+            line.font = .systemFont(ofSize: 13, weight: heading ? .semibold : .regular)
+            line.isSelectable = !heading
+            line.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            fields.addArrangedSubview(line)
+            line.widthAnchor.constraint(equalTo: fields.widthAnchor, constant: -2).isActive = true
+        }
+        label("原工作目录", heading: true)
+        label(origin.originalWorkspace ?? "无")
+        label("来源文件", heading: true)
+        label(origin.sourceFile)
+        if !origin.warnings.isEmpty {
+            label("导入提示", heading: true)
+            origin.warnings.forEach { label($0) }
+        }
+
+        let document = AgentContextDocument(), scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.setAccessibilityLabel("导入来源内容")
+        scroll.documentView = document
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(fields)
+        fields.translatesAutoresizingMaskIntoConstraints = false
+        let layout = NSStackView(views: [header, status, scroll])
+        layout.orientation = .vertical
+        layout.alignment = .leading
+        layout.spacing = 12
+        content.addSubview(layout)
+        layout.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            layout.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            layout.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            layout.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            layout.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+            header.widthAnchor.constraint(equalTo: layout.widthAnchor),
+            status.widthAnchor.constraint(equalTo: layout.widthAnchor),
+            scroll.widthAnchor.constraint(equalTo: layout.widthAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            fields.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            fields.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            fields.topAnchor.constraint(equalTo: document.topAnchor),
+            fields.bottomAnchor.constraint(equalTo: document.bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func settingsDidAppear() { _ = currentSource() }
+
+    @objc private func revealSource() {
+        if let url = currentSource() { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+    }
+
+    private func currentSource() -> URL? {
+        do {
+            guard let current = store.task(taskID)?.importOrigin, current.key == origin.key, current.snapshot == origin.snapshot else {
+                throw PetError("导入来源已变化，请关闭此标签页后重新打开")
+            }
+            let url = try store.dataImport.sourceURL(taskID)
+            status.isHidden = true
+            return url
+        } catch {
+            status.stringValue = error.localizedDescription
+            status.isHidden = false
+            return nil
+        }
+    }
+}

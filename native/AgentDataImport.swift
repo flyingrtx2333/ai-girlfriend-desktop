@@ -299,8 +299,13 @@ struct AgentImportBatch: Codable {
         guard let origin = store.task(taskID)?.importOrigin else { throw PetError("此任务没有导入来源") }
         let expected = AgentFiles.hash(Data((origin.key + ":" + origin.rawHash).utf8)) + ".jsonl"
         guard origin.snapshot == expected else { throw PetError("来源副本编号不匹配") }
-        let files = try AgentFiles(workspace: directory.appendingPathComponent("records").path)
-        return try files.literalURL(expected)
+        let files = try AgentFiles(workspace: directory.deletingLastPathComponent().path, followParentLinks: false)
+        let url = try files.literalURL("imports/records/" + expected)
+        switch try files.entryMetadata(url).kind {
+        case "file": return url
+        case "missing": throw PetError("找不到来源副本，恢复文件后重试")
+        default: throw PetError("来源副本必须是普通文件")
+        }
     }
     func sourceHistory(_ taskID: String, offset: Int, limit: Int, contentOffset: Int, contentLimit: Int) throws -> String {
         guard let origin = store.task(taskID)?.importOrigin else { throw PetError("此任务没有导入来源") }

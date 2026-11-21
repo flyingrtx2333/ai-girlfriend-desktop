@@ -974,7 +974,20 @@ final class FormDocumentView: NSView {
             window?.contentView?.layoutSubtreeIfNeeded(); window?.makeFirstResponder(composer)
         }
         taskWorkspace.onOpenRoot = { [weak self] root in
-            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .mcpContent: self?.showTaskMCPContent(); case .document(let path): self?.showTaskDocument(path); case .attachment(let id): if let taskID = self?.agentTaskID { self?.openAttachment(taskID: taskID, id: id) }; case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID, location: .workspace) }; case .rollback(let id): if let taskID = self?.agentTaskID { self?.presentRoundRollback(taskID: taskID, messageID: id) }; case .editResend(let id): if let taskID = self?.agentTaskID { self?.presentEditResend(taskID: taskID, messageID: id) } }
+            guard let self else { return }
+            switch root {
+            case .review: showAgentGit()
+            case .records: presentAgentRecords(section: 4)
+            case .context: presentTaskContext(section: 0)
+            case .importSource: if let id = agentTaskID { presentImportSource(taskID: id) }
+            case .browser: showAgentBrowser()
+            case .mcpContent: showTaskMCPContent()
+            case .document(let path): showTaskDocument(path)
+            case .attachment(let id): if let taskID = agentTaskID { openAttachment(taskID: taskID, id: id) }
+            case .canvas(let id): if let taskID = agentTaskID { openCanvasReference("canvas://" + id, taskID: taskID, location: .workspace) }
+            case .rollback(let id): if let taskID = agentTaskID { presentRoundRollback(taskID: taskID, messageID: id) }
+            case .editResend(let id): if let taskID = agentTaskID { presentEditResend(taskID: taskID, messageID: id) }
+            }
         }
         taskWorkspace.onOpenDocument = { [weak self] in self?.chooseTaskDocument() }
         taskWorkspace.onResolveCanvas = { [weak self] task, canvas in
@@ -1687,7 +1700,7 @@ final class FormDocumentView: NSView {
         if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", !task.isProjectDocumentation {
             let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
         }
-        if task.importOrigin != nil { let item = NSMenuItem(title: "导入来源…", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "import-source"]; menu.addItem(item) }
+        if task.importOrigin != nil { let item = NSMenuItem(title: "导入来源", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "import-source"]; menu.addItem(item) }
         let unread = companion?.agentStore?.organization.isTaskUnread(task.id) == true, read = NSMenuItem(title: unread ? "标记已读" : "标记未读", action: #selector(taskMenuAction(_:)), keyEquivalent: "")
         read.target = self; read.representedObject = [task.id, unread ? "read" : "unread"]; menu.addItem(read)
         let newWindow = NSMenuItem(title: "在新窗口打开", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); newWindow.target = self; newWindow.representedObject = [task.id, "new-window"]; menu.addItem(newWindow)
@@ -1731,6 +1744,16 @@ final class FormDocumentView: NSView {
         guard taskWorkspace.show(taskID: id, root: .context, make: { let page = AgentContextWindow(runtime: runtime, taskID: id, section: section); page.recapModel = { [weak self] in self?.companion?.taskMonitor.settings.recapModel }; return page }) else { return }
         (taskWorkspace.rootController(.context) as? AgentContextWindow)?.selectSection(section)
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+    }
+    @discardableResult internal func presentImportSource(taskID id: String) -> Bool {
+        guard let store = companion?.agentStore, let origin = store.task(id)?.importOrigin,
+              saveAgentDraft(), canLeaveMainPage() else { return false }
+        if agentTaskID != id { selectAgentTask(id) }
+        guard agentTaskID == id else { return false }
+        if selectedTab != "chat" { show(tab: "chat") }
+        guard taskWorkspace.show(taskID: id, root: .importSource, make: { AgentImportSourcePage(store: store, taskID: id, origin: origin) }) else { return false }
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+        return true
     }
     @objc private func showTaskMCPContent() { if let id = agentTaskID { presentMCPContent(taskID: id) } }
     func presentMCPContent(taskID: String, serverID: String? = nil) {
@@ -3825,13 +3848,8 @@ final class FormDocumentView: NSView {
             saveAgentDraft(); tasks.update(id) { $0.workMode = task.organizationMode == .coding ? .general : nil }
             if agentTaskID == id { selectAgentTask(id) }
         case "import-source":
-            guard let origin = task.importOrigin else { return }
-            let alert = AgentConfirmation(); alert.messageText = origin.source.title + "导入记录"
-            alert.informativeText = "原工作目录：" + (origin.originalWorkspace ?? "无") + "\n来源：" + origin.sourceFile + (origin.warnings.isEmpty ? "" : "\n" + origin.warnings.joined(separator: "\n"))
-            alert.addButton(withTitle: "来源副本"); alert.addButton(withTitle: "关闭")
-            if alert.runModal(for: window) == .alertFirstButtonReturn {
-                do { NSWorkspace.shared.activateFileViewerSelecting([try tasks.dataImport.sourceURL(id)]) } catch { setStatus(error.localizedDescription, error: true) }
-            }
+            presentImportSource(taskID: id)
+            return
         case "fork":
             guard saveAgentDraft() else { return }
             if let next = tasks.fork(id) { selectAgentTask(next) } else if let issue = tasks.writeError { setStatus(issue, error: true) }
@@ -4349,11 +4367,19 @@ final class FormDocumentView: NSView {
     }
     internal func materializeRecoveryRoot(task id: String, tab: AgentWorkspaceRecovery.Tab, loaded: AgentWorkspaceRecovery.LoadedPage?, activate: Bool = true) async throws {
         guard (!activate || agentTaskID == id && selectedTab == "chat"), let store = companion?.agentStore, let task = store.task(id), let root = AgentTaskWorkspace.Root(key: tab.root) else { throw PetError("请在原任务中重新选择该标签页") }
-        if !activate { guard task.sideTask?.retained != false, let kind = loaded?.saved.value.kind, ["record", "browser", "attachment"].contains(kind) else { throw PetError("此子窗口的恢复格式暂不支持，原记录已保留") } }
+        if !activate {
+            let kind = loaded?.saved.value.kind
+            guard task.sideTask?.retained != false, root == .importSource || kind.map({ ["record", "browser", "attachment"].contains($0) }) == true else {
+                throw PetError("此子窗口的恢复格式暂不支持，原记录已保留")
+            }
+        }
         func present(_ controller: AgentSettingsPageController) -> Bool {
             activate ? taskWorkspace.show(taskID: id, root: root, recovering: true, make: { controller }) : taskWorkspace.restoreBackgroundRoot(taskID: id, tab: tab, controller: controller)
         }
-        if case .attachment(let id) = root {
+        if root == .importSource {
+            guard loaded == nil, let origin = task.importOrigin else { throw PetError("原任务的导入来源已不可用") }
+            guard present(AgentImportSourcePage(store: store, taskID: id, origin: origin)) else { throw PetError("工作区当前无法打开导入来源") }
+        } else if case .attachment(let id) = root {
             let preview = try AgentAttachmentWindow(store: store, taskID: task.id, id: id)
             if let loaded { try preview.restoreWorkspaceRecovery(loaded.saved.value) }
             if activate, let pending = pendingAttachmentTarget, pending.taskID == task.id, pending.attachmentID == id {

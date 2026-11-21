@@ -143,6 +143,7 @@ import AppKit
             control.presentAgentRecords(section: 4); checks["recordsWorkWithoutWorkspace"] = host.currentController is AgentRecordWindow && host.currentController?.presentingWindow === control.window
             let standaloneHeader = control.gitWorkspaceReadback()
             checks["workspaceShowsActualTitleForTaskWithoutMessages"] = standaloneHeader["taskTitleVisible"] as? Bool == true && standaloneHeader["taskTitle"] as? String == tasks.task(fixture.standaloneID)?.title
+            try checkImportedSource(output, store: tasks, otherID: fixture.standaloneID, checks: &checks)
             checks["modelRequestsRemainZero"] = attempts == 0 && tasks.tasks.allSatisfy { ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
             checks["composerDraftsRemainIndependent"] = tasks.task(fixture.taskID)?.draft == "保留项目任务的输入草稿。" && tasks.task(fixture.secondID)?.draft == "保留另一任务的输入草稿。" && tasks.task(fixture.standaloneID)?.draft == "无工作区任务的原草稿。"
             let binary = Bundle.main.executableURL!
@@ -151,5 +152,39 @@ import AppKit
             report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }; report["scope"] = "Native task pages, public document copies, exact file bytes and actual local command/checkpoints; no generated recap, model answer or request receipt. Destructive conflict confirmations are validated separately in the real UI."
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("task-workspace-report.json"))
         } catch { report["checks"] = checks; report["success"] = false; report["error"] = error.localizedDescription; try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("task-workspace-report.json")) }
+    }
+
+    private func checkImportedSource(_ output: URL, store: AgentStore, otherID: String, checks: inout [String: Bool]) throws {
+        let host = control.taskWorkspace
+        let previous = host.currentController
+        checks["ordinaryTaskCannotOpenImportSource"] = !control.presentImportSource(taskID: otherID) && host.currentController === previous
+
+        let id = store.create(title: "公开导入任务来源", mode: .ask, workMode: .general)
+        let sourceID = UUID().uuidString.lowercased()
+        let raw = Data("{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(sourceID)\"}}\n".utf8)
+        let rawHash = AgentFiles.hash(raw)
+        let snapshot = AgentFiles.hash(Data("codex:\(sourceID):\(rawHash)".utf8)) + ".jsonl"
+        let source = output.appendingPathComponent("public-session.jsonl")
+        try raw.write(to: source)
+        let records = store.directory.deletingLastPathComponent().appendingPathComponent("imports/records")
+        try FileManager.default.createDirectory(at: records, withIntermediateDirectories: true)
+        let copy = records.appendingPathComponent(snapshot)
+        store.update(id) {
+            $0.importOrigin = AgentImportOrigin(source: .codex, sourceID: sourceID, sourceFile: source.path, sourceHash: rawHash,
+                                               rawHash: rawHash, snapshot: snapshot, taskHash: rawHash, warnings: ["公开样例提示"])
+        }
+        checks["missingImportCopyCannotBeRevealed"] = (try? store.dataImport.sourceURL(id)) == nil
+        try FileManager.default.createSymbolicLink(at: copy, withDestinationURL: source)
+        checks["importCopyCannotRedirectFinderToExternalFile"] = (try? store.dataImport.sourceURL(id)) == nil
+        try FileManager.default.removeItem(at: copy)
+        try raw.write(to: copy)
+        let resolved = try store.dataImport.sourceURL(id)
+        checks["importSourceOpensOnTheBoundTaskWithoutADialog"] = control.presentImportSource(taskID: id)
+            && (host.currentController as? AgentImportSourcePage)?.taskID == id
+            && host.currentController?.presentingWindow === control.window && host.selectedRoot == .importSource
+            && control.window?.hasBlockingDialog == false
+        checks["importSourceTabSavesItsReadOnlyRouteAndOriginalBytes"] = try host.recoveryLayouts.contains {
+            $0.taskID == id && $0.selected == "import-source" && $0.tabs.contains { $0.root == "import-source" }
+        } && Data(contentsOf: resolved) == raw && Data(contentsOf: source) == raw
     }
 }

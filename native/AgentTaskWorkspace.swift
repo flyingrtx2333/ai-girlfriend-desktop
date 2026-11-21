@@ -18,16 +18,45 @@ import AppKit
 // their tab is closed, when the existing unsaved-content guards apply.
 @MainActor final class AgentTaskWorkspace: NSView {
     enum Root: Hashable {
-        case review, records, context, browser, mcpContent, document(String), attachment(String), canvas(String), rollback(String), editResend(String)
+        case review, records, context, importSource, browser, mcpContent, document(String), attachment(String), canvas(String), rollback(String), editResend(String)
         var title: String {
-            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .browser: return "浏览器"; case .mcpContent: return "MCP 资料"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent; case .attachment: return "附件"; case .canvas: return "画布"; case .rollback: return "撤回文件"; case .editResend: return "编辑并重发" }
+            switch self {
+            case .review: return "审阅"
+            case .records: return "记录"
+            case .context: return "任务详情"
+            case .importSource: return "导入来源"
+            case .browser: return "浏览器"
+            case .mcpContent: return "MCP 资料"
+            case .document(let path): return URL(fileURLWithPath: path).lastPathComponent
+            case .attachment: return "附件"
+            case .canvas: return "画布"
+            case .rollback: return "撤回文件"
+            case .editResend: return "编辑并重发"
+            }
         }
         var key: String {
-            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .browser: return "browser"; case .mcpContent: return "mcp"; case .document(let path): return "document:" + path; case .attachment(let id): return "attachment:" + id; case .canvas(let id): return "canvas:" + id; case .rollback(let id): return "rollback:" + id; case .editResend(let id): return "edit-resend:" + id }
+            switch self {
+            case .review: return "review"
+            case .records: return "records"
+            case .context: return "context"
+            case .importSource: return "import-source"
+            case .browser: return "browser"
+            case .mcpContent: return "mcp"
+            case .document(let path): return "document:" + path
+            case .attachment(let id): return "attachment:" + id
+            case .canvas(let id): return "canvas:" + id
+            case .rollback(let id): return "rollback:" + id
+            case .editResend(let id): return "edit-resend:" + id
+            }
         }
         init?(key: String) {
             switch key {
-            case "review": self = .review; case "records": self = .records; case "context": self = .context; case "browser": self = .browser; case "mcp": self = .mcpContent
+            case "review": self = .review
+            case "records": self = .records
+            case "context": self = .context
+            case "import-source": self = .importSource
+            case "browser": self = .browser
+            case "mcp": self = .mcpContent
             default:
                 guard let split = key.firstIndex(of: ":"), split < key.index(before: key.endIndex) else { return nil }
                 let value = String(key[key.index(after: split)...])
