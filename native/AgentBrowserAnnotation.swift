@@ -4,15 +4,15 @@ import AppKit
     let shot: AgentBrowserShot
     var kind = AgentBrowserMark.Kind.rectangle
     var isEnabled = true
+    var imageSize: NSSize = .zero { didSet { if oldValue != imageSize { needsDisplay = true } } }
     private(set) var marks: [AgentBrowserMark] = []
     private var current: AgentBrowserMark?
     var onChange: (() -> Void)?
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     var imageRect: NSRect {
-        let size = shot.image.size, scale = min(bounds.width / max(1, size.width), bounds.height / max(1, size.height))
-        let fitted = NSSize(width: size.width * scale, height: size.height * scale)
-        return NSRect(x: (bounds.width - fitted.width) / 2, y: (bounds.height - fitted.height) / 2, width: fitted.width, height: fitted.height)
+        NSRect(x: (bounds.width - imageSize.width) / 2, y: (bounds.height - imageSize.height) / 2,
+               width: imageSize.width, height: imageSize.height)
     }
     init(shot: AgentBrowserShot) {
         self.shot = shot; super.init(frame: .zero)
@@ -61,9 +61,80 @@ import AppKit
     private func changed() { needsDisplay = true; setAccessibilityValue("\(marks.count) 处标注"); onChange?() }
 }
 
+@MainActor private final class AgentBrowserAnnotationScroll: NSScrollView {
+    typealias Viewport = AgentBrowserRecoveryState.Annotation.Viewport
+    private let canvas: AgentBrowserAnnotationView
+    private(set) var viewport = Viewport()
+    private var fittedTo: NSSize = .zero, applying = false
+    var onChange: (() -> Void)?
+
+    init(canvas: AgentBrowserAnnotationView) {
+        self.canvas = canvas
+        super.init(frame: .zero)
+        borderType = .noBorder
+        drawsBackground = false
+        scrollerStyle = .overlay
+        hasHorizontalScroller = true
+        hasVerticalScroller = true
+        autohidesScrollers = true
+        usesPredominantAxisScrolling = false
+        documentView = canvas
+        setAccessibilityLabel("标注视图")
+        contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: contentView)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    override func tile() {
+        super.tile()
+        if fittedTo != contentView.bounds.size { fit() }
+    }
+    func setZoom(_ scale: Double) {
+        setViewport(scale == 1 ? Viewport() : Viewport(scale: scale, x: viewport.x, y: viewport.y))
+    }
+    func setViewport(_ value: Viewport) {
+        viewport = value
+        fit()
+        onChange?()
+    }
+    private func fit() {
+        let clip = contentView, size = clip.bounds.size
+        guard !applying, documentView === canvas, size.width > 0, size.height > 0 else { return }
+        applying = true
+        defer { applying = false }
+        fittedTo = size
+        let source = canvas.shot.image.size
+        let scale = min(size.width / max(1, source.width), size.height / max(1, source.height)) * viewport.scale
+        let image = NSSize(width: source.width * scale, height: source.height * scale)
+        canvas.imageSize = image
+        canvas.setFrameSize(NSSize(width: max(size.width, image.width), height: max(size.height, image.height)))
+        // Keep the same point in the screenshot centered as the window changes.
+        let rect = canvas.imageRect
+        let center = canvas.convert(NSPoint(x: rect.minX + viewport.x * rect.width, y: rect.minY + viewport.y * rect.height), to: clip)
+        let bounds = NSRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+        clip.scroll(to: clip.constrainBoundsRect(bounds).origin)
+        reflectScrolledClipView(clip)
+    }
+    @objc private func scrolled() {
+        let bounds = contentView.bounds, image = canvas.imageRect
+        guard !applying, viewport.scale > 1, bounds.size == fittedTo, !image.isEmpty else { return }
+        let center = contentView.convert(NSPoint(x: bounds.midX, y: bounds.midY), to: canvas)
+        let next = Viewport(scale: viewport.scale, x: min(1, max(0, (center.x - image.minX) / image.width)),
+                           y: min(1, max(0, (center.y - image.minY) / image.height)))
+        guard next != viewport else { return }
+        viewport = next
+        onChange?()
+    }
+}
+
 @MainActor final class AgentBrowserAnnotationWindow: AgentSettingsPageController, NSWindowDelegate, NSTextFieldDelegate {
+    private typealias Viewport = AgentBrowserRecoveryState.Annotation.Viewport
     let canvas: AgentBrowserAnnotationView
+    private let scroll: AgentBrowserAnnotationScroll
     private let mode = NSSegmentedControl(labels: ["框选", "箭头", "画笔"], trackingMode: .selectOne, target: nil, action: nil)
+    private let zoom = NSPopUpButton()
+    private lazy var zoomControl = AgentSettingsPopupFrame(zoom)
     private let undo = NSButton(title: "撤销", target: nil, action: nil), clear = NSButton(title: "清除", target: nil, action: nil)
     private let copy = NSButton(title: "复制截图", target: nil, action: nil), cancel = NSButton(title: "取消", target: nil, action: nil), add = NSButton(title: "添加到对话", target: nil, action: nil)
     private let note = NSTextField(), state = NSTextField(labelWithString: "")
@@ -77,13 +148,18 @@ import AppKit
     var canPreserveForQuit: Bool { !closed && job == nil && !submitted && !discardAccepted }
     var hasPendingChanges: Bool { !closed && !submitted && !discardAccepted && (!canvas.marks.isEmpty || !note.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
     init(shot: AgentBrowserShot, onSubmit: @escaping ([AgentBrowserMark], String) async throws -> Void) {
-        canvas = AgentBrowserAnnotationView(shot: shot); self.onSubmit = onSubmit
+        let canvas = AgentBrowserAnnotationView(shot: shot)
+        self.canvas = canvas; scroll = AgentBrowserAnnotationScroll(canvas: canvas); self.onSubmit = onSubmit
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "标注 · " + String(shot.source.title.prefix(80)); window.minSize = NSSize(width: 640, height: 480)
         window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         mode.selectedSegment = 0; mode.target = self; mode.action = #selector(annotationToolChanged); mode.setAccessibilityLabel("标注工具")
+        zoom.addItems(withTitles: Viewport.scales.map { $0 == 1 ? "适应窗口" : "\(Int($0 * 100))%" })
+        zoom.target = self; zoom.action = #selector(changeZoom)
+        zoom.setAccessibilityLabel("标注缩放")
+        zoomControl.widthAnchor.constraint(equalToConstant: 90).isActive = true
         for (button, action) in [(undo, #selector(undoMark)), (clear, #selector(clearMarks)), (copy, #selector(copyImage)), (cancel, #selector(cancelEdit)), (add, #selector(addToTask))] {
             button.target = self; button.action = action; button.bezelStyle = .rounded
         }
@@ -92,16 +168,17 @@ import AppKit
         note.placeholderString = "补充要求"; note.setAccessibilityLabel("标注补充要求"); note.delegate = self
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         if shot.source.method == "webkit-software" { state.stringValue = "软件快照可能缺少视频和 3D 内容" }
-        let header = NSStackView(views: [mode, undo, clear, NSView(), copy]); header.spacing = 8
+        let header = NSStackView(views: [mode, undo, clear, NSView(), zoomControl, copy]); header.spacing = 8
         let footer = NSStackView(views: [state, NSView(), cancel, add]); footer.spacing = 8
-        for view in [header, canvas, note, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [header, scroll, note, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), header.topAnchor.constraint(equalTo: content.topAnchor, constant: 12), header.heightAnchor.constraint(equalToConstant: 28),
-            canvas.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), canvas.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), canvas.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12), canvas.bottomAnchor.constraint(equalTo: note.topAnchor, constant: -12),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12), scroll.bottomAnchor.constraint(equalTo: note.topAnchor, constant: -12),
             note.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), note.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), note.heightAnchor.constraint(equalToConstant: 24), note.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
             footer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)
         ])
         canvas.onChange = { [weak self] in self?.updateControls() }; updateControls()
+        scroll.onChange = { [weak self] in self?.onWorkspaceChange?() }
         NotificationCenter.default.addObserver(self, selector: #selector(noteSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(restoreNoteFocusIfNeeded(_:)), name: NSWindow.didBecomeKeyNotification, object: nil)
         for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] { NotificationCenter.default.addObserver(self, selector: #selector(geometryChanged(_:)), name: name, object: window) }
@@ -135,10 +212,15 @@ import AppKit
     private func updateControls() {
         let enabled = job == nil
         canvas.isEnabled = enabled; mode.isEnabled = enabled; undo.isEnabled = enabled && !canvas.marks.isEmpty; clear.isEnabled = undo.isEnabled; copy.isEnabled = enabled; add.isEnabled = enabled; note.isEnabled = enabled
+        zoom.isEnabled = enabled; zoomControl.refreshEnabledState()
         add.title = enabled ? "添加到对话" : "添加中…"
         onWorkspaceChange?()
     }
     @objc private func annotationToolChanged() { canvas.kind = AgentBrowserMark.Kind(rawValue: mode.selectedSegment) ?? .rectangle; onWorkspaceChange?() }
+    @objc private func changeZoom() {
+        guard Viewport.scales.indices.contains(zoom.indexOfSelectedItem) else { return }
+        scroll.setZoom(Viewport.scales[zoom.indexOfSelectedItem])
+    }
     @objc private func undoMark() { canvas.undoMark() }
     @objc private func clearMarks() { canvas.clearMarks() }
     @objc private func cancelEdit() { close() }
@@ -169,7 +251,10 @@ import AppKit
     }
     func workspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        return ["closed": closed, "visible": isPageVisible, "dirty": hasPendingChanges, "working": job != nil, "note": note.stringValue, "marks": canvas.marks.count, "url": canvas.shot.source.url, "sourceTab": canvas.shot.source.tabID, "captureMethod": canvas.shot.source.method ?? "", "canvasSize": [canvas.bounds.width, canvas.bounds.height], "checks": ["annotationUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === settingsHostWindow, "annotationHasNoFloatingWindow": window?.isVisible != true, "annotationHasUsableCanvas": canvas.bounds.width >= 400 && canvas.bounds.height >= 200 && canvas.bounds.contains(canvas.imageRect)]]
+        let visible = canvas.visibleRect, image = canvas.imageRect
+        return ["closed": closed, "visible": isPageVisible, "dirty": hasPendingChanges, "working": job != nil, "note": note.stringValue, "marks": canvas.marks.count, "url": canvas.shot.source.url, "sourceTab": canvas.shot.source.tabID, "captureMethod": canvas.shot.source.method ?? "", "canvasSize": [canvas.bounds.width, canvas.bounds.height],
+                "zoom": scroll.viewport.scale, "visibleRect": [visible.minX, visible.minY, visible.width, visible.height], "imageRect": [image.minX, image.minY, image.width, image.height],
+                "checks": ["annotationUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === settingsHostWindow, "annotationHasNoFloatingWindow": window?.isVisible != true, "annotationHasUsableCanvas": scroll.bounds.width >= 400 && scroll.bounds.height >= 200 && !image.isEmpty && canvas.bounds.contains(image)]]
     }
     func checkWorkspace(note text: String? = nil, mark: Bool = false, submit: Bool = false, selection: NSRange? = nil) async {
         guard AgentTaskWorkspace.readbackEnabled else { return }
@@ -188,11 +273,14 @@ import AppKit
         let selected = editor.map { AgentBrowserRecoveryState.Selection(location: $0.selectedRange().location, length: $0.selectedRange().length) }
         return .init(source: canvas.shot.source, image: recoveryImage!, marks: canvas.recoveryMarks(), note: editor?.string ?? note.stringValue, tool: mode.selectedSegment,
                      focusNote: editor != nil && presentingWindow?.firstResponder === editor, selection: selected ?? restoredNoteSelection,
-                     frame: hasIndependentWindow ? window.map { .init($0) } : nil)
+                     frame: hasIndependentWindow ? window.map { .init($0) } : nil, viewport: scroll.viewport.scale > 1 ? scroll.viewport : nil)
     }
     func restoreWorkspaceRecovery(_ value: AgentBrowserRecoveryState.Annotation) {
         recoveryImage = value.image; mode.selectedSegment = value.tool; canvas.kind = AgentBrowserMark.Kind(rawValue: value.tool) ?? .rectangle
         canvas.restoreMarks(value.marks); note.stringValue = value.note; restoredNoteSelection = value.selection; restoreNoteFocus = value.focusNote; updateControls()
+        let viewport = value.viewport ?? Viewport()
+        zoom.selectItem(at: Viewport.scales.firstIndex(of: viewport.scale) ?? 0)
+        scroll.setViewport(viewport)
     }
     override func settingsDidAppear() {
         super.settingsDidAppear()
