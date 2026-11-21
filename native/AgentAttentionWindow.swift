@@ -17,7 +17,7 @@ import AppKit
 
 @MainActor final class AgentAttentionWindow: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSTextViewDelegate {
     var onOpenSettings: (() -> Void)?
-    private struct ListState { var query = "", kind: String?, source: String?, sender: String?; var days = 0, limit = 50 }
+    var onRecoveryChange: (() -> Void)?
     private let attention: AgentAttention, runtime: AgentRuntime
     private let tabs = NSSegmentedControl(labels: ["待关注", "历史"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), kind = NSPopUpButton(), source = NSPopUpButton(), time = NSPopUpButton(), sender = NSPopUpButton()
@@ -29,7 +29,10 @@ import AppKit
     private let answer = AgentDialogButton(title: "回复并继续", target: nil, action: nil), allow = AgentDialogButton(title: "允许一次", target: nil, action: nil), deny = AgentDialogButton(title: "拒绝", target: nil, action: nil)
     private let execute = AgentDialogButton(title: "采纳计划并执行", target: nil, action: nil)
     private var filterBar: AgentAttentionFilterBar!
-    private var states = [ListState(), ListState()], activeTab = 0, rows: [AgentAttentionItem] = [], selected: AgentAttentionItem?
+    private var states = [AgentAttentionRecovery.List(), AgentAttentionRecovery.List()]
+    private var activeTab = 0, rows: [AgentAttentionItem] = [], selected: AgentAttentionItem?
+    private var pendingRecovery: AgentAttentionRecovery?, pendingDetail: AgentAttentionRecovery.Detail?
+    private var preferredFocus: AgentAttentionRecovery.Focus?, needsSelection = false
     private var suppressSelection = false, draftSave: DispatchWorkItem?, operationIssue: String?
     private var replySavedText = "", replyLoaded = true
     private weak var hostWindow: NSWindow?
@@ -40,17 +43,16 @@ import AppKit
     private let back = AgentDialogButton(title: "返回列表", target: nil, action: nil)
     private var splitConstraints: [NSLayoutConstraint] = [], compactConstraints: [NSLayoutConstraint] = []
     private var compact = false, detailRequested = false, canLoadMore = false
-    private var savedListPosition: CGFloat?
     private var showingCompactDetail: Bool { compact && detailRequested && selected != nil }
     private var contentTop: NSLayoutConstraint!
     var presentingWindow: NSWindow? { hostWindow ?? window }
     var isVisible: Bool { (hostedContent?.window?.isVisible ?? window?.isVisible ?? false) && hostedContent?.isHiddenOrHasHiddenAncestor != true }
     var onOpenTask: ((String) -> Void)?
     func questionFocused(_ id: String) -> Bool {
-        isVisible && presentingWindow?.isKeyWindow == true && selected?.taskID == id && selected?.kind == .question && selected?.mcpInputID == nil && selected?.handled == false
+        isVisible && !details.isHidden && presentingWindow?.isKeyWindow == true && selected?.taskID == id && selected?.kind == .question && selected?.mcpInputID == nil && selected?.handled == false
     }
     func questionInteraction(_ event: NSEvent) -> String? {
-        guard isVisible, let item = selected, item.kind == .question, !item.handled, item.mcpInputID == nil else { return nil }
+        guard isVisible, !details.isHidden, let item = selected, item.kind == .question, !item.handled, item.mcpInputID == nil else { return nil }
         return AgentQuestionAutoSkip.containsInteraction(event, views: [body.enclosingScrollView ?? body, replyField, detailTitle, metadata, open, answer]) ? item.taskID : nil
     }
     init(attention: AgentAttention, runtime: AgentRuntime) {
@@ -139,6 +141,11 @@ import AppKit
         NSLayoutConstraint.activate([content.centerXAnchor.constraint(equalTo: root.centerXAnchor), content.widthAnchor.constraint(lessThanOrEqualToConstant: 824), content.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: 28), content.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -28), width, contentTop, content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -24)])
         for child in content.arrangedSubviews { child.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
         panes.setContentHuggingPriority(.defaultLow, for: .vertical); bodyScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+        for scroll in [list, bodyScroll, replyScroll] {
+            let clip = scroll.contentView; clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: clip)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         attention.refresh(); refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -158,7 +165,7 @@ import AppKit
         if next, responder?.isDescendant(of: details) == true {
             detailRequested = true
         }
-        if next, detailRequested, !list.isHidden { savedListPosition = list.contentView.bounds.minY }
+        if next, detailRequested { rememberListPosition() }
         NSLayoutConstraint.deactivate(compact ? compactConstraints : splitConstraints)
         compact = next
         NSLayoutConstraint.activate(compact ? compactConstraints : splitConstraints)
@@ -175,8 +182,8 @@ import AppKit
     private func updateVisibility() {
         let reading = showingCompactDetail, hasItems = !rows.isEmpty
         list.isHidden = !hasItems || reading
-        details.isHidden = !hasItems || compact && !reading
-        divider.isHidden = !hasItems || compact
+        details.isHidden = selected == nil || compact && !reading
+        divider.isHidden = details.isHidden || compact
         empty.isHidden = hasItems
         back.isHidden = !reading; headingTitle.isHidden = reading; tabs.isHidden = reading; filterBar.isHidden = reading
         more.isHidden = !canLoadMore || reading
@@ -186,14 +193,16 @@ import AppKit
     @discardableResult private func activateItem() -> Bool {
         guard selected != nil else { return false }
         guard persistReply() else { return compact }
-        if compact, !showingCompactDetail { savedListPosition = list.contentView.bounds.minY }
+        if compact, !showingCompactDetail { rememberListPosition() }
         detailRequested = true
         if compact {
             updateVisibility()
             hostedContent?.layoutSubtreeIfNeeded()
             presentingWindow?.recalculateKeyViewLoop()
             presentingWindow?.makeFirstResponder(body)
+            preferredFocus = .body; applyDetailPosition()
         }
+        onRecoveryChange?()
         return compact
     }
     @objc private func backToList() {
@@ -202,21 +211,98 @@ import AppKit
         hostedContent?.layoutSubtreeIfNeeded(); presentingWindow?.recalculateKeyViewLoop()
         restoreListPosition()
         presentingWindow?.makeFirstResponder(table)
+        preferredFocus = .list; onRecoveryChange?()
+    }
+    private func rememberListPosition() {
+        guard isVisible, !list.isHidden, !rows.isEmpty else { return }
+        let y = max(0, list.contentView.bounds.minY), index = table.row(at: NSPoint(x: 1, y: y + 0.5))
+        let validIndex = rows.indices.contains(index)
+        states[activeTab].position = .init(anchor: validIndex ? rows[index].id : nil, y: y,
+                                          offset: validIndex ? y - table.rect(ofRow: index).minY : 0)
     }
     private func restoreListPosition() {
-        guard !list.isHidden, let savedListPosition else { return }
-        self.savedListPosition = nil
+        guard !list.isHidden, let position = states[activeTab].position else { return }
         let clip = list.contentView
-        var destination = clip.bounds; destination.origin.y = savedListPosition
-        clip.scroll(to: clip.constrainBoundsRect(destination).origin); list.reflectScrolledClipView(clip)
+        let row = position.anchor.flatMap { id in rows.firstIndex { $0.id == id } }
+        let y = row.map { table.rect(ofRow: $0).minY + position.offset } ?? position.y
+        var destination = clip.bounds; destination.origin.y = y
+        let constrained = clip.constrainBoundsRect(destination).origin
+        if abs(constrained.y - clip.bounds.minY) > 0.5 {
+            clip.scroll(to: constrained); list.reflectScrolledClipView(clip)
+        }
     }
     @objc private func openRowTask() {
         if compact { activateItem() } else { openTask() }
     }
-    func focusSearch() { presentingWindow?.recalculateKeyViewLoop(); presentingWindow?.makeFirstResponder(search) }
+    private func rememberFocus() {
+        let responder = presentingWindow?.firstResponder
+        if let editor = search.currentEditor() as? NSTextView, responder === editor, !filterBar.isHidden {
+            let range = editor.selectedRange(), selection = AgentTextViewport.Selection(location: range.location, length: range.length)
+            if selection.valid(in: states[activeTab].query.utf16.count) { states[activeTab].selection = selection }
+            preferredFocus = .search
+        } else if responder === table, !list.isHidden { preferredFocus = .list }
+        else if responder === body, !details.isHidden { preferredFocus = .body }
+        else if responder === reply, !replyField.isHidden, !details.isHidden { preferredFocus = .reply }
+    }
+    func focusCurrentPage(restoringSelection: Bool = false) {
+        guard pendingRecovery == nil, isVisible, let owner = presentingWindow else { return }
+        let view: NSView
+        switch preferredFocus {
+        case .list where !list.isHidden: view = table
+        case .body where !details.isHidden: view = body
+        case .reply where !replyField.isHidden && !details.isHidden: view = reply
+        default: view = showingCompactDetail ? body : search
+        }
+        let selection = states[activeTab].selection?.range
+        let focused = view === owner.firstResponder ||
+            (view === search && search.currentEditor() === owner.firstResponder && owner.firstResponder != nil)
+        owner.recalculateKeyViewLoop()
+        guard focused || owner.makeFirstResponder(view) else { return }
+        if view === search, restoringSelection || !focused, let selection {
+            (search.currentEditor() as? NSTextView)?.setSelectedRange(selection)
+        }
+    }
+    @objc private func viewportChanged(_ notification: Notification) {
+        guard onRecoveryChange != nil, pendingRecovery == nil, isVisible, !suppressSelection else { return }
+        if notification.name == NSTextView.didChangeSelectionNotification {
+            guard let text = notification.object as? NSTextView, text === body || text === reply || text === search.currentEditor() else { return }
+        }
+        rememberFocus(); onRecoveryChange?()
+    }
+    func captureRecovery(active: Bool) -> AgentAttentionRecovery? {
+        if var pendingRecovery { pendingRecovery.active = active; return pendingRecovery }
+        if isVisible { rememberFocus(); rememberListPosition() }
+        let detail = selected.map { item in
+            AgentAttentionRecovery.Detail(item: item.id, request: item.requestSignature, reading: detailRequested,
+                body: pendingDetail?.body ?? (try? AgentTextViewport(body)),
+                reply: pendingDetail?.reply ?? (!replyField.isHidden && replyLoaded ? try? AgentTextViewport(reply) : nil))
+        }
+        let value = AgentAttentionRecovery(active: active, tab: activeTab, lists: states, detail: detail, focus: preferredFocus)
+        return value.valid ? value : nil
+    }
+    func restoreRecovery(_ value: AgentAttentionRecovery) {
+        pendingRecovery = value; activeTab = value.tab; states = value.lists
+        preferredFocus = value.focus; tabs.selectedSegment = activeTab; renderFilters()
+    }
+    private func applyDetailPosition() {
+        guard !details.isHidden, let detail = pendingDetail, detail.item == selected?.id else { return }
+        pendingDetail = nil
+        guard detail.request == selected?.requestSignature else { return }
+        if let bodyPosition = detail.body { bodyPosition.apply(to: body, focus: false) }
+        if let replyPosition = detail.reply, !replyField.isHidden, replyLoaded {
+            if replyPosition.matches(reply) { replyPosition.apply(to: reply, focus: false) }
+            else {
+                operationIssue = "答复草稿已更新，请核对后继续"
+                status.stringValue = operationIssue ?? ""; status.textColor = AgentWorkbenchTheme.secondaryText
+                updateVisibility()
+            }
+        }
+    }
     private func select(_ menu: NSPopUpButton, value: String?) { menu.selectItem(at: menu.itemArray.firstIndex { $0.representedObject as? String == value } ?? 0) }
     private func renderFilters() {
-        let value = states[activeTab]; search.stringValue = value.query; select(kind, value: value.kind); select(source, value: value.source)
+        let value = states[activeTab]
+        if search.stringValue != value.query { search.stringValue = value.query }
+        select(kind, value: value.kind); select(source, value: value.source)
         time.selectItem(at: time.itemArray.firstIndex { $0.representedObject as? Int == value.days } ?? 0)
         filterBar.showsHistory = activeTab == 1
         sender.removeAllItems(); sender.addItem(withTitle: "全部发起者")
@@ -225,19 +311,29 @@ import AppKit
     }
     @objc private func changeTab() {
         guard persistReply() else { tabs.selectedSegment = activeTab; return }
-        activeTab = tabs.selectedSegment; operationIssue = nil; renderFilters(); refresh()
+        rememberFocus(); rememberListPosition()
+        pendingRecovery = nil; pendingDetail = nil; needsSelection = false; detailRequested = false
+        activeTab = tabs.selectedSegment; operationIssue = nil; refresh()
+        restoreListPosition(); onRecoveryChange?()
     }
     @objc private func changeFilters() {
         guard persistReply() else { renderFilters(); return }
         var value = states[activeTab]; value.kind = kind.selectedItem?.representedObject as? String; value.source = source.selectedItem?.representedObject as? String
         value.days = time.selectedItem?.representedObject as? Int ?? 0; value.sender = sender.selectedItem?.representedObject as? String; value.limit = 50
-        states[activeTab] = value; operationIssue = nil; refresh()
+        pendingRecovery = nil; value.position = nil
+        states[activeTab] = value; operationIssue = nil; refresh(); onRecoveryChange?()
     }
-    func controlTextDidChange(_ notification: Notification) { guard persistReply() else { search.stringValue = states[activeTab].query; return }; states[activeTab].query = search.stringValue; operationIssue = nil; refresh() }
-    @objc private func loadMore() { guard persistReply() else { return }; states[activeTab].limit += 50; refresh() }
+    func controlTextDidChange(_ notification: Notification) {
+        guard persistReply() else { search.stringValue = states[activeTab].query; return }
+        pendingRecovery = nil; states[activeTab].query = search.stringValue; states[activeTab].selection = nil
+        states[activeTab].position = nil; operationIssue = nil; refresh(); onRecoveryChange?()
+    }
+    @objc private func loadMore() { guard persistReply() else { return }; states[activeTab].limit += 50; refresh(); onRecoveryChange?() }
     @objc private func reload() { operationIssue = nil; attention.refresh(force: true); refresh() }
     func refresh() {
         guard isVisible || selected == nil else { return }
+        if pendingRecovery != nil, !isVisible || attention.loading { return }
+        let restoring = pendingRecovery
         let state = states[activeTab], calendar = Calendar.current, today = calendar.startOfDay(for: Date())
         let cutoff = state.days == 0 ? nil : calendar.date(byAdding: .day, value: state.days == 1 ? 0 : -(state.days - 1), to: today)
         let matching = attention.items.filter {
@@ -247,18 +343,33 @@ import AppKit
         let loaded = Array(matching.prefix(state.limit)), query = state.query.trimmingCharacters(in: .whitespacesAndNewlines)
         let next = loaded.filter { query.isEmpty || $0.searchable.localizedCaseInsensitiveContains(query) }
         guard persistReply() else { return }
-        let previous = selected?.id, wasReading = showingCompactDetail
+        let previous = state.item, wasReading = showingCompactDetail
         rows = next; renderFilters(); suppressSelection = true; table.reloadData()
-        if let row = rows.firstIndex(where: { $0.id == previous }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
-        else if !rows.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        let savedRow = rows.firstIndex { item in
+            item.id == previous && (restoring?.detail.map { $0.request == item.requestSignature } != false)
+        }
+        if restoring != nil, savedRow == nil {
+            needsSelection = true
+            if previous != nil { operationIssue = "原事项已变化，请从列表选择" }
+        }
+        if let savedRow { table.selectRowIndexes(IndexSet(integer: savedRow), byExtendingSelection: false) }
+        else if !rows.isEmpty, !needsSelection { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
         else { table.deselectAll(nil) }
         suppressSelection = false
-        if !rows.indices.contains(table.selectedRow) || previous != rows[table.selectedRow].id { detailRequested = false }
+        if restoring != nil {
+            pendingDetail = savedRow == nil ? nil : restoring?.detail
+            detailRequested = pendingDetail?.reading == true
+        } else if savedRow == nil { detailRequested = false }
         empty.stringValue = query.isEmpty ? activeTab == 0 ? "暂无待关注的事项" : "暂无历史" : "没有匹配的事项"
         canLoadMore = loaded.count < matching.count; more.isEnabled = !attention.loading
         status.textColor = operationIssue != nil || attention.issue != nil ? .systemRed : AgentWorkbenchTheme.secondaryText
         status.stringValue = operationIssue ?? attention.issue ?? (!attention.settings.enabled ? "需要我已关闭" : attention.loading ? "正在载入…" : matching.isEmpty ? "" : "\(rows.count) 项 · 已加载 \(loaded.count)／\(matching.count)")
         showSelection()
+        if restoring != nil {
+            restoreListPosition()
+            pendingRecovery = nil
+            focusCurrentPage(restoringSelection: true); applyDetailPosition(); onRecoveryChange?()
+        } else if previous != selected?.id { onRecoveryChange?() }
         if wasReading, !showingCompactDetail {
             restoreListPosition(); if !rows.isEmpty { presentingWindow?.makeFirstResponder(table) }
         }
@@ -286,7 +397,12 @@ import AppKit
         guard !suppressSelection else { return }
         guard persistReply() else {
             suppressSelection = true; if let row = rows.firstIndex(where: { $0.id == selected?.id }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }; suppressSelection = false; return
-        }; showSelection()
+        }
+        pendingRecovery = nil; needsSelection = false
+        if operationIssue == "原事项已变化，请从列表选择", rows.indices.contains(table.selectedRow) {
+            states[activeTab].item = rows[table.selectedRow].id; operationIssue = nil; refresh(); onRecoveryChange?(); return
+        }
+        showSelection(); onRecoveryChange?()
     }
     private func outcome(_ item: AgentAttentionItem) -> String {
         guard let decision = item.decision else { return item.handled ? "已处理" : "待处理" }
@@ -296,7 +412,8 @@ import AppKit
     private func showSelection() {
         defer { updateVisibility(); hostedContent?.layoutSubtreeIfNeeded(); presentingWindow?.recalculateKeyViewLoop() }
         let item = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow] : nil, changed = item?.id != selected?.id
-        selected = item; detailTitle.stringValue = item?.title ?? ""
+        selected = item; states[activeTab].item = item?.id; detailTitle.stringValue = item?.title ?? ""
+        if pendingDetail?.item != item?.id { pendingDetail = nil }
         guard let item else {
             metadata.stringValue = ""; body.string = ""
             for view in [replyCaption, replyField, open, mark, answer, allow, deny, execute] { view.isHidden = true }; return
@@ -335,7 +452,10 @@ import AppKit
     }
     func textDidChange(_ notification: Notification) {
         guard notification.object as? NSTextView === reply else { return }; updateActions(); draftSave?.cancel()
-        let work = DispatchWorkItem { [weak self] in _ = self?.persistReply() }; draftSave = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, persistReply() else { return }; onRecoveryChange?()
+        }
+        draftSave = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
     @discardableResult private func persistReply() -> Bool {
         draftSave?.cancel(); draftSave = nil
@@ -361,7 +481,10 @@ import AppKit
         do { operationIssue = try action() } catch { operationIssue = error.localizedDescription }
         refresh()
     }
-    func prepareToClose() -> Bool { persistReply() }
+    func prepareToClose() -> Bool {
+        guard persistReply() else { return false }
+        rememberFocus(); rememberListPosition(); return true
+    }
     func requireDeletionAllowed(_ ids: Set<String>) throws { if let item = selected, ids.contains(item.taskID), reply.string != replySavedText { throw PetError("请先保存需要我窗口中的答复草稿") } }
     func windowShouldClose(_ sender: NSWindow) -> Bool { prepareToClose() }
     func windowWillClose(_ notification: Notification) { draftSave?.cancel() }

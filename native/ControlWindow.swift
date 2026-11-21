@@ -1830,19 +1830,23 @@ final class FormDocumentView: NSView {
     }
     func showAttentionPreferences() { showSettingsCategory("attention") }
     func showAttentionPage() {
-        guard saveAgentDraft(), canLeaveMainPage() else { return }
+        guard saveAgentDraft(), canLeaveMainPage(), preparedAttentionPage() != nil else { return }
+        sidebarRequested = true
+        show(tab: "attention"); companion?.agentStore?.attention.refresh()
+    }
+    private func preparedAttentionPage() -> AgentAttentionWindow? {
         companion?.ensureAgent()
-        guard let tasks = companion?.agentStore, let runtime = companion?.agentRuntime, let host = window else { return }
+        guard let tasks = companion?.agentStore, let runtime = companion?.agentRuntime, let host = window else { return nil }
         if attentionPageController == nil {
             let page = AgentAttentionWindow(attention: tasks.attention, runtime: runtime)
             page.onOpenTask = { [weak self] id in self?.showAgentTask(id); self?.show(tab: "chat") }
             page.onOpenSettings = { [weak self] in self?.showAttentionPreferences() }
-            guard let view = page.content(in: host) else { return }
+            page.onRecoveryChange = { [weak self] in self?.workspaceSession?.changed() }
+            guard let view = page.content(in: host) else { return nil }
             attentionContent.addSubview(view); pin(view, to: attentionContent)
             attentionPageController = page
         }
-        sidebarRequested = true
-        show(tab: "attention"); tasks.attention.refresh(); attentionPageController?.refresh()
+        return attentionPageController
     }
     private func canLeaveMainPage() -> Bool {
         guard taskWorkspace.prepareToNavigate() else { return false }
@@ -2634,7 +2638,7 @@ final class FormDocumentView: NSView {
             if revealingKnowledge { knowledgePageHost.currentController?.settingsDidAppear() }
             knowledgePageHost.focusCurrentPage()
         }
-        if selectedTab == "attention" { attentionPageController?.refresh(); attentionPageController?.focusSearch() }
+        if selectedTab == "attention" { attentionPageController?.refresh(); attentionPageController?.focusCurrentPage() }
         if selectedTab == "automation" { automationWindow?.focusEditor() }
         companion?.updatePetWorkspaceOcclusion()
     }
@@ -3589,6 +3593,19 @@ final class FormDocumentView: NSView {
         rememberSettingsNavigationInput()
     }
     func captureSettingsRecovery() throws -> AgentSettingsRecovery.State? { try settingsPageHost.captureRecovery(active: selectedTab == "settings") }
+    func captureAttentionRecovery() -> AgentAttentionRecovery? {
+        attentionPageController?.captureRecovery(active: selectedTab == "attention")
+    }
+    func materializeAttentionRecovery(_ value: AgentAttentionRecovery) -> Bool {
+        guard let page = preparedAttentionPage() else { return false }
+        let reveal = value.active && canLeaveMainPage()
+        page.restoreRecovery(value)
+        if reveal {
+            sidebarRequested = true
+            show(tab: "attention")
+        }
+        return true
+    }
     func captureAutomationRecovery() throws -> AgentWorkspaceRecovery.Automation? {
         try selectedTab == "automation" ? automationWindow?.captureRecovery() : nil
     }

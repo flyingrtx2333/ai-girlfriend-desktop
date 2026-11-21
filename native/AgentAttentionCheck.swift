@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor extension AppDelegate {
-    func prepareAttentionCheck(_ output: URL) async throws {
+    func prepareAttentionCheck(_ output: URL, childQuestion: String? = nil, extraQuestions: Int = 0) async throws {
         guard (CommandLine.arguments.contains("--manual-ui") || CommandLine.arguments.contains("--attention-page-check")), let tasks = agentStore, let runtime = agentRuntime else { throw PetError("需要我窗口检查未初始化") }
         let primary = tasks.selectedID, project = output.appendingPathComponent("project").resolvingSymlinksInPath()
         let bytes = try Data(contentsOf: project.appendingPathComponent("README.md")), hash = AgentFiles.hash(bytes)
@@ -28,7 +28,11 @@ import AppKit
         try tasks.agents.save(tasks.agents.encode([role]), expectedHash: tasks.agents.document().1)
         guard let owner = primary.flatMap(tasks.task) else { throw PetError("原任务不可用") }
         let child = try tasks.agents.createTask(role.id, store: tasks, workspace: project.path, owner: owner)
-        try await request("childQuestion", title: "子任务确认输出格式", name: "ask_user", arguments: ["question": "子任务的输出使用 Markdown 还是纯文本？"], taskID: child)
+        try await request("childQuestion", title: "子任务确认输出格式", name: "ask_user", arguments: ["question": childQuestion ?? "子任务的输出使用 Markdown 还是纯文本？"], taskID: child)
+        for number in 0..<extraQuestions {
+            try await request("reading-\(number)", title: "确认样例附件 \(number + 1)", name: "ask_user",
+                              arguments: ["question": "这份公开附件是否需要保留原标题？"])
+        }
         tasks.automations.start(store: tasks, runtime: runtime)
         let automation = AgentAutomation(name: "收件箱验收自动化", prompt: "读取 README.md 并报告真实文件哈希。", workspace: project.path)
         try tasks.automations.save(automation, expected: nil); try tasks.automations.runNow(automation.id)

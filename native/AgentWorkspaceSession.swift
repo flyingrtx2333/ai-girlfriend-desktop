@@ -64,6 +64,7 @@ private actor AgentWorkspaceJournal {
     private var coldSettings: AgentSettingsRecovery.State?, settingsFailure: String?
     private var coldSettingsNavigation: AgentSettingsRecovery.Navigation?
     private var coldAutomation: AgentWorkspaceRecovery.Automation?, automationFailure: String?
+    private var coldAttention: AgentAttentionRecovery?
     var pendingSettingsCategory: String? { coldSettings?.category }
     var hasPendingAutomation: Bool { coldAutomation != nil }
     private var knowledgeFailure: String?
@@ -98,6 +99,7 @@ private actor AgentWorkspaceJournal {
         coldSettings = saved?.value.settings
         coldSettingsNavigation = saved?.value.settingsNavigation
         coldAutomation = saved?.value.automation
+        coldAttention = saved?.value.attention
         super.init()
         owner.taskWorkspace.onRecoveryChange = { [weak self] in self?.changed() }
         owner.knowledgePageHost.onRecoveryChange = { [weak self] in self?.changed() }
@@ -169,6 +171,7 @@ private actor AgentWorkspaceJournal {
         restoreKnowledge()
         restoreSettings()
         if coldKnowledge?.active != true, coldSettings?.active != true, coldSettingsNavigation == nil { restoreAutomation() }
+        restoreAttention()
         for task in owner?.taskWorkspace.recoveryLayouts ?? [] { for tab in task.tabs where tab.hasIndependentChild == true {
             guard let root = AgentTaskWorkspace.Root(key: tab.root), owner?.taskWorkspace.recoveryController(taskID: task.taskID, root: root) == nil else { continue }
             restore(task: task.taskID, tab: tab, activate: false)
@@ -254,6 +257,13 @@ private actor AgentWorkspaceJournal {
     }
     func hasAutomationDraft(for ids: Set<String>) -> Bool {
         coldAutomation?.context.taskID.map(ids.contains) == true
+    }
+    private func restoreAttention() {
+        guard !stopped, !disabled, let value = coldAttention, roots["attention"] == nil else { return }
+        roots["attention"] = Task { @MainActor [weak self] in
+            guard let self, let owner else { return }; defer { roots["attention"] = nil }
+            if owner.materializeAttentionRecovery(value) { coldAttention = nil; changed() }
+        }
     }
     func prepareFloating(preserving: Bool) async -> Bool {
         for controller in floatingControllers {
@@ -352,6 +362,7 @@ private actor AgentWorkspaceJournal {
                 layout.settingsNavigation = coldSettingsNavigation ?? owner.captureSettingsNavigation()
                 layout.conversationPositions = owner.captureConversationPositions()
                 layout.automation = try coldAutomation ?? owner.captureAutomationRecovery()
+                layout.attention = owner.captureAttentionRecovery() ?? coldAttention
                 let marketCopy = coldSettings == nil ? (owner.settingsRecoveryControllers.last as? AgentPluginReviewPage)?.marketCopy : nil
                 let expected = layoutHash, capturedLayout = layout
                 let saved = try await journal.saveWindow(capturedLayout, expected: expected, marketCopy: marketCopy)
@@ -422,6 +433,7 @@ private actor AgentWorkspaceJournal {
         // Read the latest media position even between throttled time events.
         if editors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) || owner?.knowledgePageHost.recoveryReaders.contains(where: \.hasVideoPlayback) == true { revision &+= 1 }
         if editors.contains(where: { ($0.2 as? AgentGitWindow)?.recoveryWorktreeForm?.hasDraft == true }) { revision &+= 1 }
+        if let owner, let attention = owner.captureAttentionRecovery(), attention != previous?.attention { revision &+= 1 }
         if !terminalRecoveryReadOnly, let owner, let terminals = owner.captureTerminalLayout(windowID: id) {
             let appearance = terminalAppearance(for: terminals, preference: owner.terminalAppearancePreference)
             if terminals != savedTerminals?.value || (appearance != nil && appearance != savedTerminalAppearance?.value) { revision &+= 1 }

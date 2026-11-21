@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor extension AppDelegate {
-    func prepareAttentionPageUI(_ output: URL) async throws -> String {
+    func prepareAttentionPageUI(_ output: URL, childQuestion: String? = nil, extraQuestions: Int = 0) async throws -> String {
         ensureAgent()
         guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("需要我验收未初始化") }
         let project = output.appendingPathComponent("project")
@@ -11,7 +11,7 @@ import AppKit
         guard runtime.submit("核对收件箱、答复草稿和返回任务。", taskID: id, startImmediately: false) else { throw PetError("原生用户输入未保存") }
         tasks.update(id) { $0.draft = "原任务尚未发送的草稿。" }
         control.showAgentTask(id)
-        try await prepareAttentionCheck(output)
+        try await prepareAttentionCheck(output, childQuestion: childQuestion, extraQuestions: extraQuestions)
         return id
     }
 

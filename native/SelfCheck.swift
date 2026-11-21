@@ -67,7 +67,11 @@ import WebKit
         if CommandLine.arguments.contains("--dependency-security-check") { await runDependencySecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--dependency-report-check") { await runDependencyReportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--semantic-security-check") { await runSemanticSecurityCheck(output); NSApp.terminate(nil); return }
-        if CommandLine.arguments.contains("--attention-page-check") { await runAttentionPageCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--attention-page-check") {
+            if CommandLine.arguments.contains("--attention-recovery-check") { await runAttentionRecoveryCheck(output) }
+            else { await runAttentionPageCheck(output) }
+            NSApp.terminate(nil); return
+        }
         if CommandLine.arguments.contains("--automation-page-check") { await runAutomationPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-workspace-check") { await runGitWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-preferences-check") { await runGitPreferencesCheck(output); NSApp.terminate(nil); return }

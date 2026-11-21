@@ -85,6 +85,7 @@ struct AgentWorkspaceRecovery: Sendable {
         var marketReviewCopy: Asset? = nil
         var settingsNavigation: AgentSettingsRecovery.Navigation? = nil
         var automation: Automation? = nil
+        var attention: AgentAttentionRecovery? = nil
         var conversationPositions: [String: AgentConversationPosition]? = nil
         var closed = false
     }
@@ -193,6 +194,10 @@ struct AgentWorkspaceRecovery: Sendable {
         if let automation = value.automation {
             guard automation.context.valid, automation.state.count <= Self.maximumState else { throw PetError("自动化编辑恢复范围无效，原记录已保留") }
         }
+        if let attention = value.attention {
+            guard attention.valid, !attention.active || (value.settings?.active != true && value.settingsNavigation == nil &&
+                value.knowledge?.active != true && value.automation == nil) else { throw PetError("需要我恢复范围无效，原记录已保留") }
+        }
     }
     private func validate(_ value: Page) throws {
         guard value.version == 1, UUID(uuidString: value.taskID) != nil, !value.kind.isEmpty, value.kind.utf8.count <= 80,
@@ -204,7 +209,7 @@ struct AgentWorkspaceRecovery: Sendable {
         return object
     }
     private func decodeWindow(_ data: Data) throws -> Window {
-        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "settings", "marketReviewCopy", "settingsNavigation", "automation", "conversationPositions", "closed"])
+        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "settings", "marketReviewCopy", "settingsNavigation", "automation", "attention", "conversationPositions", "closed"])
         func frame(_ value: Any?) throws { if let value, !(value is NSNull) { _ = try keys(value, ["x", "y", "width", "height"]) } }
         func tab(_ value: Any) throws { _ = try keys(value, ["id", "root", "title", "hasIndependentChild"]) }
         try frame(object["frame"])
@@ -243,6 +248,7 @@ struct AgentWorkspaceRecovery: Sendable {
             let automation = try keys(raw, ["context", "state"])
             if let context = automation["context"] { try AgentSettingsRecovery.validateContext(context) }
         }
+        if let attention = object["attention"], !(attention is NSNull) { try AgentAttentionRecovery.validateObject(attention) }
         let value = try JSONDecoder().decode(Window.self, from: data); try validate(value); return value
     }
     private func decodePage(_ data: Data) throws -> Page {
