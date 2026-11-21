@@ -30,9 +30,11 @@ import AppKit
                 guard let view = page.textViewportReadback["markdown"] as? [String: Any], let edit = view["editor"] as? [String: Any] else { return false }
                 return view["pending"] as? Bool == false && edit["focused"] as? Bool == true
             }
-            func same(_ a: AgentTextViewport?, _ b: AgentTextViewport?) -> Bool {
+            func same(_ a: AgentTextViewport?, _ b: AgentTextViewport?, reflowing: Bool = false) -> Bool {
                 guard let a, let b else { return false }
-                return a.hash == b.hash && a.count == b.count && a.selections == b.selections && abs(a.x - b.x) < 0.5 && abs(a.y - b.y) < 0.5
+                // A wrapped cell can keep the same reading line at a different pixel offset.
+                let samePosition = reflowing ? a.anchor == b.anchor && abs(a.offset - b.offset) < 0.5 : abs(a.y - b.y) < 0.5
+                return a.hash == b.hash && a.count == b.count && a.selections == b.selections && abs(a.x - b.x) < 0.5 && samePosition
             }
             let fixture: TextViewportFixture
             if stage == "seed" {
@@ -109,7 +111,32 @@ import AppKit
                 checks["autosaveNeverFinishesActiveBlockEditor"] = (try await state(block)).markdownViewport?.editor != nil && inlineReady(block)
                 control.showAgentTask(second); control.showTaskDocument(guide.path); control.window?.makeKeyAndOrderFront(nil)
                 let cell = try editor(second), cellValue = try expected("cellValue")
-                try cell.checkTextViewport(preview: true, action: "begin", target: "PUBLIC_CELL_ORIGINAL_628", input: cellValue, selection: (cellValue as NSString).range(of: "中文😀"), y: 60, cell: true)
+                func cellGeometry() -> (height: Double, fittingHeight: Double) {
+                    let view = cell.textViewportReadback["markdown"] as? [String: Any]
+                    let edit = view?["editor"] as? [String: Any]
+                    return (edit?["height"] as? Double ?? 0, edit?["fittingHeight"] as? Double ?? 0)
+                }
+                try cell.checkTextViewport(preview: true, action: "begin", target: "PUBLIC_CELL_ORIGINAL_628", cell: true)
+                let initial = cellGeometry()
+                try cell.checkTextViewport(preview: true, input: "第一行\n第二行😀\n")
+                checks["cellRowExpandsToFitWrappedDraftAndTrailingLine"] = await eventually {
+                    let geometry = cellGeometry()
+                    return initial.height > 0 && geometry.height > initial.height && geometry.height >= geometry.fittingHeight &&
+                        geometry.fittingHeight >= 50
+                }
+                let expanded = cellGeometry()
+                try cell.checkTextViewport(preview: true, input: "原值")
+                checks["cellRowShrinksWhenDraftIsShortened"] = await eventually {
+                    let geometry = cellGeometry()
+                    return geometry.height >= geometry.fittingHeight && geometry.height <= initial.height && geometry.height < expanded.height
+                }
+                try cell.checkTextViewport(preview: true, input: cellValue, selection: (cellValue as NSString).range(of: "中文😀"), y: 60, cell: true)
+                checks["longCellEditorKeepsInternalScrollWithinHeightLimit"] = await eventually {
+                    let geometry = cellGeometry()
+                    return geometry.height > expanded.height && geometry.height <= 160 && geometry.fittingHeight > geometry.height
+                }
+                report["cellLayout"] = ["initial": [initial.height, initial.fittingHeight],
+                    "expanded": [expanded.height, expanded.fittingHeight], "long": [cellGeometry().height, cellGeometry().fittingHeight]]
                 guard await flushWorkspaceWindows(), let layout = try journal.loadWindow(window)?.value,
                       let blockTab = layout.tasks.first(where: { $0.taskID == first })?.tabs.first(where: { $0.root == "document:" + guide.path })?.id,
                       let cellTab = layout.tasks.first(where: { $0.taskID == second })?.tabs.first(where: { $0.root == "document:" + guide.path })?.id else { throw PetError("段落或表格位置没有保存") }
@@ -165,7 +192,7 @@ import AppKit
                     let cellState = try await state(cell), plainState = try await state(plain)
                     if !interactive {
                         checks["cellCompleteDraftAndOriginalBaseRestore"] = cellState.text == fixture.cell.text && cellState.markdownViewport?.editor?.base == fixture.cell.markdownViewport?.editor?.base
-                        checks["cellActualSelectionAndInternalScrollRestore"] = same(cellState.markdownViewport?.editor?.viewport, fixture.cell.markdownViewport?.editor?.viewport)
+                        checks["cellActualSelectionAndInternalScrollRestore"] = same(cellState.markdownViewport?.editor?.viewport, fixture.cell.markdownViewport?.editor?.viewport, reflowing: true)
                         checks["floatingSourceSelectionScrollEncodingRestore"] = same(plainState.textViewport, fixture.plain.textViewport) && plainState.encoding == fixture.plain.encoding && plainState.bom
                     }
                     report["cellActual"] = cell.textViewportReadback; report["plainActual"] = plain.textViewportReadback

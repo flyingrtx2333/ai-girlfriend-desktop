@@ -139,13 +139,17 @@ import AppKit
             if isEditing, source.isEmpty, let region = document?.regions.first { try beginEditing(region) }
         } catch { onEditError?(error.localizedDescription) }
     }
+    private func tableBlock(for region: AgentMarkdownEditing.Region) -> NSTextBlock? {
+        guard region.isCell, let storage = text.textStorage, region.display.location < storage.length,
+              let style = storage.attribute(.paragraphStyle, at: region.display.location, effectiveRange: nil) as? NSParagraphStyle else { return nil }
+        return style.textBlocks.first
+    }
     private func regionRect(_ region: AgentMarkdownEditing.Region) -> NSRect {
         guard let layout = text.layoutManager, let container = text.textContainer, NSMaxRange(region.display) <= (text.string as NSString).length else { return .zero }
         layout.ensureLayout(for: container)
         let glyphs = layout.glyphRange(forCharacterRange: region.display, actualCharacterRange: nil)
         var rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
-        if region.isCell, region.display.location < (text.string as NSString).length,
-           let style = text.textStorage?.attribute(.paragraphStyle, at: region.display.location, effectiveRange: nil) as? NSParagraphStyle, let block = style.textBlocks.first {
+        if let block = tableBlock(for: region) {
             rect = layout.boundsRect(for: block, glyphRange: glyphs)
         } else { rect.origin.x = 0; rect.size.width = max(160, text.bounds.width - 36); rect.size.height = max(36, rect.height + 6) }
         return rect.offsetBy(dx: text.textContainerOrigin.x, dy: text.textContainerOrigin.y)
@@ -176,6 +180,10 @@ import AppKit
             guard let self, let editor else { return }
             do { let next = try AgentMarkdownEditing.replacing(editor.region, in: editor.base, with: value); if source != next { pendingViewRecovery = nil; source = next; onSourceChanged?(next) } }
             catch { onEditError?(error.localizedDescription) }
+            if editor.region.isCell, inlineEditor === editor {
+                positionEditor()
+                _ = text.scrollToVisible(editor.frame)
+            }
         }
         editor.onFinish = { [weak self] commit, direction in
             guard let self else { return }
@@ -192,9 +200,28 @@ import AppKit
     }
     private func positionEditor() {
         guard let editor = inlineEditor else { return }
+        let availableHeight = max(60, scroll.contentSize.height - 16)
         var rect = regionRect(editor.region)
-        rect.size.height = min(max(28, rect.height), max(60, scroll.contentSize.height - 16))
-        editor.frame = rect
+        if case .cell(let table, _, _) = editor.region.kind, let block = tableBlock(for: editor.region), let layout = text.layoutManager {
+            if editor.frame.width != rect.width {
+                editor.setFrameSize(NSSize(width: rect.width, height: min(max(28, rect.height), availableHeight)))
+            }
+            let limit = min(160, max(60, availableHeight / 2))
+            let insets = [NSRectEdge.minY, .maxY].reduce(CGFloat.zero) {
+                $0 + block.width(for: .padding, edge: $1) + block.width(for: .border, edge: $1)
+            }
+            let height = max(0, min(limit, editor.fittingHeight) - insets)
+            if block.value(for: .height) != height {
+                // TextKit caches row geometry at the start of the table.
+                block.setValue(height, type: .absoluteValueType, for: .height)
+                let first = document?.regions.first(where: { $0.kind == .cell(table: table, row: 0, column: 0) })
+                let range = NSUnionRange(first?.display ?? editor.region.display, editor.region.display)
+                layout.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+                rect = regionRect(editor.region)
+            }
+        }
+        rect.size.height = min(max(28, rect.height), availableHeight)
+        if editor.frame != rect { editor.frame = rect }
     }
     func finishEditing(commit: Bool = true) throws {
         guard let editor = inlineEditor else { return }; editor.commitInput()
@@ -386,6 +413,8 @@ import AppKit
         defer { applyingViewRecovery = false }
         window?.contentView?.layoutSubtreeIfNeeded(); positionEditor()
         guard value.editor.map({ inlineEditor?.restoreViewport($0.viewport) == true }) ?? true, value.viewport.apply(to: text) else { return }
+        if let editor = inlineEditor, editor.region.isCell, value.editor?.viewport.focused == true,
+           scroll.documentVisibleRect.intersects(editor.frame) { _ = text.scrollToVisible(editor.frame) }
         pendingViewRecovery = nil; onViewportChange?()
     }
     @objc private func viewportChanged(_ notification: Notification) { viewChanged() }

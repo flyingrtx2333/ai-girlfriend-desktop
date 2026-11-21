@@ -264,6 +264,12 @@ enum AgentMarkdownEditing {
     @objc private func viewportChanged(_ notification: Notification) { onViewportChange?() }
     func captureViewport() throws -> AgentTextViewport { try AgentTextViewport(field) }
     var hasInputFocus: Bool { field.window?.firstResponder === field }
+    var fittingHeight: CGFloat {
+        guard let layout = field.layoutManager, let container = field.textContainer else { return 0 }
+        layout.ensureLayout(for: container)
+        let contentHeight = max(layout.usedRect(for: container).maxY, layout.extraLineFragmentRect.maxY)
+        return ceil(contentHeight + field.textContainerInset.height * 2 + max(0, bounds.height - contentSize.height))
+    }
     func restoreValue(_ value: String) { field.string = value }
     func setEditable(_ editable: Bool) { field.isEditable = editable }
     @discardableResult func restoreViewport(_ value: AgentTextViewport) -> Bool { value.apply(to: field) }
@@ -279,5 +285,8 @@ enum AgentMarkdownEditing {
         window?.contentView?.layoutSubtreeIfNeeded()
         if let y { contentView.scroll(to: NSPoint(x: 0, y: y)); reflectScrolledClipView(contentView) }
     }
-    var viewportReadback: [String: Any] { ["location": field.selectedRange().location, "length": field.selectedRange().length, "y": Double(contentView.bounds.minY), "focused": hasInputFocus] }
+    var viewportReadback: [String: Any] {
+        ["location": field.selectedRange().location, "length": field.selectedRange().length, "y": Double(contentView.bounds.minY),
+         "focused": hasInputFocus, "height": Double(frame.height), "fittingHeight": Double(fittingHeight)]
+    }
 }
