@@ -2446,6 +2446,10 @@ final class FormDocumentView: NSView {
             let desktopPanel = AgentDesktopSettingsView(desktop: store.desktop); desktopSettings = desktopPanel; row("", desktopPanel); desktopPanel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("imports", "本机数据", "数据 导入 Codex Qoder 历史 来源 全局记忆 项目记忆 Skills 技能 MCP 连接器 定时任务 自动化 插件 扩展配置 规则 指令 命令 智能体 Hooks")
             let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }
+            imports.onNavigationChange = { [weak self] in
+                guard let self, selectedTab == "settings", settingsCategory == "imports" else { return }
+                workspaceSession?.changed()
+            }
             imports.onOpenConnector = { [weak self] id, workspace in try self?.configureImportedConnector(id, workspace: workspace) }
             imports.onOpenPlugin = { [weak self] id, workspace in try self?.openImportedPlugin(id, workspace: workspace) }
             imports.onOpenConfiguration = { [weak self] plan, url in try self?.openImportedConfiguration(plan, url: url) }
@@ -3082,7 +3086,8 @@ final class FormDocumentView: NSView {
         let value = AgentSettingsRecovery.Navigation(category: settingsCategory, page: page, source: source, query: input.query,
             selection: input.selection, focus: input.focus, resultVisible: input.resultVisible,
             contentY: settingsScroll.isHidden ? (modelDirectoryReturnY ?? 0) : max(0, settingsScroll.contentView.bounds.minY),
-            sidebarY: max(0, settingsNavigationScroll.contentView.bounds.minY), returnTab: settingsReturnTab, knowledgeRoot: settingsReturnKnowledgeRoot)
+            sidebarY: max(0, settingsNavigationScroll.contentView.bounds.minY), returnTab: settingsReturnTab, knowledgeRoot: settingsReturnKnowledgeRoot,
+            dataImport: settingsCategory == "imports" ? dataImportView?.captureNavigation() : nil)
         return value.valid ? value : nil
     }
     func materializeSettingsNavigation(_ value: AgentSettingsRecovery.Navigation) throws {
@@ -3097,6 +3102,7 @@ final class FormDocumentView: NSView {
         if let source = value.source, let id = agentTaskID, currentAgentTask?.workspacePaths.contains(source) == true { settingsSourceFolders[id] = source }
         pendingSettingsNavigation = value
         show(tab: "settings")
+        if let dataImport = value.dataImport { dataImportView?.restoreNavigation(dataImport) }
         if let page = value.page { settingsPageHost.selectPage(page) }
         setSettingsReturn(to: value.returnTab, knowledgeRoot: value.knowledgeRoot)
         DispatchQueue.main.async { [weak self] in
@@ -3127,6 +3133,15 @@ final class FormDocumentView: NSView {
             pendingSettingsNavigation = nil
             rememberSettingsNavigationInput()
             workspaceSession?.changed()
+            if value.dataImport != nil {
+                let initialY = settingsScroll.contentView.bounds.minY
+                dataImportView?.restorePreviews { [weak self] in
+                    guard let self, selectedTab == "settings", settingsCategory == "imports", !settingsScroll.isHidden,
+                          abs(settingsScroll.contentView.bounds.minY - initialY) < 1 else { return }
+                    self.window?.contentView?.layoutSubtreeIfNeeded()
+                    restoreSettingsScroll(value.contentY, to: settingsScroll)
+                }
+            }
         }
     }
     private func restoreSettingsScroll(_ y: Double, to scroll: NSScrollView) {

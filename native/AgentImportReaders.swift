@@ -1,13 +1,13 @@
 import Foundation
 import SQLite3
 
-enum AgentImportSource: String, Codable, CaseIterable {
+enum AgentImportSource: String, Codable, CaseIterable, Sendable {
     case codex, qoder
     var title: String { self == .codex ? "Codex" : "Qoder" }
     var homeName: String { self == .codex ? ".codex" : ".qoder" }
 }
 
-enum AgentImportCategory: String, CaseIterable {
+enum AgentImportCategory: String, Codable, CaseIterable, Sendable {
     case tasks, memory, skills, connectors, automations, plugins, configuration
     var title: String {
         switch self {

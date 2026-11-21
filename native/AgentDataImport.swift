@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-struct AgentImportRoute: Hashable {
+struct AgentImportRoute: Hashable, Codable, Sendable {
     let source: AgentImportSource
     let category: AgentImportCategory
     let root: String

@@ -1,6 +1,61 @@
 import AppKit
 import UniformTypeIdentifiers
 
+struct AgentImportNavigation: Codable, Equatable, Sendable {
+    struct SourceRoute: Codable, Equatable, Sendable {
+        var route: AgentImportRoute
+        var checked: [String: String]?
+    }
+    struct Reading: Codable, Equatable, Sendable {
+        var recordID: String?
+        var listY: Double
+        var text: AgentTextViewport?
+    }
+    var source: AgentImportSource
+    var category: AgentImportCategory?
+    var routes: [SourceRoute]
+    var reading: Reading?
+
+    var valid: Bool {
+        func validPath(_ value: String) -> Bool {
+            value.hasPrefix("/") && !value.contains("\0") && value.utf8.count <= 16_384
+        }
+        func validID(_ value: String, source: AgentImportSource) -> Bool {
+            value.hasPrefix(source.rawValue + ":") && !value.contains("\0") && value.utf8.count <= 512
+        }
+        let keys = routes.map { $0.route.source.rawValue + "/" + $0.route.category.rawValue }
+        return Set(keys).count == routes.count && routes.allSatisfy { item in
+            validPath(item.route.root) && item.route.workspace.map { item.route.category.globalTarget != nil && validPath($0) } != false &&
+                item.checked.map { checked in
+                    checked.count <= 5_000 && checked.allSatisfy { validID($0.key, source: item.route.source) && AgentSettingsRecovery.validHash($0.value) }
+                } != false
+        } && reading.map {
+            category != nil && AgentSettingsRecovery.validScroll($0.listY) && $0.recordID.map { validID($0, source: source) } != false &&
+                ($0.text == nil || $0.recordID != nil && $0.text?.valid == true)
+        } != false
+    }
+
+    static func validateObject(_ raw: Any) throws {
+        let value = try AgentSettingsRecovery.object(raw, keys: ["source", "category", "routes", "reading"])
+        for route in value["routes"] as? [Any] ?? [] {
+            let item = try AgentSettingsRecovery.object(route, keys: ["route", "checked"])
+            if let data = item["route"] { _ = try AgentSettingsRecovery.object(data, keys: ["source", "category", "root", "workspace"]) }
+        }
+        if let raw = value["reading"], !(raw is NSNull) {
+            let reading = try AgentSettingsRecovery.object(raw, keys: ["recordID", "listY", "text"])
+            if let text = reading["text"], !(text is NSNull) { try AgentTextViewport.validateObject(text) }
+        }
+    }
+
+    static func reviewHash(_ record: AgentImportCandidate) -> String? {
+        let source = [record.file, record.rawHash, record.sourceHash, record.title, record.preview, record.issue ?? ""]
+        let target = [record.targetWorkspace ?? "", record.automation?.workspace ?? "", record.configuration?.destination ?? ""]
+        let parts = record.memory?.parts.map { [$0.name, $0.hash] } ?? []
+        guard let data = try? JSONEncoder().encode([source, target, record.warnings] + parts) else { return nil }
+        return AgentFiles.hash(data)
+    }
+}
+
 @MainActor private final class AgentImportCategoryRow: NSStackView {
     let choice = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     let status = NSTextField(labelWithString: "")
@@ -51,14 +106,18 @@ import UniformTypeIdentifiers
     private let begin = AgentDialogButton(title: "导入所选数据", target: nil, action: nil)
     private let pause = NSButton(title: "暂停", target: nil, action: nil), resume = NSButton(title: "继续导入", target: nil, action: nil), cancel = NSButton(title: "取消导入", target: nil, action: nil)
     private let open = NSButton(title: "打开任务", target: nil, action: nil), original = NSButton(title: "来源副本", target: nil, action: nil)
-    private struct Selection { let preview: UUID; var ids: Set<String> }
+    private struct Selection { let preview: UUID; let fingerprints: [String: String]; var ids: Set<String> }
     private var categoryRows: [AgentImportCategory: AgentImportCategoryRow] = [:]
     private var routes: [AgentImportSource: [AgentImportCategory: AgentImportRoute]] = [:]
     private var selections: [AgentImportRoute: Selection] = [:]
+    private var reviewed: [AgentImportRoute: [String: String]] = [:]
+    private var changedChecks: [AgentImportRoute: Int] = [:]
     private var editing: AgentImportCategory?, shownRoute: AgentImportRoute?, shownBatch: String?
-    private var highlighted: [AgentImportRoute: String] = [:]
+    private var readings: [AgentImportRoute: AgentImportNavigation.Reading] = [:]
     private var rows: [AgentImportCandidate] = [], states: [String: String] = [:]
     private var listHeight: NSLayoutConstraint?
+    private var refreshing = false
+    var onNavigationChange: (() -> Void)?
     var onOpen: ((String) -> Void)?
     var onOpenConnector: ((String, String?) throws -> Void)?
     var onOpenAutomation: ((String) throws -> Void)?
@@ -121,18 +180,85 @@ import UniformTypeIdentifiers
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         let height = list.heightAnchor.constraint(equalToConstant: 236); listHeight = height
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), folder.widthAnchor.constraint(greaterThanOrEqualToConstant: 90), height, preview.heightAnchor.constraint(equalToConstant: 142)])
+        for scroll in [list, preview] {
+            scroll.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(readingChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(readingChanged), name: NSTextView.didChangeSelectionNotification, object: detail)
         folder.setContentHuggingPriority(.defaultLow, for: .horizontal); refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit { NotificationCenter.default.removeObserver(self) }
     private func append(_ view: NSView, to stack: NSStackView) {
         stack.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
+    func captureNavigation() -> AgentImportNavigation? {
+        rememberReading()
+        var known = routes
+        for route in reviewed.keys { known[route.source, default: [:]][route.category] = route }
+        let saved = AgentImportSource.allCases.flatMap { source in
+            AgentImportCategory.allCases.compactMap { category in
+                known[source]?[category].map { AgentImportNavigation.SourceRoute(route: $0, checked: reviewed[$0]) }
+            }
+        }
+        let reading = editing.flatMap { readings[route($0)] }
+        let value = AgentImportNavigation(source: selectedSource, category: editing, routes: saved, reading: reading)
+        return value.valid ? value : nil
+    }
+    func restoreNavigation(_ value: AgentImportNavigation) {
+        if let batch = service.batch, service.unfinished || service.active {
+            guard batch.source == value.source else { return }
+            editing = value.category
+        } else {
+            sources.selectedSegment = AgentImportSource.allCases.firstIndex(of: value.source) ?? 0
+            editing = value.category
+            routes.removeAll()
+            reviewed.removeAll()
+            for entry in value.routes {
+                let route = entry.route
+                routes[route.source, default: [:]][route.category] = route
+                reviewed[route] = entry.checked
+            }
+        }
+        shownRoute = nil
+        selections.removeAll()
+        changedChecks.removeAll()
+        readings.removeAll()
+        if let editing { readings[route(editing)] = value.reading }
+        refresh()
+    }
+    func restorePreviews(then ready: (() -> Void)? = nil) {
+        let source = selectedSource, category = editing
+        let saved = AgentImportCategory.allCases.map(route).filter { reviewed[$0] != nil && service.preview(for: $0) == nil }
+        guard canConfigure, !saved.isEmpty else { return }
+        Task { [weak self] in
+            guard let self, canConfigure, selectedSource == source, saved.allSatisfy({ route($0.category) == $0 }) else { return }
+            await service.detect(saved)
+            if selectedSource == source, editing == category, saved.allSatisfy({ route($0.category) == $0 }) { ready?() }
+        }
+    }
+    private func rememberReading() {
+        guard !refreshing, !isHiddenOrHasHiddenAncestor, let route = shownRoute,
+              !rows.isEmpty, let list = table.enclosingScrollView else { return }
+        let id = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow].id : nil
+        let text = id == nil ? nil : try? AgentTextViewport(detail)
+        readings[route] = .init(recordID: id, listY: max(0, list.contentView.bounds.minY), text: text)
+    }
+    @objc private func readingChanged() {
+        if !refreshing, !isHiddenOrHasHiddenAncestor { onNavigationChange?() }
+    }
     func refresh() {
+        guard !refreshing else { return }
+        rememberReading()
+        refreshing = true
+        defer { refreshing = false; onNavigationChange?() }
         let batch = service.batch
         if let batch, shownBatch != batch.id {
             shownBatch = batch.id
             sources.selectedSegment = AgentImportSource.allCases.firstIndex(of: batch.source) ?? 0
+            reviewed = reviewed.filter { $0.key.source != batch.source }
+            changedChecks = changedChecks.filter { $0.key.source != batch.source }
             for item in batch.items {
                 let route = batch.route(for: item)
                 routes[route.source, default: [:]][route.category] = route
@@ -143,7 +269,7 @@ import UniformTypeIdentifiers
         var picked = 0, hasPreview = false
         for category in AgentImportCategory.allCases {
             let route = route(category), preview = service.preview(for: route)
-            if let preview, selections[route] == nil { selections[route] = .init(preview: preview.id, ids: preview.available) }
+            if let preview, preview.issue == nil, selections[route] == nil { reconcileSelection(route, preview: preview) }
             picked += selections[route]?.ids.count ?? 0
             hasPreview = hasPreview || preview != nil
             updateCategory(route, preview: preview, items: grouped[route] ?? [])
@@ -158,6 +284,7 @@ import UniformTypeIdentifiers
         begin.title = picked > 0 ? "导入 \(picked) 项" : "导入所选数据"
         pause.isHidden = !service.active; pause.isEnabled = batch?.state == "running"
         resume.isHidden = !service.unfinished || service.active; cancel.isHidden = !service.unfinished && !service.active
+        let changed = editing.map { changedChecks[route($0), default: 0] } ?? AgentImportCategory.allCases.reduce(0) { $0 + changedChecks[route($1), default: 0] }
         if let issue = service.operationIssue ?? preview?.issue { state.stringValue = issue; state.textColor = .systemRed }
         else {
             state.textColor = AgentWorkbenchTheme.secondaryText
@@ -165,12 +292,22 @@ import UniformTypeIdentifiers
             else if let batch, batch.source == selectedSource, service.active || service.unfinished || !hasPreview {
                 let done = batch.items.filter { $0.state == "imported" }.count, failed = batch.items.filter { $0.state == "failed" }.count
                 state.stringValue = ["running": "导入中", "paused": "已暂停", "cancelled": "已取消", "completed": "已完成"][batch.state, default: batch.state] + " · \(done)/\(batch.items.count)" + (failed > 0 ? " · 失败 \(failed) 项" : "")
-            } else if let preview {
+            } else if changed > 0 { state.stringValue = "\(changed) 项原勾选内容已变化，请重新审阅" }
+            else if let preview {
                 let available = preview.available.count, skipped = preview.records.count - available
                 state.stringValue = preview.records.isEmpty ? "此类别无可导入内容" : "\(available) 项可导入" + (skipped > 0 ? " · 跳过 \(skipped) 项" : "")
             } else { state.stringValue = hasPreview ? "" : "尚未检测" }
         }
         state.toolTip = state.stringValue
+    }
+    private func reconcileSelection(_ route: AgentImportRoute, preview: AgentImportPreview) {
+        var fingerprints: [String: String] = [:]
+        for record in preview.records where record.issue == nil { fingerprints[record.id] = AgentImportNavigation.reviewHash(record) }
+        let previous = reviewed[route]
+        let checked = previous.map { saved in fingerprints.filter { saved[$0.key] == $0.value } } ?? fingerprints
+        changedChecks[route] = previous.map { $0.count - checked.count }
+        reviewed[route] = checked
+        selections[route] = .init(preview: preview.id, fingerprints: fingerprints, ids: Set(checked.keys))
     }
     private func updateCategory(_ route: AgentImportRoute, preview: AgentImportPreview?, items: [AgentImportItem]) {
         guard let row = categoryRows[route.category] else { return }
@@ -193,7 +330,7 @@ import UniformTypeIdentifiers
         } else { row.status.stringValue = "" }
     }
     private func refreshEditor(preview: AgentImportPreview?, items: [AgentImportItem]) {
-        if let shownRoute, rows.indices.contains(table.selectedRow) { highlighted[shownRoute] = rows[table.selectedRow].id }
+        let previous = shownRoute
         shownRoute = editing.map { route($0) }
         guard let route = shownRoute else { return }
         let root = route.directory
@@ -218,11 +355,18 @@ import UniformTypeIdentifiers
         selectAll.isEnabled = canConfigure && available > 0
         selectAll.state = selected.isEmpty ? .off : selected.count == available ? .on : .mixed
         table.reloadData()
-        if let id = highlighted[route], let index = rows.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
+        let reading = readings[route]
+        if let id = reading?.recordID, let index = rows.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
         else { table.deselectAll(nil) }
         table.enclosingScrollView?.isHidden = rows.isEmpty; selectAll.superview?.isHidden = rows.isEmpty
         listHeight?.constant = CGFloat(min(236, max(48, rows.count * 48)))
         updateDetail()
+        guard !isHiddenOrHasHiddenAncestor, !rows.isEmpty else { return }
+        layoutSubtreeIfNeeded()
+        if let list = table.enclosingScrollView, reading != nil || previous != route {
+            AgentSettingsRecovery.restoreScroll(reading?.listY ?? 0, to: list)
+        }
+        if table.selectedRow >= 0, let text = reading?.text { text.apply(to: detail, focus: false) }
     }
     private func updateDestinations(globalTitle: String) {
         destination.removeAllItems()
@@ -262,7 +406,18 @@ import UniformTypeIdentifiers
         title.font = .systemFont(ofSize: 13); title.lineBreakMode = .byTruncatingTail; status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingTail
         let stack = NSStackView(views: [title, status]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; stack.toolTip = value.file; return stack
     }
-    func tableViewSelectionDidChange(_ notification: Notification) { updateDetail() }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        if !refreshing {
+            updateDetail()
+            readingChanged()
+        }
+    }
+    private func setDetail(_ value: String) {
+        guard detail.string != value else { return }
+        detail.string = value
+        detail.setSelectedRange(NSRange(location: 0, length: 0))
+        if let scroll = detail.enclosingScrollView { AgentSettingsRecovery.restoreScroll(0, to: scroll) }
+    }
     private func updateDetail() {
         let root = currentRoute.directory
         switch selectedCategory {
@@ -275,7 +430,7 @@ import UniformTypeIdentifiers
         original.title = selectedCategory == .tasks ? "来源副本" : "来源文件"
         let hasSelection = rows.indices.contains(table.selectedRow)
         detail.enclosingScrollView?.isHidden = !hasSelection; open.isHidden = !hasSelection; original.isHidden = !hasSelection
-        guard hasSelection else { detail.string = ""; open.isEnabled = false; original.isEnabled = false; return }
+        guard hasSelection else { setDetail(""); open.isEnabled = false; original.isEnabled = false; return }
         let record = rows[table.selectedRow]
         if let plan = record.memory {
             let names = plan.parts.prefix(8).map(\.name).joined(separator: "、")
@@ -283,7 +438,7 @@ import UniformTypeIdentifiers
             var lines = [record.title, "来源 · " + record.file, destination]
             if !names.isEmpty { lines.append("目标文件 · " + names + (plan.parts.count > 8 ? " 等\(plan.parts.count)份" : "")) }
             if let status = record.issue ?? states[record.id] { lines.append(status) }
-            detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
+            setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             open.isEnabled = states[record.id] == "已导入" || record.issue == "已经导入"
             original.isEnabled = (try? AgentMemoryImport.sourceURL(record, root: root)) != nil
             return
@@ -293,7 +448,7 @@ import UniformTypeIdentifiers
             var lines = [record.title, "来源 · " + record.file, destination]
             if plan.fileCount > 0 { lines.append("\(plan.fileCount) 个文件") }
             if let status = record.issue ?? states[record.id] { lines.append(status) }
-            detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
+            setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             open.isEnabled = states[record.id] == "已导入" || record.issue == "已经导入"
             original.isEnabled = (try? AgentSkillImport.sourceURL(record, root: root)) != nil
             return
@@ -304,7 +459,7 @@ import UniformTypeIdentifiers
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             if record.issue == nil { lines.append(plan.needsSetup ? "待配置 · 导入后需补全" : "导入后可在连接器中启用") }
             lines.append(contentsOf: record.warnings)
-            detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
+            setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             open.isEnabled = store.mcp.containsImported(record.targetID, workspace: plan.workspace)
             original.isEnabled = (try? AgentMCPDataImport.reveal(record, root: root)) != nil
             return
@@ -315,7 +470,7 @@ import UniformTypeIdentifiers
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             if record.issue == nil && states[record.id] == nil { lines.append("导入后为停用状态") }
             lines.append(contentsOf: record.warnings)
-            detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
+            setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             open.isEnabled = store.automations.values.contains { $0.id == record.targetID }
             original.isEnabled = (try? AgentAutomationDataImport.reveal(record, root: root)) != nil
             return
@@ -326,7 +481,7 @@ import UniformTypeIdentifiers
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             else { lines.append("导入后为停用状态") }
             lines.append(contentsOf: record.warnings)
-            detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
+            setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             open.isEnabled = AgentPluginDataImport.installedID(record, store: store) != nil
             original.isEnabled = (try? AgentPluginDataImport.reveal(record, root: root)) != nil
             return
@@ -338,7 +493,7 @@ import UniformTypeIdentifiers
             if !plan.destination.isEmpty { lines.append("目标文件 · " + (record.issue == "已共享" ? record.file : plan.destination)) }
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             lines.append(contentsOf: record.warnings)
-            detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
+            setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             if plan.kind == .command || (plan.kind == .instruction && plan.directory.isEmpty && record.issue != "已共享") {
                 open.title = "打开" + plan.kind.title
             }
@@ -352,7 +507,7 @@ import UniformTypeIdentifiers
             original.isEnabled = (try? AgentStandaloneDataImport.reveal(record, root: root, store: store)) != nil
             return
         }
-        detail.string = record.title + "\n" + (record.workspace ?? "无工作目录") + "\n" + record.warnings.joined(separator: "\n") + (record.issue.map { "\n" + $0 } ?? states[record.id].map { "\n" + $0 } ?? "") + "\n\n" + record.preview
+        setDetail(record.title + "\n" + (record.workspace ?? "无工作目录") + "\n" + record.warnings.joined(separator: "\n") + (record.issue.map { "\n" + $0 } ?? states[record.id].map { "\n" + $0 } ?? "") + "\n\n" + record.preview)
         open.isEnabled = store.task(record.targetID) != nil; original.isEnabled = store.task(record.targetID)?.importOrigin != nil
     }
     private func defaultRoot(_ category: AgentImportCategory) -> URL {
@@ -367,11 +522,18 @@ import UniformTypeIdentifiers
     private func route(_ category: AgentImportCategory) -> AgentImportRoute {
         routes[selectedSource]?[category] ?? .init(source: selectedSource, category: category, root: defaultRoot(category).path, workspace: nil)
     }
-    private func setRoute(_ route: AgentImportRoute) {
-        routes[route.source, default: [:]][route.category] = route
+    private func setRoute(_ newRoute: AgentImportRoute) {
+        let previous = route(newRoute.category)
+        guard newRoute.source == selectedSource, newRoute != previous else { return }
+        reviewed.removeValue(forKey: previous)
+        selections.removeValue(forKey: previous)
+        changedChecks.removeValue(forKey: previous)
+        readings.removeValue(forKey: previous)
+        shownRoute = nil
+        routes[newRoute.source, default: [:]][newRoute.category] = newRoute
         refresh()
     }
-    @objc private func changeSource() { refresh() }
+    @objc private func changeSource() { refresh(); restorePreviews() }
     @objc private func openCategory(_ sender: NSButton) {
         editing = AgentImportCategory.allCases[sender.tag]; refresh()
         window?.makeFirstResponder(back)
@@ -412,14 +574,19 @@ import UniformTypeIdentifiers
         guard canConfigure, rows.indices.contains(sender.tag), rows[sender.tag].issue == nil, var choice = selections[route] else { return }
         let id = rows[sender.tag].id
         if choice.ids.contains(id) { choice.ids.remove(id) } else { choice.ids.insert(id) }
-        selections[route] = choice; refresh()
+        saveSelection(choice, for: route)
     }
     @objc private func toggleCategory(_ sender: NSButton) { toggleSelection(route(AgentImportCategory.allCases[sender.tag])) }
     @objc private func toggleAll() { toggleSelection(currentRoute) }
     private func toggleSelection(_ route: AgentImportRoute) {
         guard canConfigure, let preview = service.preview(for: route), var choice = selections[route] else { return }
         choice.ids = choice.ids == preview.available ? [] : preview.available
-        selections[route] = choice; refresh()
+        saveSelection(choice, for: route)
+    }
+    private func saveSelection(_ choice: Selection, for route: AgentImportRoute) {
+        selections[route] = choice
+        reviewed[route] = choice.fingerprints.filter { choice.ids.contains($0.key) }
+        refresh()
     }
     @objc private func start() {
         let choices = AgentImportCategory.allCases.map(route).compactMap { route in selections[route].map { (route, $0.ids) } }
