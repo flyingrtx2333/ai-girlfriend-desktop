@@ -1,10 +1,11 @@
 import { createDocxReviewDrafts, type DocxReviewDraft } from './docx-review-drafts';
+import { spreadsheetCell, validSpreadsheetNotesLocation, type SpreadsheetNotesLocation } from './spreadsheet-notes';
 
 // View coordinates belong to the exact document bytes stored by the native
 // journal. Session IDs are resolved again after opening those bytes.
 type Point = { part: string; ordinal: number; paragraphID: string | null; storyKind: string | null; itemID: string | null; offset: number; sourceHash?: string | null };
 export type WordRange = { anchor: Point; focus: Point };
-export type OfficeView = { version: 1; format: string; zoom: number | 'fit'; selection: any; scroll: { path: number[]; x: number; y: number }[]; review?: DocxReviewDraft[] };
+export type OfficeView = { version: 1; format: string; zoom: number | 'fit'; selection: any; scroll: { path: number[]; x: number; y: number }[]; review?: DocxReviewDraft[]; notes?: SpreadsheetNotesLocation };
 const issue = () => new Error('办公位置记录无效，原草稿已保留');
 const integer = (value: any, maximum = 100_000_000) => Number.isSafeInteger(value) && value >= 0 && value <= maximum;
 const text = (value: any, maximum = 2048) => typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\0');
@@ -12,7 +13,9 @@ function keys(value: any, names: string[]) { return value && typeof value === 'o
 function path(value: any) { return Array.isArray(value) && value.length > 0 && value.length <= 40 && value.every((n: any) => integer(n, 1_000_000)); }
 export function validateOfficeView(value: any, format: string): asserts value is OfficeView {
   const fields = ['version', 'format', 'zoom', 'selection', 'scroll'];
-  if (!(keys(value, fields) || format === 'docx' && keys(value, [...fields, 'review'])) || value.version !== 1 || value.format !== format || !['docx', 'xlsx', 'pptx'].includes(format) ||
+  if (!(keys(value, fields) || format === 'docx' && keys(value, [...fields, 'review']) ||
+      format === 'xlsx' && keys(value, [...fields, 'notes']) && validSpreadsheetNotesLocation(value.notes)) ||
+      value.version !== 1 || value.format !== format || !['docx', 'xlsx', 'pptx'].includes(format) ||
       !(typeof value.zoom === 'number' && Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 5 || format === 'pptx' && value.zoom === 'fit') ||
       !Array.isArray(value.scroll) || value.scroll.length > 32 || value.scroll.some((s: any) => !keys(s, ['path', 'x', 'y']) || !path(s.path) || ![s.x, s.y].every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1e9)) ||
       new Set(value.scroll.map((s: any) => JSON.stringify(s.path))).size !== value.scroll.length) throw issue();
@@ -152,6 +155,29 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
     await context.run(async (fresh: any) => { result = await action(fresh); });
     if (result?.ok !== true) throw issue();
   }
+  async function spreadsheetNoteTarget(sheetName: string, address: string) {
+    const cell = spreadsheetCell(address);
+    const catalog = await editor().readCells({ ranges: [] });
+    const sheet = catalog.ok && catalog.sheets.find((item: any) => item.name === sheetName);
+    if (!sheet) throw issue();
+    return { sheetId: sheet.sheetId, ...cell };
+  }
+  async function isSpreadsheetNoteVisible(sheet: string, address: string) {
+    const target = await spreadsheetNoteTarget(sheet, address);
+    const rect = context?.geometry?.getCellRect(target);
+    return !!rect && rect.width > 0 && rect.height > 0;
+  }
+  async function locateSpreadsheetNote(sheet: string, address: string, restore = false) {
+    const target = await spreadsheetNoteTarget(sheet, address);
+    if (restore) {
+      const rect = context?.geometry?.getCellRect(target);
+      if (rect && rect.width > 0 && rect.height > 0) return;
+      await navigate(c => c.navigation.scrollToCell(target, { expectVersion: c.snapshot.version }));
+    } else {
+      const { sheetId, ...cell } = target;
+      await navigate(c => c.navigation.selectCells({ sheetId, selection: { anchor: cell, focus: cell } }, { expectVersion: c.snapshot.version }));
+    }
+  }
   async function restore(value: OfficeView, focus = false) {
     validateOfficeView(value, format);
     const api = editor();
@@ -205,7 +231,8 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
     if (!reviewDrafts?.focusDraft()) editor().focus();
     await applyScroll({ scroll });
   }
-  return { plugin, capture, restore, applyScroll, focus, hasReviewDraft: () => reviewDrafts?.pending() === true, saved() { savedParagraphs = true; }, ready() {
+  return { plugin, capture, restore, applyScroll, focus, locateSpreadsheetNote, isSpreadsheetNoteVisible,
+    hasReviewDraft: () => reviewDrafts?.pending() === true, saved() { savedParagraphs = true; }, ready() {
     const zoom = () => format === 'docx' ? editor().getZoom() : editor().commands.getState('zoom').value;
     let previous = zoom();
     unsubscribe = editor().commands.subscribe(() => { const next = zoom(); if (next !== previous) { previous = next; changed(); } });

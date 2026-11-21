@@ -11,9 +11,11 @@ import Darwin
     private(set) var working = false, openedHash = "", openedSignature = "", openedPermissions = 0o644
     private let save = NSButton(title: "保存", target: nil, action: nil), reload = NSButton(title: "重新载入", target: nil, action: nil), saveCopy = NSButton(title: "另存为…", target: nil, action: nil)
     private let body = NSButton(title: "正文", target: nil, action: nil), comments = NSButton(title: "批注", target: nil, action: nil)
+    private let spreadsheetNotes = NSButton(title: "备注", target: nil, action: nil)
     private let state = NSTextField(labelWithString: ""), content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface)
     private var web: WKWebView!, server: AgentOfficeHTTP?, base: URL?, snapshot: AgentOfficeSnapshot?
     private var ready = false, closed = false, conflict = false, lastReadOnly: Bool?
+    private var spreadsheetNotesLoaded = false
     private var recoveredDirty = false, editorRevision = 0, recoveryBaseRevision = 0, lastExportedRevision = 0
     private var documentDirty = false, hasReviewDraft = false
     private var lastExportedView: String?
@@ -29,7 +31,7 @@ import Darwin
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 800), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         window.title = file.lastPathComponent; window.minSize = NSSize(width: 760, height: 520); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self; window.contentView = content
-        for (button, action) in [(save, #selector(saveFile)), (reload, #selector(reloadFile)), (saveCopy, #selector(saveAs)), (body, #selector(reviewLocation(_:))), (comments, #selector(reviewLocation(_:)))] { button.target = self; button.action = action; button.bezelStyle = .texturedRounded; button.controlSize = .small }
+        for (button, action) in [(save, #selector(saveFile)), (reload, #selector(reloadFile)), (saveCopy, #selector(saveAs)), (body, #selector(reviewLocation(_:))), (comments, #selector(reviewLocation(_:))), (spreadsheetNotes, #selector(toggleSpreadsheetNotes))] { button.target = self; button.action = action; button.bezelStyle = .texturedRounded; button.controlSize = .small }
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         reload.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "重新载入"); reload.title = ""; reload.toolTip = "重新载入"; reload.setAccessibilityLabel("重新载入办公文件")
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingMiddle
@@ -37,7 +39,13 @@ import Darwin
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         body.setAccessibilityLabel("返回 Word 正文")
         comments.setAccessibilityLabel("查看 Word 批注")
-        let review: [NSView] = file.pathExtension.lowercased() == "docx" ? [body, comments] : []
+        spreadsheetNotes.setAccessibilityLabel("查看 Excel 单元格备注")
+        let review: [NSView]
+        switch file.pathExtension.lowercased() {
+        case "docx": review = [body, comments]
+        case "xlsx": review = [spreadsheetNotes]
+        default: review = []
+        }
         let heading = NSStackView(views: [name, NSView(), state])
         let actions = NSStackView(views: [reload] + review + [NSView(), saveCopy, save]); heading.spacing = 9; actions.spacing = 9
         let bar = NSStackView(views: [heading, actions]); bar.orientation = .vertical; bar.alignment = .leading; bar.spacing = 8
@@ -64,6 +72,7 @@ import Darwin
         save.isEnabled = ready && documentDirty && !locked && !working && !conflict && sourceWritable
         saveCopy.isEnabled = ready && documentDirty && !locked && !working; reload.isEnabled = !working
         body.isEnabled = ready && !working; comments.isEnabled = body.isEnabled
+        spreadsheetNotes.isEnabled = ready && !working && uiTask == nil
         if ready, lastReadOnly != locked { lastReadOnly = locked; web.evaluateJavaScript("BlueFatFishOffice.setInteractionLocked(\(locked ? "true" : "false"))", in: nil, in: .page) { _ in } }
         if locked && !working && state.stringValue.isEmpty { state.stringValue = "只读" }
         else if !locked && state.stringValue == "只读" { state.stringValue = editingStatus }
@@ -80,7 +89,8 @@ import Darwin
         let fields: Set<String> = ["version", "format", "zoom", "selection", "scroll"]
         guard value.utf8.count <= (format == "docx" ? 1_200_000 : 65_536), let data = value.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys) == fields || format == "docx" && Set(object.keys) == fields.union(["review"]),
+              Set(object.keys) == fields || format == "docx" && Set(object.keys) == fields.union(["review"]) ||
+                format == "xlsx" && Set(object.keys) == fields.union(["notes"]),
               object["version"] as? Int == 1, object["format"] as? String == format else { throw PetError("办公位置格式不受支持，原草稿已保留") }
         if let review = object["review"] {
             guard let values = review as? [[String: Any]], (1...2).contains(values.count) else { throw PetError("批注草稿格式无效，原记录已保留") }
@@ -171,7 +181,7 @@ import Darwin
                 pinned = try await Task.detached(priority: .userInitiated) { try AgentOffice.recoverySnapshot(asset: asset, hash: hash, file: file) }.value
             } else { pinned = try await Task.detached(priority: .userInitiated) { try AgentOffice.snapshot(files: files, file: file) }.value }
             guard !closed, !Task.isCancelled else { try? FileManager.default.removeItem(at: pinned.folder); throw CancellationError() }
-            let previous = snapshot; snapshot = pinned
+            let previous = snapshot; snapshot = pinned; spreadsheetNotesLoaded = false
             server?.stop(); server = nil
             if let previous { try? FileManager.default.removeItem(at: previous.folder) }
             guard let assets = Bundle.main.resourceURL?.appendingPathComponent("web/office") else { throw PetError("办公编辑器资源缺失") }
@@ -202,6 +212,7 @@ import Darwin
             }
             if let view {
                 if recovery?.dirty == true || recovery?.openedHash == pinned.hash {
+                    if view["notes"] != nil { try await loadSpreadsheetNotes(pinned) }
                     _ = try await evaluate("return await BlueFatFishOffice.restoreView(view,focus)", args: ["view": view, "focus": isPageVisible])
                     if isPageVisible { presentingWindow?.makeFirstResponder(web) }
                 } else { state.stringValue = "原文件已变化，上次位置未恢复" }
@@ -295,7 +306,20 @@ import Darwin
             if offset == 0 { guard bytes.starts(with: [80, 75]) else { throw PetError("导出结果不是Office文件") } }
             try handle.write(contentsOf: bytes); offset += bytes.count
         }
-        try handle.synchronize(); return output
+        try handle.synchronize()
+        try handle.close()
+        if file.pathExtension.lowercased() == "xlsx", let edits = result["noteEdits"] {
+            guard let changes = edits as? [[String: String]], changes.count <= 5_000,
+                  changes.allSatisfy({ Set($0.keys) == ["sheet", "cell", "original", "text"] }) else {
+                throw PetError("备注编辑记录无法读取，原草稿已保留")
+            }
+            if !changes.isEmpty {
+                let data = try JSONSerialization.data(withJSONObject: changes)
+                guard data.count <= 8_000_000 else { throw PetError("备注编辑超过保存大小，原草稿已保留") }
+                try await AgentSpreadsheetNotes.apply(JSONDecoder().decode([AgentSpreadsheetNoteEdit].self, from: data), to: output)
+            }
+        }
+        return output
     }
     private func acknowledge(_ saved: Bool) async {
         // Always release an actual export, including after native I/O failed.
@@ -339,6 +363,30 @@ import Darwin
                 else if state.stringValue.hasPrefix("暂无可查看的批注") { state.stringValue = editingStatus; updateAvailability() }
             } catch { state.stringValue = error.localizedDescription }
             state.toolTip = state.stringValue
+        }
+    }
+    private func loadSpreadsheetNotes(_ pinned: AgentOfficeSnapshot) async throws {
+        guard !spreadsheetNotesLoaded else { return }
+        let notes: [AgentSpreadsheetNote], warning: String
+        do { notes = try await AgentSpreadsheetNotes.read(pinned.file); warning = "" }
+        catch is CancellationError { throw CancellationError() }
+        catch { notes = []; warning = "无法读取单元格备注"; spreadsheetNotes.toolTip = error.localizedDescription }
+        let payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(notes))
+        _ = try await evaluate("BlueFatFishOffice.setSpreadsheetNotes(items,warning); return true", args: ["items": payload, "warning": warning])
+        spreadsheetNotesLoaded = true
+    }
+    @objc private func toggleSpreadsheetNotes() {
+        guard ready, !working, uiTask == nil, let snapshot else { return }
+        uiTask = Task { [weak self] in
+            guard let self else { return }
+            working = true
+            updateAvailability()
+            defer { working = false; uiTask = nil; updateAvailability(); onWorkspaceChange?() }
+            do {
+                try await loadSpreadsheetNotes(snapshot)
+                presentingWindow?.makeFirstResponder(web)
+                _ = try await evaluate("return BlueFatFishOffice.toggleSpreadsheetNotes()")
+            } catch { state.stringValue = error.localizedDescription }
         }
     }
     @objc private func reloadFile() {
@@ -431,7 +479,7 @@ import Darwin
     override func settingsWillLeave() { finishClose() }
     func workspaceReadback() async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        let controls = [save, reload, saveCopy, body, comments].filter { $0.superview != nil && !$0.isHiddenOrHasHiddenAncestor }
+        let controls = [save, reload, saveCopy, body, comments, spreadsheetNotes].filter { $0.superview != nil && !$0.isHiddenOrHasHiddenAncestor }
         let frames = controls.map { content.convert($0.bounds, from: $0) }
         var value: [String: Any] = ["taskID": taskID, "file": file.path, "dirty": dirty, "working": working, "closed": closed, "ready": ready, "openedHash": openedHash, "state": state.stringValue,
             "loopbackURL": base?.absoluteString ?? "", "snapshot": snapshot?.folder.path ?? "", "saveEnabled": save.isEnabled,
@@ -464,6 +512,59 @@ import Darwin
         if let value { _ = try await evaluate("return await BlueFatFishOffice.restoreView(view)", args: ["view": value]) }
         guard let captured = try await evaluate("return await BlueFatFishOffice.captureView()") as? [String: Any], let view = captured["view"] as? [String: Any] else { throw PetError("办公位置没有实际回读") }
         return view
+    }
+    func checkSpreadsheetNotes(show: Bool = false, address: String? = nil, edit: String? = nil) async throws -> [String: Any] {
+        guard CommandLine.arguments.contains("--spreadsheet-notes-check"), AgentTaskWorkspace.readbackEnabled,
+              file.pathExtension.lowercased() == "xlsx" else { throw PetError("仅限备注验收") }
+        if show {
+            spreadsheetNotes.performClick(nil)
+            await uiTask?.value
+        }
+        let args: [String: Any] = ["address": address as Any? ?? NSNull(), "edit": edit as Any? ?? NSNull()]
+        guard let value = try await evaluate("""
+            const panel = document.querySelector('.spreadsheet-notes');
+            if (!panel || panel.hidden) throw new Error('备注栏没有显示');
+            const list = panel.querySelector('.spreadsheet-notes-list');
+            const text = panel.querySelector('textarea');
+            if (address !== null) {
+              const row = Array.from(list.querySelectorAll('button')).find(b => b.title === address);
+              if (!row) throw new Error('目标备注没有显示');
+              row.click();
+            }
+            if (edit !== null) {
+              if (text.hidden || text.readOnly) throw new Error('备注不可编辑');
+              text.value = edit;
+              text.focus();
+              text.setSelectionRange(0, 2);
+              text.dispatchEvent(new InputEvent('input', {bubbles: true}));
+            }
+            const frame = panel.getBoundingClientRect(), grid = document.getElementById('office-root').getBoundingClientRect();
+            return {entries: Array.from(list.querySelectorAll('button')).map(b => b.title), value: text.value,
+                    focused: document.activeElement === text, readOnly: text.readOnly,
+                    grid: grid.width, left: frame.left, right: frame.right, width: innerWidth};
+            """, args: args) as? [String: Any] else { throw PetError("无法读取当前备注栏") }
+        return value
+    }
+    func checkSpreadsheetNotesImage(_ file: URL) async throws {
+        guard CommandLine.arguments.contains("--spreadsheet-notes-check"), AgentTaskWorkspace.readbackEnabled else { throw PetError("仅限备注验收") }
+        let image: NSImage = try await withCheckedThrowingContinuation { done in
+            web.takeSnapshot(with: nil) { image, error in
+                if let image { done.resume(returning: image) }
+                else { done.resume(throwing: error ?? PetError("无法取得备注窗口图像")) }
+            }
+        }
+        guard let tiff = image.tiffRepresentation, let bits = NSBitmapImageRep(data: tiff),
+              let png = bits.representation(using: .png, properties: [:]) else { throw PetError("备注窗口图像无法编码") }
+        try png.write(to: file, options: .atomic)
+    }
+    func checkSpreadsheetNoteVisible(sheet: String, cell: String) async throws -> Bool {
+        guard CommandLine.arguments.contains("--spreadsheet-notes-check"), AgentTaskWorkspace.readbackEnabled else { throw PetError("仅限备注验收") }
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if try await evaluate("return await BlueFatFishOffice.spreadsheetNoteVisible(sheet,cell)", args: ["sheet": sheet, "cell": cell]) as? Bool == true { return true }
+            try await Task.sleep(for: .milliseconds(70))
+        }
+        return false
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if working { if opening != nil && !dirty { finishClose(); return true }; state.stringValue = "正在处理，请稍候"; return false }
