@@ -47,15 +47,17 @@ struct AgentFileConflictSnapshot {
         var diskHash: String? = nil, draftHash: String? = nil
         var disk: AgentTextViewport? = nil, draft: AgentTextViewport? = nil
         var split: AgentGitDiffView.SplitPosition? = nil
+        var revealSelection: Bool? = nil
 
         var valid: Bool {
             version == 1 && file.hasPrefix("/") && file.utf8.count < 8192 && !file.contains("\0") && (0...1).contains(mode) &&
                 (diskHash == nil) == (draftHash == nil) && AgentSettingsRecovery.validHash(diskHash) && AgentSettingsRecovery.validHash(draftHash) &&
                 (diskHash != nil || disk == nil && draft == nil && split == nil) && disk?.valid != false && draft?.valid != false &&
-                split?.valid != false && !(disk?.focused == true && draft?.focused == true)
+                split?.valid != false && !(disk?.focused == true && draft?.focused == true) &&
+                (revealSelection != true || disk?.focused == true || draft?.focused == true)
         }
         static func validateObject(_ raw: Any) throws {
-            let value = try AgentSettingsRecovery.object(raw, keys: ["version", "file", "mode", "diskHash", "draftHash", "disk", "draft", "split"])
+            let value = try AgentSettingsRecovery.object(raw, keys: ["version", "file", "mode", "diskHash", "draftHash", "disk", "draft", "split", "revealSelection"])
             for key in ["disk", "draft"] { if let viewport = value[key], !(viewport is NSNull) { try AgentTextViewport.validateObject(viewport) } }
             if let split = value["split"], !(split is NSNull) { _ = try AgentSettingsRecovery.object(split, keys: ["row", "fraction"]) }
         }
@@ -67,6 +69,7 @@ struct AgentFileConflictSnapshot {
     private let protectedData: URL
     private let diff = AgentGitDiffView(), full = NSStackView(), diskText = NSTextView(), draftText = NSTextView()
     private let diskFormat = NSTextField(labelWithString: ""), draftFormat = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: "")
+    private let filename = NSTextField(labelWithString: "")
     private let mode = NSSegmentedControl(labels: ["差异", "全文"], trackingMode: .selectOne, target: nil, action: nil)
     private let refresh = NSButton(title: "刷新比较", target: nil, action: nil), keep = NSButton(title: "继续编辑", target: nil, action: nil)
     private let adopt = NSButton(title: "采用磁盘版本…", target: nil, action: nil), overwrite = NSButton(title: "覆盖文件…", target: nil, action: nil)
@@ -79,9 +82,9 @@ struct AgentFileConflictSnapshot {
         window.title = "文件比较 · " + file.lastPathComponent; window.minSize = NSSize(width: 720, height: 440); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
-        let path = NSTextField(labelWithString: file.lastPathComponent); path.toolTip = file.path; path.setAccessibilityHelp(file.path); path.lineBreakMode = .byTruncatingMiddle
+        filename.stringValue = file.lastPathComponent; filename.toolTip = file.path; filename.setAccessibilityHelp(file.path); filename.lineBreakMode = .byTruncatingMiddle
         mode.target = self; mode.action = #selector(switchComparisonView); mode.selectedSegment = recovery?.mode ?? 0; mode.setAccessibilityLabel("文件比较显示方式")
-        let top = NSStackView(views: [path, NSView(), mode]); top.spacing = 12
+        let top = NSStackView(views: [filename, NSView(), mode]); top.spacing = 12
         diff.splitMode = true; diff.wraps = true
         diff.onSplitScroll = { [weak self] in self?.positionChanged() }
         full.distribution = .fillEqually; full.spacing = 16
@@ -114,6 +117,10 @@ struct AgentFileConflictSnapshot {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { NotificationCenter.default.removeObserver(self) }
+    override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
+        filename.isHidden = true
+        return super.settingsContent(in: host, styled: styled)
+    }
     @objc private func viewportChanged(_ notification: Notification) { positionChanged() }
     private func positionChanged() { if !applyingPosition, !loading, isPageVisible { onPositionChange?() } }
     @objc private func switchComparisonView() {
@@ -130,11 +137,19 @@ struct AgentFileConflictSnapshot {
             if mode.selectedSegment == 0 {
                 if let split = pending.split, diff.restoreSplitPosition(split) { pending.split = nil }
             } else {
-                if let disk = pending.disk, disk.apply(to: diskText) { pending.disk = nil }
-                if let draft = pending.draft, draft.apply(to: draftText) { pending.draft = nil }
+                if let disk = pending.disk, restore(disk, in: diskText, revealSelection: pending.revealSelection == true) { pending.disk = nil }
+                if let draft = pending.draft, restore(draft, in: draftText, revealSelection: pending.revealSelection == true) { pending.draft = nil }
+                if pending.disk == nil, pending.draft == nil { pending.revealSelection = nil }
             }
             recovery = pending
         }
+    }
+    private func restore(_ viewport: AgentTextViewport, in text: NSTextView, revealSelection: Bool) -> Bool {
+        guard viewport.apply(to: text) else { return false }
+        if revealSelection, viewport.focused, let selected = viewport.selections.first, !viewport.focusedSelectionIsVisible(in: text) {
+            text.scrollRangeToVisible(selected.range)
+        }
+        return true
     }
     override func settingsDidAppear() { super.settingsDidAppear(); restorePositionWhenVisible() }
     func windowDidBecomeKey(_ notification: Notification) { restorePositionWhenVisible() }
@@ -149,6 +164,10 @@ struct AgentFileConflictSnapshot {
                 if saved.disk == nil { saved.disk = try AgentTextViewport(diskText) }
                 if saved.draft == nil { saved.draft = try AgentTextViewport(draftText) }
                 if saved.split == nil { saved.split = diff.captureSplitPosition() }
+                if mode.selectedSegment == 1, isPageVisible, recovery?.disk == nil, recovery?.draft == nil {
+                    let visible = saved.disk?.focusedSelectionIsVisible(in: diskText) == true || saved.draft?.focusedSelectionIsVisible(in: draftText) == true
+                    saved.revealSelection = visible ? true : nil
+                }
             }
         }
         guard saved.valid else { throw PetError("文件比较的位置无法保存，原草稿已保留") }
