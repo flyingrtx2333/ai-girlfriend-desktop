@@ -91,13 +91,14 @@ final class PetWebView: WKWebView {
     let automationNotifications = AgentAutomationNotifications()
     var agentAnimationPhase = "idle"
     var usesSideTaskCheck: Bool { checkDirectory != nil && ["--side-task-check", "--side-task-reopen-check", "--side-task-session-check", "--side-task-session-observe", "--side-task-session-recover"].contains(where: CommandLine.arguments.contains) }
+    var usesAgentVoiceCheck: Bool { checkDirectory != nil && CommandLine.arguments.contains("--agent-voice-commands-check") }
     var usesSettingsRecoveryCheck: Bool {
         ["--settings-editor-recovery-check", "--settings-editor-recovery-ui", "--settings-manager-recovery-check", "--settings-manager-recovery-ui",
          "--settings-import-recovery-check", "--settings-import-recovery-ui", "--automation-recovery-check", "--automation-recovery-ui",
          "--settings-navigation-recovery-check", "--settings-navigation-recovery-ui", "--settings-mcp-recovery-check", "--settings-mcp-recovery-ui",
          "--settings-memory-recovery-check"].contains(where: CommandLine.arguments.contains)
     }
-    var usesAgent: Bool { checkDirectory == nil || usesSettingsRecoveryCheck || usesSideTaskCheck || CommandLine.arguments.contains("--security-report-check") || CommandLine.arguments.contains("--dependency-report-check") || ["--knowledge-editor-recovery-check", "--knowledge-editor-recovery-ui", "--knowledge-reader-recovery-check", "--knowledge-reader-recovery-ui", "--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--workspace-source-recovery-check", "--workspace-source-recovery-ui", "--workspace-text-viewport-check", "--workspace-text-viewport-ui", "--workspace-child-recovery-check", "--workspace-child-recovery-ui", "--workspace-floating-recovery-check", "--workspace-floating-recovery-ui", "--workspace-video-recovery-check", "--workspace-video-recovery-ui", "--workspace-browser-recovery-check", "--workspace-browser-recovery-ui", "--workspace-edit-recovery-check", "--workspace-edit-recovery-ui", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui", "--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--conversation-workspace-check", "--browser-workspace-check", "--attachment-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--workspace-worktrees-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--git-preferences-check", "--git-remote-page-check", "--skill-creation-live-ui", "--skill-creation-check", "--skill-evolution-check", "--workspace-skill-evolution-check", "--workspace-roles-check", "--workspace-capabilities-check", "--workspace-extensions-check", "--workspace-editor-check", "--name-editor-check", "--unsaved-changes-check", "--operation-confirmation-check", "--wiki-lifecycle-check", "--wiki-lifecycle-fixtures", "--wiki-lifecycle-reopen", "--knowledge-review-check", "--knowledge-review-fixtures", "--knowledge-review-reopen", "--knowledge-page-check", "--automation-page-check", "--attention-page-check", "--settings-layout-check", "--sidebar-layout-check", "--mode-presentation-check", "--theme-styles-check", "--task-monitor-check", "--general-settings-check", "--file-icons-check", "--content-appearance-check", "--appearance-check", "--mcp-input-check", "--task-find-check", "--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check", "--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--ssh-terminal-directory-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
+    var usesAgent: Bool { checkDirectory == nil || usesAgentVoiceCheck || usesSettingsRecoveryCheck || usesSideTaskCheck || CommandLine.arguments.contains("--security-report-check") || CommandLine.arguments.contains("--dependency-report-check") || ["--knowledge-editor-recovery-check", "--knowledge-editor-recovery-ui", "--knowledge-reader-recovery-check", "--knowledge-reader-recovery-ui", "--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--workspace-source-recovery-check", "--workspace-source-recovery-ui", "--workspace-text-viewport-check", "--workspace-text-viewport-ui", "--workspace-child-recovery-check", "--workspace-child-recovery-ui", "--workspace-floating-recovery-check", "--workspace-floating-recovery-ui", "--workspace-video-recovery-check", "--workspace-video-recovery-ui", "--workspace-browser-recovery-check", "--workspace-browser-recovery-ui", "--workspace-edit-recovery-check", "--workspace-edit-recovery-ui", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui", "--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--conversation-workspace-check", "--browser-workspace-check", "--attachment-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--workspace-worktrees-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--git-preferences-check", "--git-remote-page-check", "--skill-creation-live-ui", "--skill-creation-check", "--skill-evolution-check", "--workspace-skill-evolution-check", "--workspace-roles-check", "--workspace-capabilities-check", "--workspace-extensions-check", "--workspace-editor-check", "--name-editor-check", "--unsaved-changes-check", "--operation-confirmation-check", "--wiki-lifecycle-check", "--wiki-lifecycle-fixtures", "--wiki-lifecycle-reopen", "--knowledge-review-check", "--knowledge-review-fixtures", "--knowledge-review-reopen", "--knowledge-page-check", "--automation-page-check", "--attention-page-check", "--settings-layout-check", "--sidebar-layout-check", "--mode-presentation-check", "--theme-styles-check", "--task-monitor-check", "--general-settings-check", "--file-icons-check", "--content-appearance-check", "--appearance-check", "--mcp-input-check", "--task-find-check", "--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check", "--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--ssh-terminal-directory-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -129,6 +130,8 @@ final class PetWebView: WKWebView {
     var wakeStatus = "未开启", wakeError: String?
     var appliedWake: (Bool, String, Double)?
     var pendingVoiceListen = false
+    var agentVoiceTarget: AgentVoiceTarget?
+    private var voiceOutputBusy: Bool { chatTask != nil || speechTask != nil || player?.isPlaying == true || sleeping }
     lazy var voiceWake: VoiceWake = {
         let wake = VoiceWake(); wake.onEvent = { [weak self] event in self?.voiceEvent(event) }; return wake
     }()
@@ -423,7 +426,9 @@ final class PetWebView: WKWebView {
         appliedWake = nil; syncWakePreference(); statusItem?.menu = menu()
     }
     @objc func listenNow() {
-        screenCompanion.interaction(); cancelConversation(); pendingVoiceListen = true
+        screenCompanion.interaction()
+        if usesAgent { stopSpeech() } else { cancelConversation() }
+        pendingVoiceListen = true
         if !store.preferences.wakeEnabled {
             store.preferences.wakeEnabled = true; wakeError = nil; wakeStatus = "等待授权"
             try? store.savePreferences(); appliedWake = nil; syncWakePreference(); statusItem?.menu = menu()
@@ -431,34 +436,50 @@ final class PetWebView: WKWebView {
         startPendingVoiceListen()
     }
     func startPendingVoiceListen() {
-        guard pendingVoiceListen, store.preferences.wakeEnabled, chatTask == nil, !selectedAgentBusy, speechTask == nil,
+        guard pendingVoiceListen, store.preferences.wakeEnabled, !voiceOutputBusy,
               !["等待授权", "恢复麦克风"].contains(wakeStatus) else { return }
         pendingVoiceListen = false; voiceWake.listenNow()
     }
     @objc func stopRecording() { endVoiceInput("已停止录音") }
     private func endVoiceInput(_ message: String, draft: String = "") {
         pendingVoiceListen = false; store.preferences.wakeEnabled = false; wakeError = nil; wakeStatus = "未开启"
-        voiceWake.stop(); appliedWake = nil; screenCompanion.interaction(); cancelConversation()
-        if !draft.isEmpty { inputControl.keepInterruptedVoiceDraft(draft) }
-        try? store.savePreferences(); publishVoiceState(); statusItem?.menu = menu(); showBubble(message, duration: 2.5)
+        voiceWake.stop(); appliedWake = nil; screenCompanion.interaction()
+        var feedback = message
+        if usesAgent {
+            stopSpeech()
+            if !draft.isEmpty, !keepAgentVoiceDraft(draft, taskID: agentVoiceTarget?.taskID) { feedback += "，草稿未保存" }
+        } else {
+            cancelConversation()
+            if !draft.isEmpty { inputControl.keepInterruptedVoiceDraft(draft) }
+        }
+        agentVoiceTarget = nil
+        try? store.savePreferences(); publishVoiceState(); statusItem?.menu = menu(); showBubble(feedback, duration: 2.5)
     }
     func voiceEvent(_ event: VoiceWake.Event) {
+        guard !sleeping, !closing else { return }
         if !store.preferences.wakeEnabled {
             switch event { case .state("未开启"), .stopped: break; default: return }
         }
         switch event {
         case .state(let state):
             wakeStatus = wakeError ?? state
-            if state == "等待唤醒" && (chatTask != nil || selectedAgentBusy || speechTask != nil || player?.isPlaying == true) { refreshVoiceBusy() }
-            if state == "等待唤醒" { startPendingVoiceListen() }
+            if state == "等待唤醒" || state == "未开启" { agentVoiceTarget = nil }
+            if state == "聆听中", agentVoiceTarget == nil { rememberAgentVoiceTarget() }
+            if state == "等待唤醒" {
+                if voiceOutputBusy { refreshVoiceBusy() }
+                startPendingVoiceListen()
+            }
         case .woke:
             screenCompanion.interaction()
+            rememberAgentVoiceTarget()
             wakeStatus = "聆听中"; playWakeChime(); emit("voiceListen"); showBubble("我在，讲吧", duration: 10)
         case .partial(let text): showBubble(text, duration: 12)
         case .utterance(let text):
-            if !send(text) { inputControl.keepVoiceDraft(text); voiceWake.resetConversation() }
+            if usesAgent { handleAgentVoice(text) }
+            else if !send(text) { inputControl.keepVoiceDraft(text); voiceWake.resetConversation() }
         case .stopped(let message, let draft): endVoiceInput(message, draft: draft)
         case .failure(let error):
+            agentVoiceTarget = nil
             wakeError = error; wakeStatus = error; store.preferences.wakeEnabled = false
             try? store.savePreferences(); appliedWake = nil; syncWakePreference()
             inputControl.setStatus(error, error: true); showBubble(error)
@@ -478,7 +499,7 @@ final class PetWebView: WKWebView {
     }
     func refreshVoiceBusy(followUp: Bool = false) {
         guard store.preferences.wakeEnabled else { return }
-        voiceWake.setOutputBusy(chatTask != nil || selectedAgentBusy || speechTask != nil || player?.isPlaying == true || sleeping, followUp: followUp)
+        voiceWake.setOutputBusy(voiceOutputBusy, followUp: followUp)
     }
     func emit(_ type: String, _ payload: [String: Any] = [:]) {
         guard ready, !closing, let data = try? JSONSerialization.data(withJSONObject: ["type": type, "payload": payload]),
@@ -495,7 +516,10 @@ final class PetWebView: WKWebView {
         if !renderVisible { screenCompanion.suspend() }
         else if !wasVisible && ready { screenCompanion.configure() }
     }
-    @objc func willSleep() { screenCompanion.suspend(); endDrag(); sleeping = true; wakePlayer?.stop(); voiceWake.stop(); updateVisibility() }
+    @objc func willSleep() {
+        screenCompanion.suspend(); endDrag(); sleeping = true; wakePlayer?.stop()
+        pendingVoiceListen = false; agentVoiceTarget = nil; voiceWake.stop(); updateVisibility()
+    }
     @objc func didWake() { sleeping = false; appliedWake = nil; syncWakePreference(); updateVisibility(); agentStore?.automations.wake() }
     @objc func powerChanged() { updateVisibility() }
     @objc func frontApplicationChanged() { screenCompanion.applicationChanged() }

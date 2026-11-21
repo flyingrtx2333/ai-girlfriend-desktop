@@ -112,6 +112,7 @@ final class FormDocumentView: NSView {
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var savedBasicSettings: [String] = []
+    private var savedWakeEnabled: NSControl.StateValue = .off
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView, key: String?)] = []
     private struct SettingsSearchResult {
         let category: String, title: String, section: String, key: String?
@@ -340,7 +341,7 @@ final class FormDocumentView: NSView {
             companion.onScaleChange = { [weak companion] value in for window in companion?.taskControls ?? [] { window.scale.doubleValue = value; window.sizeValue.stringValue = "\(Int((value * 100).rounded()))%" } }
             companion.onWakeChange = { [weak companion] enabled, status in
                 for window in companion?.taskControls ?? [] {
-                    window.wakeEnabled.state = enabled ? .on : .off; window.wakeStatus.stringValue = status
+                    window.syncWakeEnabled(enabled); window.wakeStatus.stringValue = status
                     window.sidebarWake.stringValue = enabled ? status : "语音未开启"; window.listenButton.title = enabled ? "立即聆听" : "开启语音"
                     window.stopRecordingButton.isEnabled = enabled; window.voiceStopButton.isEnabled = enabled; window.updateWorkbenchVoice()
                 }
@@ -2662,7 +2663,8 @@ final class FormDocumentView: NSView {
         else { updateModelOptions() }
         modelDirectory.updateCurrentModel(p.model)
         voiceEnabled.state = p.voiceEnabled ? .on : .off; onTop.state = p.alwaysOnTop ? .on : .off
-        wakeEnabled.state = p.wakeEnabled ? .on : .off; wakePhrase.stringValue = p.wakePhrase
+        savedWakeEnabled = p.wakeEnabled ? .on : .off
+        wakeEnabled.state = savedWakeEnabled; wakePhrase.stringValue = p.wakePhrase
         wakeStatus.stringValue = companion.wakeStatus
         sidebarWake.stringValue = p.wakeEnabled ? companion.wakeStatus : "语音未开启"; listenButton.title = p.wakeEnabled ? "立即聆听" : "开启语音"
         stopRecordingButton.isEnabled = p.wakeEnabled; voiceStopButton.isEnabled = p.wakeEnabled
@@ -2683,12 +2685,17 @@ final class FormDocumentView: NSView {
     private func basicSettingsValues() -> [String] {
         modelSettingsForm().values + nonModelSettingsValues()
     }
+    private func syncWakeEnabled(_ enabled: Bool) {
+        let state: NSControl.StateValue = enabled ? .on : .off
+        if wakeEnabled.state == savedWakeEnabled { wakeEnabled.state = state }
+        savedWakeEnabled = state
+    }
     private func nonModelSettingsValues() -> [String] {
         [persona.stringValue, apiKey.stringValue,
          voiceEndpoint.stringValue, voiceModel.stringValue, voiceID.stringValue, voiceKey.stringValue,
          wakePhrase.stringValue, String(pauseWait.indexOfSelectedItem),
          String(performance.indexOfSelectedItem), String(screenInterval.indexOfSelectedItem), String(scale.doubleValue),
-         String(voiceEnabled.state.rawValue), String(onTop.state.rawValue), String(wakeEnabled.state.rawValue),
+         String(voiceEnabled.state.rawValue), String(onTop.state.rawValue),
          String(screenEnabled.state.rawValue), String(removeChatKey), String(removeVoiceKey)]
     }
     private func modelSettingsForm() -> AgentModelSettingsRecovery.Form {
@@ -2709,7 +2716,8 @@ final class FormDocumentView: NSView {
     private func captureModelSettings() -> AgentModelSettingsRecovery? {
         guard selectedTab == "settings", settingsCategory == "model", let modelDraftBase else { return nil }
         let form = modelSettingsForm(), values = form.values
-        guard form.valid, nonModelSettingsValues() == Array(savedBasicSettings.dropFirst(values.count)) else { return nil }
+        guard form.valid, wakeEnabled.state == savedWakeEnabled,
+              nonModelSettingsValues() == Array(savedBasicSettings.dropFirst(values.count)) else { return nil }
         let focus = settingsEditingInput.flatMap { modelField(for: $0) }
         let selection = focus.flatMap { field -> AgentTextViewport.Selection? in
             guard let range = settingsEditingSelection else { return nil }
@@ -2769,7 +2777,8 @@ final class FormDocumentView: NSView {
         workspaceSession?.changed()
     }
     private func canLeaveBasicSettings(preservingRecovery: Bool = false) -> Bool {
-        guard !savedBasicSettings.isEmpty, basicSettingsValues() != savedBasicSettings else { return true }
+        guard !savedBasicSettings.isEmpty,
+              basicSettingsValues() != savedBasicSettings || wakeEnabled.state != savedWakeEnabled else { return true }
         if preservingRecovery, let draft = captureModelSettings()?.draft, workspaceSession?.hasPreservedModelDraft(draft) == true { return true }
         let input = settingsEditingInput, selection = settingsEditingSelection
         guard AgentUnsavedChanges.discard("放弃未保存的设置更改？", owner: window) else {
@@ -3058,9 +3067,25 @@ final class FormDocumentView: NSView {
         if let id = agentTaskID { agentTaskAction(id, action: "archive") }
         else { companion?.clearConversation(); renderMessages() }
     }
+    @discardableResult func createAgentTask(draft: String? = nil) -> Bool {
+        guard let tasks = companion?.agentStore, window?.hasBlockingDialog != true, saveAgentDraft(), canLeaveMainPage() else { return false }
+        let previous = currentAgentTask
+        do {
+            let id: String
+            if let previous, !previous.archived, let group = previous.organizationWorkspace {
+                id = try tasks.createWorkspaceTask(group, mode: previous.organizationMode, draft: draft)
+            } else { id = tasks.create(mode: .agent, workMode: previous?.organizationMode, draft: draft) }
+            let writeError = tasks.writeError
+            selectAgentTask(id)
+            if let writeError { setStatus(writeError, error: true); return false }
+            return true
+        } catch { setStatus(error.localizedDescription, error: true); return false }
+    }
     func keepVoiceDraft(_ text: String) { composer.string = text; composer.didChangeText() }
-    func keepInterruptedVoiceDraft(_ text: String) {
+    var voiceDraftTaskID: String? { windowDraft?.id }
+    @discardableResult func keepInterruptedVoiceDraft(_ text: String) -> Bool {
         composer.string = composer.string.isEmpty ? text : composer.string + "\n" + text; composer.didChangeText()
+        return saveAgentDraft()
     }
     func setBusy(_ value: Bool) {
         busy = value; updateSendButton(); clearButton.isEnabled = !value
@@ -3621,6 +3646,16 @@ final class FormDocumentView: NSView {
         checks["basicDraftDiscardRestoresSavedFieldsWithoutWriting"] = try choose("放弃更改", { canLeaveBasicSettings() }) && endpoint.stringValue == oldEndpoint && (try? Data(contentsOf: file)) == before
         let oldSwitch = onTop.state; onTop.state = oldSwitch == .on ? .off : .on
         checks["basicDraftIncludesSwitches"] = basicSettingsValues() != savedBasicSettings; onTop.state = oldSwitch
+        let oldWake = wakeEnabled.state
+        wakeEnabled.state = oldWake == .on ? .off : .on
+        companion.onWakeChange?(original.wakeEnabled, "等待唤醒")
+        checks["voiceStatusKeepsUnappliedWakeDraft"] = try !choose("继续编辑", { canLeaveBasicSettings() }) && wakeEnabled.state != oldWake
+        wakeEnabled.state = oldWake
+        companion.store.preferences.wakeEnabled = !original.wakeEnabled
+        companion.onWakeChange?(!original.wakeEnabled, "等待唤醒")
+        checks["voicePreferenceChangeMatchesSavedBaseline"] = wakeEnabled.state != oldWake && canLeaveBasicSettings()
+        companion.store.preferences.wakeEnabled = original.wakeEnabled
+        companion.onWakeChange?(original.wakeEnabled, "未开启")
         let oldChoice = vision.indexOfSelectedItem; vision.selectItem(at: oldChoice == 0 ? 1 : 0)
         checks["basicDraftIncludesSelectors"] = basicSettingsValues() != savedBasicSettings; vision.selectItem(at: oldChoice)
         let oldScale = scale.doubleValue; scale.doubleValue = oldScale + 0.01
@@ -3941,16 +3976,7 @@ final class FormDocumentView: NSView {
         if let readIssue { setStatus(readIssue, error: true) }
         companion?.refreshAgentAnimation(); companion?.refreshVoiceBusy(); companion?.startPendingVoiceListen()
     }
-    @objc func newAgentTask() {
-        guard let tasks = companion?.agentStore, saveAgentDraft(), canLeaveMainPage() else { return }
-        let previous = currentAgentTask
-        do {
-            let id:String
-            if let previous, !previous.archived, let group = previous.organizationWorkspace { id = try tasks.createWorkspaceTask(group,mode:previous.organizationMode) }
-            else { id = tasks.create(mode:.agent,workMode:previous?.organizationMode) }
-            selectAgentTask(id)
-        } catch { setStatus(error.localizedDescription,error:true) }
-    }
+    @objc func newAgentTask() { createAgentTask() }
     private func editName(title: String, label: String, value: String, save: @escaping (String) throws -> Void) {
         guard let window, nameEditor == nil, !window.hasBlockingDialog else { return }
         nameEditor = AgentNameEditor(title: title, label: label, value: value, save: save, onClose: { [weak self] in self?.nameEditor = nil; self?.renderAgentMessages() })

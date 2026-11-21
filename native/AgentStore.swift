@@ -105,20 +105,21 @@ import Foundation
             selectedID = tasks.first(where: { $0.id == parent && !$0.archived })?.id ?? tasks.first(where: { $0.sideTask == nil && !$0.archived })?.id
         }
     }
-    @discardableResult func create(title: String = "新的任务", workspace: String? = nil, mode: AgentMode = .agent, workMode: AgentWorkMode? = nil, workspaceScope:AgentWorkspaceScope? = nil) -> String {
+    @discardableResult func create(title: String = "新的任务", workspace: String? = nil, mode: AgentMode = .agent, workMode: AgentWorkMode? = nil, workspaceScope:AgentWorkspaceScope? = nil, draft: String? = nil) -> String {
         var task = AgentTaskRecord(title: title, workspace: workspaceScope?.primary ?? workspace, workspaceScope:workspaceScope, mode: mode)
         task.workMode = workMode == .coding ? nil : workMode
+        task.draft = draft
         selectionFallbackMode = task.organizationMode
         if let token = organization.archiveID(task.organizationWorkspace, mode: task.organizationMode) { task.archived = true; task.workspaceArchiveID = token }
         tasks.insert(Self.metadata(task), at: 0); cache[task.id] = task; selectedID = task.id
         do { try save(task.id); try organization.remember(task) } catch { writeError = error.localizedDescription }
         trimCache(keeping: task.id); return task.id
     }
-    @discardableResult func createWorkspaceTask(_ group:String, mode:AgentWorkMode, title:String = "新的任务", taskMode:AgentMode = .agent) throws -> String {
+    @discardableResult func createWorkspaceTask(_ group:String, mode:AgentWorkMode, title:String = "新的任务", taskMode:AgentMode = .agent, draft: String? = nil) throws -> String {
         guard let entry = organization.entry(group,mode:mode,tasks:tasks) else { throw PetError("工作区已变化，请重新选择") }
         let folders = try AgentWorkspaceScope.validateFolders(entry.sourceFolders,primary:entry.primary)
         guard folders == entry.sourceFolders else { throw PetError("源文件夹指向已变化，请重新编辑工作区") }
-        return create(title:title,workspace:entry.primary,mode:taskMode,workMode:mode,workspaceScope:entry.scope)
+        return create(title:title,workspace:entry.primary,mode:taskMode,workMode:mode,workspaceScope:entry.scope,draft:draft)
     }
     private static func metadata(_ task: AgentTaskRecord) -> AgentTaskRecord {
         var value = task

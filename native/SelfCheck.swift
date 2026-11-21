@@ -47,6 +47,7 @@ import WebKit
         if CommandLine.arguments.contains("--slash-connectors-check") { await runSlashConnectorsCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--skill-evolution-check") { await runSkillEvolutionCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--home-games-check") { await runHomeGamesCheck(output); NSApp.terminate(nil); return }
+        if usesAgentVoiceCheck { await runAgentVoiceCommandsCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--prompt-suggestions-check") { await runPromptSuggestionsCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--thinking-status-check") { await runThinkingStatusCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--conversation-display-check") { await runConversationDisplayCheck(output); NSApp.terminate(nil); return }

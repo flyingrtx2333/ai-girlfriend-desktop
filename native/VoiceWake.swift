@@ -252,7 +252,8 @@ final class VoiceWake: @unchecked Sendable {
         session += 1; let id = session
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true; request.shouldReportPartialResults = true
-        request.contextualStrings = [phrase.text, "停止录音", "停止聆听", "别听了", "关闭麦克风"]; request.taskHint = .dictation
+        request.contextualStrings = [phrase.text, "停止录音", "停止聆听", "别听了", "关闭麦克风"] + AgentVoiceCommand.phrases
+        request.taskHint = .dictation
         self.request = request; started = now; ending = 0; command = ""; lastPartial = ""; sessionHasWake = includesWake
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
