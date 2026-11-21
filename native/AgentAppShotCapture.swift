@@ -36,7 +36,7 @@ import Carbon
         return (prefix(raw, bytes: textLimit), truncated || raw.utf8.count > textLimit)
     }
     static func ownText(_ window: NSWindow) -> (String, Bool) {
-        var lines: [String] = [], visited = Set<ObjectIdentifier>(), count = 0, truncated = false
+        var textAreas: [String] = [], lines: [String] = [], visited = Set<ObjectIdentifier>(), count = 0, truncated = false
         func walk(_ object: AnyObject, depth: Int) {
             if let view = object as? NSView, view.isHiddenOrHasHiddenAncestor { return }
             guard !visited.contains(ObjectIdentifier(object)) else { return }; visited.insert(ObjectIdentifier(object))
@@ -47,10 +47,37 @@ import Carbon
             if secure { lines.append(label + " [受保护输入]"); return }
             let value = item.accessibilityValue().flatMap { ($0 is String || $0 is NSNumber) ? String(describing: $0) : nil } ?? ""
             let content = [label, value == label ? "" : value].filter { !$0.isEmpty }.joined(separator: " · ")
-            if !content.isEmpty { lines.append(prefix(content, bytes: 1600)) }
+            if !content.isEmpty {
+                let line = prefix(content, bytes: 1600)
+                if role == NSAccessibility.Role.textArea.rawValue && !value.isEmpty { textAreas.append(line) }
+                else { lines.append(line) }
+            }
             for child in item.accessibilityChildren() ?? [] { walk(child as AnyObject, depth: depth + 1) }
         }
-        walk(window, depth: 0); return body(lines, truncated: truncated)
+        walk(window, depth: 0); return body(textAreas + lines, truncated: truncated)
+    }
+    static func stableOwnSnapshot(_ window: NSWindow, validateApplication: () throws -> Void,
+                                  capture: () async throws -> (AgentWindowCapture.Image, String)) async throws -> (image: AgentWindowCapture.Image, method: String, text: (String, Bool)) {
+        let frame = window.frame, number = window.windowNumber, title = window.title
+        func validateWindow() throws {
+            try validateApplication()
+            guard NSApp.keyWindow === window, window.isVisible, !window.isMiniaturized,
+                  window.windowNumber == number, window.frame == frame, window.title == title else {
+                throw PetError("截图期间窗口已变化，请重新截图")
+            }
+        }
+        try validateWindow()
+        var before = ownText(window)
+        // A loading indicator can settle during the first capture. Retry once
+        // on the original window and save only an image with matching text.
+        for _ in 0..<2 {
+            let shot = try await capture()
+            try validateWindow()
+            let after = ownText(window)
+            if before == after { return (shot.0, shot.1, after) }
+            before = after
+        }
+        throw PetError("截图期间文字持续变化，请重新截图")
     }
     static func frontmost(expectedApplication: NSRunningApplication? = nil, expectedOwnWindow: Int? = nil, externalCheck: AgentAppShotExternalCheck? = nil) async throws -> Self {
         try AgentWindowCapture.unlocked()
@@ -70,19 +97,19 @@ import Carbon
         if pid == getpid() {
             guard let window = NSApp.keyWindow, window.isVisible, !window.isMiniaturized else { throw PetError("请先选中要截取的应用窗口") }
             if let expectedOwnWindow, window.windowNumber != expectedOwnWindow { throw PetError("触发后当前窗口已变化，请重新截图") }
-            let frame = window.frame; windowID = CGWindowID(window.windowNumber); title = window.title; readable = ownText(window)
-            if #available(macOS 14.4, *) {
-                let content = try await SCShareableContent.currentProcess
-                guard let target = content.windows.first(where: { $0.windowID == windowID && $0.owningApplication?.processID == getpid() }) else { throw PetError("未找到当前应用窗口，请重新截图") }
-                image = try await AgentWindowCapture.image(target); method = "own-window"
-            } else {
+            windowID = CGWindowID(window.windowNumber); title = window.title
+            let snapshot = try await stableOwnSnapshot(window, validateApplication: current) {
+                if #available(macOS 14.4, *) {
+                    let content = try await SCShareableContent.currentProcess
+                    guard let target = content.windows.first(where: { $0.windowID == windowID && $0.owningApplication?.processID == getpid() }) else { throw PetError("未找到当前应用窗口，请重新截图") }
+                    return (try await AgentWindowCapture.image(target), "own-window")
+                }
                 guard let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw PetError("当前窗口无法截图") }
                 view.cacheDisplay(in: view.bounds, to: bitmap)
                 guard let cg = bitmap.cgImage, let data = bitmap.representation(using: .png, properties: [:]) else { throw PetError("当前窗口无法截图") }
-                image = .init(image: cg, data: data, hash: AgentFiles.hash(data)); method = "own-software"
+                return (.init(image: cg, data: data, hash: AgentFiles.hash(data)), "own-software")
             }
-            try current()
-            guard NSApp.keyWindow === window, window.frame == frame, window.isVisible, ownText(window).0 == readable.0 else { throw PetError("截图期间窗口或文字已变化，请重新截图") }
+            image = snapshot.image; method = snapshot.method; readable = snapshot.text
         } else {
             try externalCheck?.validateApplication(app)
             guard app.activationPolicy == .regular, AXIsProcessTrusted(), CGPreflightScreenCaptureAccess() else { throw PetError("请在设置 → 电脑操作中授予辅助功能与屏幕录制权限，再重新截取前台窗口") }

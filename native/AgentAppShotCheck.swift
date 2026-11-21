@@ -68,9 +68,66 @@ import AppKit
             checks["systemPermissionsUnchanged"] = beforePermissions["accessibility"] as? Bool == tasks.desktop.status["accessibility"] as? Bool && beforePermissions["screen_recording"] as? Bool == tasks.desktop.status["screen_recording"] as? Bool
             checks["snapshotDoesNotEnableComputerControlOrConnectWindow"] = tasks.desktop.status["enabled"] as? Bool == false && tasks.desktop.status["connected_tasks"] as? Int == 0
             checks["noModelAttemptAssistantReceiptOrJob"] = attempts == 0 && tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { !$0.messages.contains { $0.role == "assistant" } && ($0.modelReceipts ?? []).isEmpty && !runtime.isRunning($0.id) }
+            try await checkOwnSnapshotStability(returningTo: window, checks: &checks)
             let metadata = try JSONEncoder().encode(file)
             try metadata.write(to: output.appendingPathComponent("actual-attachment.json"))
             try write(["appPID": getpid(), "binaryHash": hash, "checks": checks, "taskID": id, "otherTaskID": another, "attachmentID": file.id, "sourceHash": AgentFiles.hash(Data(source.utf8)), "blockedModelAttempts": attempts, "success": checks.values.allSatisfy { $0 }], "appshot-result.json")
         } catch { try? write(["appPID": getpid(), "binaryHash": hash, "checks": checks, "blockedModelAttempts": attempts, "success": false, "error": error.localizedDescription], "appshot-result.json") }
+    }
+
+    private func checkOwnSnapshotStability(returningTo original: NSWindow, checks: inout [String: Bool]) async throws {
+        let bounds = NSRect(x: 0, y: 0, width: 360, height: 220)
+        let sample = NSWindow(contentRect: bounds, styleMask: [.titled], backing: .buffered, defer: false)
+        sample.isReleasedWhenClosed = false
+        sample.title = "公开截图稳定性检查"
+        let content = NSView(frame: bounds)
+        let label = NSTextField(labelWithString: "公开样例正在加载")
+        label.frame = NSRect(x: 20, y: 100, width: 320, height: 30)
+        content.addSubview(label); sample.contentView = content
+        sample.center(); sample.makeKeyAndOrderFront(nil)
+        defer { sample.close(); original.makeKeyAndOrderFront(nil) }
+
+        func image() throws -> (AgentWindowCapture.Image, String) {
+            guard let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw PetError("无法绘制公开样例窗口") }
+            content.cacheDisplay(in: content.bounds, to: rep)
+            guard let cg = rep.cgImage, let png = rep.representation(using: .png, properties: [:]) else { throw PetError("无法读取公开样例图片") }
+            return (.init(image: cg, data: png, hash: AgentFiles.hash(png)), "own-software")
+        }
+        var hashes: [String] = []
+        let stable = try await AgentAppShotCapture.stableOwnSnapshot(sample, validateApplication: AgentWindowCapture.unlocked) {
+            let shot = try image()
+            hashes.append(shot.0.hash)
+            label.stringValue = "公开样例已加载"
+            return shot
+        }
+        checks["settlingTextRecapturesAndPairsSecondImageWithCurrentText"] = hashes.count == 2 && Set(hashes).count == 2
+            && stable.image.hash == hashes.last && stable.text.0.contains("公开样例已加载") && !stable.text.0.contains("公开样例正在加载")
+
+        var changing = 0
+        do {
+            _ = try await AgentAppShotCapture.stableOwnSnapshot(sample, validateApplication: AgentWindowCapture.unlocked) {
+                changing += 1
+                guard changing <= 2 else { throw PetError("同一窗口试拍超过两次") }
+                let shot = try image()
+                label.stringValue = "公开样例变化 \(changing)"
+                return shot
+            }
+            checks["persistentlyChangingTextStopsAfterTwoCaptures"] = false
+        } catch {
+            checks["persistentlyChangingTextStopsAfterTwoCaptures"] = changing == 2 && error.localizedDescription.contains("文字持续变化")
+        }
+
+        var switching = 0
+        do {
+            _ = try await AgentAppShotCapture.stableOwnSnapshot(sample, validateApplication: AgentWindowCapture.unlocked) {
+                switching += 1
+                let shot = try image()
+                original.makeKeyAndOrderFront(nil)
+                return shot
+            }
+            checks["switchingWindowsStopsBeforeRecapture"] = false
+        } catch {
+            checks["switchingWindowsStopsBeforeRecapture"] = switching == 1 && error.localizedDescription.contains("窗口已变化")
+        }
     }
 }
