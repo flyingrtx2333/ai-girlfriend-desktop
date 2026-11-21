@@ -526,7 +526,7 @@ import UniformTypeIdentifiers
                 let (files, current) = try AgentWorkspaceScope.location(task, path: path)
                 guard current == file, !AgentFiles.sensitive(files.relative(file)) else { throw PetError("原文件位置或访问范围已变化") }
                 currentHash = try files.fileHash(file, maximum: 4_000_000)
-            } catch { issue = error.localizedDescription }
+            } catch { issue = AgentFileConflictSnapshot.readFailure(error).message }
             loadText(AgentTextFile(text: draft, format: format), data: Data(draft.utf8), file: file, task: task)
             selection = path; openedFile = file
             if !openedFiles.contains(path) { openedFiles.append(path) }
@@ -543,7 +543,10 @@ import UniformTypeIdentifiers
             save.isHidden = false; save.isEnabled = text.isEditable
         } else { throw PetError("恢复草稿没有可写入的原始对象") }
         openedHash = hash; dirty = true; recoveryBlockedReason = issue
-        if let issue { text.isEditable = false; save.isEnabled = false; compare.isHidden = true; state.stringValue = "草稿已恢复为只读：" + issue }
+        if let issue {
+            text.isEditable = false; save.isEnabled = false; compare.isHidden = openedFile == nil
+            state.stringValue = "草稿只读 · " + issue
+        }
         else { state.stringValue = currentHash == hash ? "已恢复未保存内容" : "文件已更改，草稿已恢复；保存前请比较" }
         if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }
         text.undoManager?.removeAllActions(); updateTaskItemPicker(); onWorkspaceChange?()
@@ -1280,6 +1283,16 @@ import UniformTypeIdentifiers
         conflictWindow?.close()
         let next = AgentFileConflictWindow(file: file, protectedData: store.directory.deletingLastPathComponent(), recovery: recovery, read: { [weak self] in
             guard let self else { throw PetError("文档已关闭") }; return try self.conflictSnapshot()
+        }, didReview: { [weak self] reviewed in
+            guard let self, self.recoveryBlockedReason != nil else { return }
+            guard reviewed.allowsOverwrite else {
+                let issue = "当前文件只读，草稿已保留"
+                self.recoveryBlockedReason = issue; self.state.stringValue = issue
+                return
+            }
+            self.recoveryBlockedReason = nil
+            self.text.isEditable = true; self.save.isEnabled = true
+            self.state.stringValue = self.openedHash == reviewed.diskHash ? "已恢复未保存内容" : "文件已更改，保存前请比较"
         }, resolve: { [weak self] reviewed, resolution in
             guard let self else { throw PetError("文档已关闭") }
             let current = try self.conflictSnapshot(); try reviewed.requireUnchanged(current)

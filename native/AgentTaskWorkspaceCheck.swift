@@ -108,6 +108,25 @@ import AppKit
             var invalid = review; invalid.conflict = .init(file: fixture.duplicate.path, mode: 0)
             var invalidPage = page; invalidPage.state = try JSONEncoder().encode(invalid)
             checks["comparisonRecoveryRejectsSameNameFromOtherFolder"] = (try? AgentRecordWindow.recoveryState(invalidPage)) == nil
+            func descendants(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(descendants) }
+            guard let root = comparison.pageContentView,
+                  let retry = descendants(root).compactMap({ $0 as? NSButton }).first(where: { $0.title == "刷新比较" }) else {
+                throw PetError("文件比较缺少刷新操作")
+            }
+            let held = output.appendingPathComponent("offline-guide.md")
+            try FileManager.default.moveItem(at: fixture.guide, to: held)
+            retry.performClick(nil); retry.performClick(nil)
+            let unavailable = comparison.checkState
+            let retained = try AgentRecordWindow.recoveryState(await guide.captureWorkspaceRecovery())
+            checks["unavailableDiskKeepsReviewedHashesAndDraftAcrossRetries"] = retained.conflict?.diskHash == review.conflict?.diskHash &&
+                retained.conflict?.draftHash == review.conflict?.draftHash && retained.text == conflictDraft
+            checks["missingDiskStatusIsLocalizedAndBothDecisionsAreDisabled"] = unavailable["state"] as? String == "原文件暂不可用" &&
+                unavailable["adoptEnabled"] as? Bool == false && unavailable["overwriteEnabled"] as? Bool == false && retry.isEnabled
+            try FileManager.default.moveItem(at: held, to: fixture.guide)
+            retry.performClick(nil)
+            for _ in 0..<100 { if comparison.checkState["loading"] as? Bool == false { break }; await wait(0.05) }
+            checks["sameDiskCanBeReviewedAgainWithoutWriting"] = try files.readData(fixture.guide) == external &&
+                comparison.checkState["draftHash"] as? String == review.conflict?.draftHash && comparison.checkState["overwriteEnabled"] as? Bool == true
             await inspect("file-comparison")
             host.checkSelect(.context); host.checkSelect(.document(fixture.guide.path))
             checks["switchingTabsRetainsComparisonChild"] = host.currentController === comparison
