@@ -46,7 +46,8 @@ struct AgentImportOrigin: Codable {
     var taskHash: String
     var historyThroughID: String?
     var warnings: [String]
-    var key: String { source.rawValue + ":" + sourceID.lowercased() }
+    var sshHost: String? = nil
+    var key: String { AgentImportReaders.key(source, sourceID, sshHost: sshHost) }
 }
 
 struct AgentImportCandidate: Codable, Identifiable {
@@ -72,7 +73,8 @@ struct AgentImportCandidate: Codable, Identifiable {
     var plugin: AgentPluginImportPlan?
     var configuration: AgentStandaloneImportPlan?
     var standaloneMCPHooks: Bool?
-    var id: String { source.rawValue + ":" + sourceID.lowercased() }
+    var sshHost: String? = nil
+    var id: String { AgentImportReaders.key(source, sourceID, sshHost: sshHost) }
     var category: AgentImportCategory {
         if automation != nil { return .automations }
         if plugin != nil { return .plugins }
@@ -95,8 +97,19 @@ struct AgentImportDocument {
 // files are never included in a record snapshot or executed during conversion.
 enum AgentImportReaders {
     static let maximumBytes = 64 * 1024 * 1024
+    static let maximumRecords = 5000
     private struct Node { var id: String; var parent: String?; var messages: [AgentMessage]; var events: [AgentEvent] }
     struct IndexEntry { var title: String; var archived: Bool; var subagent: Bool }
+
+    static func key(_ source: AgentImportSource, _ id: String, sshHost: String?) -> String {
+        let scope = sshHost.map { "ssh:" + AgentFiles.hash(Data($0.utf8)) + ":" } ?? ""
+        return source.rawValue + ":" + scope + id.lowercased()
+    }
+
+    static func sessionDirectories(_ source: AgentImportSource) -> [String] {
+        source == .codex ? ["sessions", "archived_sessions"] : ["projects"]
+    }
+
     static func targetID(_ key: String) -> String {
         var bytes = Array(AgentFiles.hash(Data(key.utf8)).prefix(32))
         bytes[12] = "8"; bytes[16] = Array("89ab")[Int(String(bytes[16]), radix: 16)! & 3]
@@ -122,7 +135,7 @@ enum AgentImportReaders {
 
     static func discover(_ source: AgentImportSource, root: URL) throws -> [AgentImportCandidate] {
         let files = try AgentFiles(workspace: root.path), fm = FileManager.default
-        let children = source == .codex ? ["sessions", "archived_sessions"] : ["projects"]
+        let children = sessionDirectories(source)
         let roots = try children.compactMap { name -> URL? in
             let url = files.root.appendingPathComponent(name)
             guard fm.fileExists(atPath: url.path) else { return nil }
@@ -138,7 +151,7 @@ enum AgentImportReaders {
                 if properties.isSymbolicLink == true { iterator.skipDescendants(); continue }
                 guard properties.isRegularFile == true, url.pathExtension == "jsonl" else { continue }
                 if source == .qoder, UUID(uuidString: url.deletingPathExtension().lastPathComponent) == nil { continue }
-                count += 1; guard count <= 5000 else { throw PetError("来源超过5000份记录，请选择较小的来源副本") }
+                count += 1; guard count <= maximumRecords else { throw PetError("来源超过5000份记录，请选择较小的来源副本") }
                 do {
                     let document = try read(source, file: url, root: files.root, index: index)
                     result.append(document.candidate)
@@ -155,8 +168,14 @@ enum AgentImportReaders {
         let url = try files.literalURL(file.path), before = try files.entryMetadata(url).signature
         let raw = try files.readData(url, maximum: maximumBytes)
         guard try files.entryMetadata(url).signature == before else { throw PetError("来源正在变化，请重新检测") }
+        return try decode(source, file: file.path, raw: raw, index: index)
+    }
+
+    static func decode(_ source: AgentImportSource, file: String, raw: Data, index: [String: IndexEntry] = [:],
+                       sshHost: String? = nil, archived: Bool = false) throws -> AgentImportDocument {
         let rawHash = AgentFiles.hash(raw)
-        var candidate = AgentImportCandidate(source: source, sourceID: "", file: file.path, rawHash: rawHash, sourceHash: "", title: "", created: Date.distantFuture, updated: Date.distantPast)
+        var candidate = AgentImportCandidate(source: source, sourceID: "", file: file, rawHash: rawHash, sourceHash: "", title: "",
+            created: Date.distantFuture, updated: Date.distantPast, archived: archived, sshHost: sshHost)
         var output: [AgentMessage] = [], events: [AgentEvent] = [], nodes: [String: Node] = [:], lastNode: String?, leaf: String?
         var unsupported = 0, humanEvents = false, messageBytes = 0
         let lines = raw.split(separator: 10, omittingEmptySubsequences: false)
@@ -188,7 +207,7 @@ enum AgentImportReaders {
         }
         for (lineIndex, line) in lines.enumerated() where !line.isEmpty {
             guard line.count <= 4 * 1024 * 1024 else { throw PetError("单条来源记录超过4MB，未导入") }
-            guard let item = try JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { throw PetError("来源第\(lineIndex + 1)行不是有效记录") }
+            guard let item = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any] else { throw PetError("来源第\(lineIndex + 1)行不是有效记录") }
             let type = item["type"] as? String ?? ""
             if let date = date(item["timestamp"]) { candidate.created = min(candidate.created, date); candidate.updated = max(candidate.updated, date) }
             if source == .codex {
@@ -269,7 +288,10 @@ enum AgentImportReaders {
         candidate.preview = String(first.content.prefix(2000)); candidate.messages = output.filter { $0.nativeContext != true }.count
         if unsupported > 0 { candidate.warnings.append("\(unsupported)项图片、附件或加密内容未转换；原始记录保留") }
         if candidate.created == .distantFuture { candidate.created = Date() }; if candidate.updated == .distantPast { candidate.updated = candidate.created }
-        if let workspace = candidate.workspace, !FileManager.default.fileExists(atPath: workspace) { candidate.warnings.append("原工作目录不存在，导入后需重新选择") }
+        if let workspace = candidate.workspace {
+            if sshHost != nil { candidate.warnings.append("原工作目录位于 SSH 主机，导入后可选择本机工作区") }
+            else if !FileManager.default.fileExists(atPath: workspace) { candidate.warnings.append("原工作目录不存在，导入后需重新选择") }
+        }
         for message in output { messageBytes += message.content.utf8.count; guard messageBytes <= 8 * 1024 * 1024, output.count <= 20000 else { throw PetError("转换后的历史超过8MB或2万条记录，未导入") } }
         let metadata = try JSONSerialization.data(withJSONObject: ["raw": rawHash, "title": candidate.title, "workspace": candidate.workspace ?? "", "archived": candidate.archived], options: [.sortedKeys])
         candidate.sourceHash = AgentFiles.hash(metadata)

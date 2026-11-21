@@ -1,6 +1,73 @@
 import Foundation
 
 @MainActor extension AppDelegate {
+    func checkSSHImport(_ output: URL, tasks: AgentStore, binaryHash: String) async throws {
+        let importer = tasks.dataImport, fm = FileManager.default
+        let codexRoot = output.appendingPathComponent("Codex '公开样例'")
+        let qoderRoot = output.appendingPathComponent("Qoder 会话")
+        let oldFile = codexRoot.appendingPathComponent("sessions/reviewed.jsonl")
+        let original = try Data(contentsOf: oldFile)
+        let remote = AgentImportRoute(source: .codex, category: .tasks, root: codexRoot.path, workspace: nil, sshHost: "whale-import")
+        let local = AgentImportRoute(source: .codex, category: .tasks, root: codexRoot.path, workspace: nil)
+        let qoder = AgentImportRoute(source: .qoder, category: .tasks, root: qoderRoot.path, workspace: nil, sshHost: "whale-import")
+        var checks: [String: Bool] = [:]
+        func finish(_ service: AgentDataImport) async throws {
+            let end = Date().addingTimeInterval(20)
+            while service.active, Date() < end { await wait(0.05) }
+            guard !service.active else { throw PetError("SSH 导入批次仍在运行") }
+        }
+
+        for (alias, issue) in [("whale-unverified", "尚未验证"), ("whale-changed", "密钥已变化")] {
+            var test = remote; test.sshHost = alias
+            await importer.detect([test])
+            checks[alias] = importer.preview(for: test)?.issue?.contains(issue) == true && importer.preview(for: test)?.available.isEmpty == true
+        }
+        await importer.detect([remote]); await importer.detect([local])
+        let records = importer.preview(for: remote)?.records ?? []
+        let available = records.filter { $0.issue == nil }
+        guard let reviewed = available.first(where: { $0.file == oldFile.path }),
+              let archived = available.first(where: \.archived) else { throw PetError(importer.preview(for: remote)?.issue ?? "未读回两份 SSH 来源") }
+        checks["remoteAndLocalPreviewsStayDistinct"] = importer.preview(for: local)?.records.contains { $0.sourceID == reviewed.sourceID && $0.id != reviewed.id && $0.targetID != reviewed.targetID } == true
+        checks["scanSkipsLinksAndReportsBrokenAndOversizedRecords"] = available.count == 2 && records.count == 4 &&
+            records.contains { $0.issue?.contains("64 MB") == true } && records.contains { $0.issue == "来源第1行不是有效记录" } &&
+            !records.contains { $0.file.hasSuffix("link.jsonl") }
+        checks["quotedSourceReadsOriginalBytes"] = reviewed.rawHash == AgentFiles.hash(original)
+        try (original + Data("\n".utf8)).write(to: oldFile)
+        try importer.begin([remote: [reviewed.id]]); try await finish(importer)
+        checks["changedSourceIsNeverInstalled"] = tasks.task(reviewed.targetID) == nil && importer.batch?.items.first?.detail.contains("远端来源已更新") == true
+        try original.write(to: oldFile)
+        await importer.detect([remote])
+        let selection = tasks.selectedID
+        let changed = importer.onChange
+        importer.onChange = {
+            changed?()
+            if importer.batch?.state == "running", importer.batch?.items.contains(where: { $0.state == "imported" }) == true { importer.pause() }
+        }
+        try importer.begin([remote: [reviewed.id, archived.id]]); try await finish(importer)
+        importer.onChange = changed
+        let reopened = AgentStore(directory: output.appendingPathComponent("profile"), legacy: [], extensionHome: tasks.extensions.sharedHome)
+        let resumed = reopened.dataImport
+        checks["batchRestoresExactSourceWithOneItemPending"] = resumed.batch?.state == "paused" && resumed.batch?.items.filter { $0.state == "pending" }.count == 1 && resumed.batch.map { batch in batch.items.allSatisfy { batch.route(for: $0) == remote } } == true
+        resumed.resume(); try await finish(resumed)
+        let task = reopened.task(reviewed.targetID), archivedTask = reopened.task(archived.targetID)
+        let replica = try Data(contentsOf: resumed.sourceURL(reviewed.targetID))
+        checks["resumedBatchImportsExactOriginalAndArchiveState"] = resumed.batch?.state == "completed" && resumed.batch?.items.allSatisfy { $0.state == "imported" } == true && replica == original && archivedTask?.archived == true
+        checks["remoteWorkspaceDoesNotResolveOnThisMac"] = task?.workspace == nil && task?.importOrigin?.originalWorkspace == output.path && task?.importOrigin?.sshHost == remote.sshHost && task?.importOrigin?.sourceFile == oldFile.path
+        checks["importIsStoppedAndKeepsOriginalTaskSelected"] = task?.status == .stopped && task?.permission == .review && reopened.selectedID == selection
+        await resumed.detect([qoder])
+        guard let qoderRecord = resumed.preview(for: qoder)?.records.first(where: { $0.issue == nil }) else { throw PetError(resumed.preview(for: qoder)?.issue ?? "未读回 Qoder SSH 来源") }
+        try resumed.begin([qoder: [qoderRecord.id]]); try await finish(resumed)
+        checks["qoderConversationBranchAndCopyAreImported"] = reopened.task(qoderRecord.targetID)?.messages.map(\.content) == ["Qoder 远端公开问题", "Qoder 远端公开答复"] && resumed.batch?.items.first?.state == "imported"
+        await resumed.detect([remote])
+        checks["rescanningFindsBothImportedRecords"] = resumed.preview(for: remote)?.records.filter { $0.issue == "已经导入" }.count == 2
+        checks["successfulAndFailedTransfersRemoveTemporaryCopies"] = try !fm.contentsOfDirectory(atPath: reopened.directory.deletingLastPathComponent().path).contains { $0.hasPrefix("ssh-import-transfer-") }
+        let success = checks.values.allSatisfy { $0 }
+        let result: [String: Any] = ["checks": checks, "success": success, "binaryHash": binaryHash, "appPID": getpid()]
+        try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .prettyPrinted])
+            .write(to: output.appendingPathComponent("ssh-import-report.json"), options: .atomic)
+        guard success else { throw PetError("SSH 导入检查失败：" + checks.filter { !$0.value }.keys.sorted().joined(separator: "、")) }
+    }
+
     func checkMixedImport(_ output: URL, tasks: AgentStore, binaryHash: String) async throws {
         let files = FileManager.default, importer = tasks.dataImport
         let phase = output.appendingPathComponent("mixed-import-paused.json")

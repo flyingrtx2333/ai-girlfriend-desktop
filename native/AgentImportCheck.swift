@@ -10,6 +10,10 @@ import SQLite3
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("导入运行时未初始化") }
             let binary = Bundle.main.executableURL!, binaryHash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
             try write(["appPID": getpid(), "binaryHash": binaryHash], "import-process.json")
+            if CommandLine.arguments.contains("--ssh-import-native") {
+                try await checkSSHImport(output, tasks: tasks, binaryHash: binaryHash)
+                return
+            }
             if CommandLine.arguments.contains("--mixed-import-native") {
                 try await checkMixedImport(output, tasks: tasks, binaryHash: binaryHash)
                 return

@@ -6,6 +6,7 @@ struct AgentImportRoute: Hashable, Codable, Sendable {
     let category: AgentImportCategory
     let root: String
     let workspace: String?
+    var sshHost: String? = nil
 
     var directory: URL { URL(fileURLWithPath: root) }
 }
@@ -36,11 +37,13 @@ struct AgentImportBatch: Codable {
     var state = "paused"
     var items: [AgentImportItem]
     var created = Date()
+    var sshHost: String? = nil
     var category: AgentImportCategory { items.first?.record.category ?? .tasks }
     var targetWorkspace: String? { items.first?.record.targetWorkspace }
 
     func route(for item: AgentImportItem) -> AgentImportRoute {
-        .init(source: source, category: item.record.category, root: item.sourceRoot ?? root, workspace: item.record.targetWorkspace)
+        .init(source: source, category: item.record.category, root: item.sourceRoot ?? root,
+              workspace: item.record.targetWorkspace, sshHost: sshHost)
     }
 }
 
@@ -60,6 +63,9 @@ struct AgentImportBatch: Codable {
     var onChange: (() -> Void)?
     var active: Bool { work != nil }
     var unfinished: Bool { batch?.items.contains(where: { $0.state == "pending" }) == true && batch?.state != "cancelled" }
+    private var ssh: AgentSSHImport {
+        .init(profile: store.directory.deletingLastPathComponent(), home: store.extensions.sharedHome)
+    }
 
     init(store: AgentStore) {
         self.store = store; directory = store.directory.deletingLastPathComponent().appendingPathComponent("imports"); journal = directory.appendingPathComponent("batch.json")
@@ -94,12 +100,12 @@ struct AgentImportBatch: Codable {
     }
 
     func detect(_ routes: [AgentImportRoute]) async {
-        guard let first = routes.first, routes.allSatisfy({ $0.source == first.source }),
+        guard let first = routes.first, routes.allSatisfy({ $0.source == first.source && $0.sshHost == first.sshHost }),
               Set(routes.map(\.category)).count == routes.count else { return }
         guard !scanning, !active, !unfinished else { operationIssue = "请先继续或取消尚未完成的导入"; onChange?(); return }
         if let loadIssue { operationIssue = loadIssue; onChange?(); return }
         let categories = Set(routes.map(\.category))
-        previews = previews.filter { $0.key.source != first.source || !categories.contains($0.key.category) }
+        previews = previews.filter { $0.key.source != first.source || $0.key.sshHost != first.sshHost || !categories.contains($0.key.category) }
         recentRoute = routes.count == 1 ? first : nil
         scanning = true; operationIssue = nil
         onChange?()
@@ -112,6 +118,7 @@ struct AgentImportBatch: Codable {
     }
 
     private func discover(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
+        if route.sshHost != nil, route.category != .tasks { throw PetError("SSH 来源支持任务记录") }
         let source = route.source, root = route.directory, workspace = route.workspace
         switch route.category {
         case .memory:
@@ -136,7 +143,9 @@ struct AgentImportBatch: Codable {
         case .configuration:
             return try await AgentStandaloneDataImport.discover(source, root: root, workspace: workspace, store: store)
         case .tasks:
-            let records = try await Task.detached(priority: .utility) { try AgentImportReaders.discover(source, root: root) }.value
+            let records: [AgentImportCandidate]
+            if route.sshHost != nil { records = try await ssh.discover(route) }
+            else { records = try await Task.detached(priority: .utility) { try AgentImportReaders.discover(source, root: root) }.value }
             let duplicates = Dictionary(grouping: records, by: \.id)
             return try records.map { record in
                 var value = record
@@ -162,8 +171,10 @@ struct AgentImportBatch: Codable {
     func begin(_ selections: [AgentImportRoute: Set<String>]) throws {
         guard !active, !scanning, !unfinished else { throw PetError("已有尚未完成的导入") }
         let choices = selections.filter { !$0.value.isEmpty }
-        guard let source = choices.keys.first?.source else { throw PetError("请选择可导入的内容") }
-        guard choices.keys.allSatisfy({ $0.source == source }), Set(choices.keys.map(\.category)).count == choices.count else {
+        guard let first = choices.keys.first else { throw PetError("请选择可导入的内容") }
+        let source = first.source
+        guard choices.keys.allSatisfy({ $0.source == source && $0.sshHost == first.sshHost }),
+              Set(choices.keys.map(\.category)).count == choices.count else {
             throw PetError("请从同一来源选择导入内容")
         }
         var items: [AgentImportItem] = []
@@ -174,7 +185,8 @@ struct AgentImportBatch: Codable {
                 throw PetError("来源或导入目标已变化，请重新检测")
             }
             let records = preview.records.filter { ids.contains($0.id) && $0.issue == nil }
-            guard records.allSatisfy({ $0.source == route.source && $0.category == route.category && $0.targetWorkspace == route.workspace }) else {
+            guard records.allSatisfy({ $0.source == route.source && $0.category == route.category &&
+                $0.targetWorkspace == route.workspace && $0.sshHost == route.sshHost }) else {
                 throw PetError("导入记录与选定来源或目标不符，请重新检测")
             }
             items += records.map { record in
@@ -189,20 +201,22 @@ struct AgentImportBatch: Codable {
             try files.writeData(bytes, to: url, permissions: 0o600)
         }
         let previous = batch
-        batch = AgentImportBatch(source: source, root: root, items: items)
+        batch = AgentImportBatch(source: source, root: root, items: items, sshHost: first.sshHost)
         do { try save() } catch { batch = previous; throw error }
-        operationIssue = nil; previews = previews.filter { $0.key.source != source }; recentRoute = nil
+        operationIssue = nil; previews = previews.filter { $0.key.source != source || $0.key.sshHost != first.sshHost }; recentRoute = nil
         resume()
     }
     func pause() {
         guard active else { return }
         batch?.state = "paused"
+        if batch?.sshHost != nil { work?.cancel() }
         do { try save() } catch { operationIssue = error.localizedDescription }
         onChange?()
     }
     func cancel() {
         guard unfinished || active else { return }
         batch?.state = "cancelled"
+        if batch?.sshHost != nil { work?.cancel() }
         do { try save() } catch { operationIssue = error.localizedDescription }
         onChange?()
     }
@@ -221,12 +235,19 @@ struct AgentImportBatch: Codable {
     }
     private func process() async {
         defer { releaseLock(); work = nil; onChange?() }
-        while batch?.state == "running", let index = batch?.items.firstIndex(where: { $0.state == "pending" }),
-              let source = batch?.source, let base = batch?.root, let item = batch?.items[index] {
-            let candidate = item.record, root = item.sourceRoot ?? base
+        while let current = batch, current.state == "running", let index = current.items.firstIndex(where: { $0.state == "pending" }) {
+            let item = current.items[index]
+            let candidate = item.record, route = current.route(for: item), root = route.root, source = route.source
             do {
-                if candidate.memory != nil {
-                    guard let id = batch?.id, UUID(uuidString: id) != nil else { throw PetError("导入批次编号无效") }
+                if route.sshHost != nil || candidate.sshHost != nil {
+                    let document = try await ssh.read(candidate, route: route)
+                    guard batch?.state == "running" else { return }
+                    guard document.candidate.id == candidate.id, document.candidate.sourceHash == candidate.sourceHash,
+                          document.candidate.rawHash == candidate.rawHash else { throw PetError("远端来源已更新，请重新检测；本次未替换任务") }
+                    try install(document, candidate: candidate)
+                } else if candidate.memory != nil {
+                    let id = current.id
+                    guard UUID(uuidString: id) != nil else { throw PetError("导入批次编号无效") }
                     let base = URL(fileURLWithPath: root)
                     let data = try await Task.detached(priority: .utility) { try AgentMemoryImport.read(candidate, root: base) }.value
                     let recordID = AgentFiles.hash(Data(candidate.id.utf8))
@@ -253,6 +274,7 @@ struct AgentImportBatch: Codable {
                 }
                 batch?.items[index].state = "imported"; batch?.items[index].detail = "已导入"
             } catch {
+                if route.sshHost != nil, batch?.state != "running" { return }
                 batch?.items[index].state = "failed"; batch?.items[index].detail = error.localizedDescription
             }
             do { try save() } catch { operationIssue = "进度未保存，请重新打开应用后继续：" + error.localizedDescription; return }
@@ -278,12 +300,12 @@ struct AgentImportBatch: Codable {
         if FileManager.default.fileExists(atPath: target.path) {
             guard AgentFiles.hash(try files.readData(target, maximum: AgentImportReaders.maximumBytes)) == candidate.rawHash else { throw PetError("已保存的来源副本发生变化，未覆盖") }
         } else { try files.writeData(document.raw, to: target, permissions: 0o600, expectedTarget: "missing") }
-        var task = AgentTaskRecord(title: candidate.title, workspace: candidate.workspace, mode: .agent)
+        var task = AgentTaskRecord(title: candidate.title, workspace: candidate.sshHost == nil ? candidate.workspace : nil, mode: .agent)
         task.id = identity; task.permission = .review; task.status = .stopped; task.archived = candidate.archived
         if let workspace = task.workspace, !FileManager.default.fileExists(atPath: workspace) { task.workspace = nil }
         task.messages = document.messages; task.events = document.events; task.created = candidate.created; task.updated = candidate.updated
         task.summary = "从" + candidate.source.title + "导入 · " + String(candidate.preview.prefix(160))
-        task.importOrigin = AgentImportOrigin(source: candidate.source, sourceID: candidate.sourceID, sourceFile: candidate.file, sourceHash: candidate.sourceHash, rawHash: candidate.rawHash, originalWorkspace: candidate.workspace, snapshot: name, taskHash: try Self.taskHash(task), historyThroughID: task.messages.last?.id, warnings: candidate.warnings)
+        task.importOrigin = AgentImportOrigin(source: candidate.source, sourceID: candidate.sourceID, sourceFile: candidate.file, sourceHash: candidate.sourceHash, rawHash: candidate.rawHash, originalWorkspace: candidate.workspace, snapshot: name, taskHash: try Self.taskHash(task), historyThroughID: task.messages.last?.id, warnings: candidate.warnings, sshHost: candidate.sshHost)
         try store.installImportedRecord(task)
     }
     static func historyBoundary(_ task: AgentTaskRecord, directory: URL) throws -> String? {

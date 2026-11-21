@@ -168,7 +168,7 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
         label("原工作目录", heading: true)
         label(origin.originalWorkspace ?? "无")
         label("来源文件", heading: true)
-        label(origin.sourceFile)
+        label(origin.sshHost.map { $0 + ":" + origin.sourceFile } ?? origin.sourceFile)
         if !origin.warnings.isEmpty {
             label("导入提示", heading: true)
             origin.warnings.forEach { label($0) }
