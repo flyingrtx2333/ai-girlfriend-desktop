@@ -146,7 +146,7 @@ struct AgentImportBatch: Codable {
     }
 
     private func discover(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
-        if route.sshHost != nil, !AgentSSHImport.categories.contains(route.category) { throw PetError("SSH 来源支持任务记录和记忆") }
+        if route.sshHost != nil, !AgentSSHImport.categories.contains(route.category) { throw PetError("此类别暂不支持 SSH 导入") }
         let source = route.source, root = route.directory, workspace = route.workspace
         switch route.category {
         case .memory:
@@ -160,7 +160,9 @@ struct AgentImportBatch: Codable {
                 catch { var skipped = entry.record; skipped.issue = error.localizedDescription; return skipped }
             }
         case .skills:
-            let records = try await Task.detached(priority: .utility) { try AgentSkillImport.discover(source, root: root, workspace: workspace) }.value
+            let records: [AgentImportCandidate]
+            if route.sshHost != nil { records = try await ssh.discoverSkills(route) }
+            else { records = try await Task.detached(priority: .utility) { try AgentSkillImport.discover(source, root: root, workspace: workspace) }.value }
             return try AgentSkillImport.plan(records, store: store, workspace: workspace)
         case .connectors:
             let records = try await Task.detached(priority: .utility) { try AgentMCPDataImport.discover(source, root: root, workspace: workspace) }.value
@@ -283,14 +285,18 @@ struct AgentImportBatch: Codable {
                     let recordID = AgentFiles.hash(Data(candidate.id.utf8))
                     let backup = directory.appendingPathComponent("memory-transfers").appendingPathComponent(id).appendingPathComponent(recordID)
                     try AgentMemoryImport.install(data, record: candidate, store: store, backup: backup)
+                } else if candidate.skill != nil {
+                    if route.sshHost != nil || candidate.sshHost != nil {
+                        try await AgentSkillImport.install(candidate, store: store) { try await ssh.readSkill(candidate, route: route) }
+                    } else {
+                        try await AgentSkillImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
+                    }
                 } else if route.sshHost != nil || candidate.sshHost != nil {
                     let document = try await ssh.read(candidate, route: route)
                     guard batch?.state == "running" else { return }
                     guard document.candidate.id == candidate.id, document.candidate.sourceHash == candidate.sourceHash,
                           document.candidate.rawHash == candidate.rawHash else { throw PetError("远端来源已更新，请重新检测；本次未替换任务") }
                     try install(document, candidate: candidate)
-                } else if candidate.skill != nil {
-                    try await AgentSkillImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                 } else if candidate.connector != nil {
                     try await AgentMCPDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                 } else if candidate.automation != nil {

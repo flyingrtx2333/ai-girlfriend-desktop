@@ -25,11 +25,12 @@ struct AgentFiles: Sendable {
         return normalized.path == root.path ? "." : String(normalized.path.dropFirst(root.path.count + 1))
     }
     static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+    static let sensitiveNames = [".env", ".ssh", ".gnupg", ".git", "credentials.py", "credentials.json"]
+    static let sensitiveExtensions = ["pem", "p12", "pfx", "key", "keychain-db"]
     static func sensitive(_ path: String) -> Bool {
         path.split(separator: "/").contains { part in
             let name = part.lowercased()
-            return name == ".env" || name.hasPrefix(".env.") || name == ".ssh" || name == ".gnupg" || name == ".git" || ["credentials.py", "credentials.json"].contains(name)
-                || ["pem", "p12", "pfx", "key", "keychain-db"].contains((name as NSString).pathExtension)
+            return sensitiveNames.contains(name) || name.hasPrefix(".env.") || sensitiveExtensions.contains((name as NSString).pathExtension)
         }
     }
     func literalURL(_ path: String) throws -> URL {

@@ -60,6 +60,128 @@ import AppKit
         let importer = tasks.dataImport
         let root = output.appendingPathComponent("Codex '公开样例'")
         let route = AgentImportRoute(source: .codex, category: .tasks, root: root.path, workspace: nil, sshHost: "whale-import")
+        if CommandLine.arguments.contains("--ssh-skills-import-check") {
+            let skills = AgentImportRoute(source: .codex, category: .skills, root: root.path, workspace: nil, sshHost: route.sshHost)
+            let memory = AgentImportRoute(source: .codex, category: .memory, root: root.path, workspace: nil, sshHost: route.sshHost)
+            let phase = output.appendingPathComponent("ssh-skills-paused.json"), fm = FileManager.default
+            let release = root.appendingPathComponent("skills/release-check")
+            let changed = root.appendingPathComponent(".agents/skills/source-changed/references/version.md")
+            func write(_ value: [String: Any], to file: URL) throws {
+                try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: file, options: .atomic)
+            }
+            func resources(_ folder: URL) throws -> [String: Data] {
+                try AgentExtensions.resourceData(AgentFiles(workspace: folder.path))
+            }
+            if !fm.fileExists(atPath: phase.path) {
+                try chooseSSH(route)
+                try button("检测可导入内容").performClick(nil)
+                try await settle { importer.scanning || importer.preview(for: skills) == nil }
+                let records = importer.preview(for: skills)?.records ?? [], available = records.filter { $0.issue == nil }
+                checks["overviewDetectsTasksMemoryAndSkills"] = importer.preview(for: route)?.available.count == 2 &&
+                    importer.preview(for: memory)?.available.count == 1 && available.count == 2
+                checks["modernAndLegacySkillDirectoriesAreDetected"] = Set(available.map(\.title)) == ["release-check", "source-changed"]
+                checks["unsafeAndOversizedPackagesAreReportedIndependently"] = records.count == 6 &&
+                    records.contains { $0.title == "link-resource" && $0.issue?.contains("符号链接") == true } &&
+                    records.contains { $0.title == "private-resource" && $0.issue?.contains("受保护") == true } &&
+                    records.contains { $0.title == "large-file" && $0.issue?.contains("2 MB") == true } &&
+                    records.contains { $0.title == "large-package" && $0.issue?.contains("20 MB") == true }
+                guard let index = records.firstIndex(where: { $0.title == "release-check" }) else {
+                    throw PetError(importer.preview(for: skills)?.issue ?? "缺少 SSH Skill 预览")
+                }
+                let expected = try resources(release), selected = records[index]
+                checks["wholePackageDigestCoversOnlyPackagedFiles"] = expected.count == 4 && selected.skill?.fileCount == expected.count &&
+                    selected.sourceHash == AgentExtensions.digest(expected)
+                try openCategory(.skills)
+                guard let list = find(content, NSTableView.self, { $0.accessibilityLabel() == "可导入Skills" }) else { throw PetError("缺少 Skills 预览列表") }
+                list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+                content.layoutSubtreeIfNeeded()
+                let detail = find(content, NSTextView.self, { $0.accessibilityLabel() == "导入预览" })
+                let confirm = try button("导入 5 项")
+                checks["narrowReviewShowsOriginResourceCountAndConfirm"] = detail?.string.contains("whale-import:" + release.path) == true &&
+                    detail?.string.contains("4 个文件") == true && confirm.visibleRect.width >= confirm.bounds.width - 1 &&
+                    confirm.visibleRect.height >= confirm.bounds.height - 1 && find(content, NSButton.self, { $0.title == "来源文件" }) == nil
+                checks["reviewedSkillSelectionIsSaved"] = control.captureSettingsNavigation()?.dataImport?.routes
+                    .first(where: { $0.route == skills })?.checked?.count == 2
+                try button("返回导入").performClick(nil)
+                let notify = importer.onChange
+                importer.onChange = { [weak importer] in
+                    notify?()
+                    if let importer, importer.batch?.state == "running", importer.batch?.items.filter({ $0.state == "imported" }).count == 3 {
+                        importer.pause()
+                    }
+                }
+                defer { importer.onChange = notify }
+                try button("导入 5 项").performClick(nil)
+                try await settle { importer.active || importer.batch == nil }
+                guard let batch = importer.batch, batch.state == "paused" else { throw PetError("SSH Skills 混合批次没有暂停") }
+                checks["tasksAndMemoryCompleteBeforePausedSkills"] = batch.items.filter { $0.state == "imported" && $0.record.category != .skills }.count == 3 &&
+                    batch.items.filter { $0.state == "pending" && batch.route(for: $0) == skills }.count == 2
+                try Data("技能资源在预览后更新\n".utf8).write(to: changed)
+                try write(["batch": batch.id, "pid": getpid(), "checks": checks, "modelRequests": requests], to: phase)
+                return
+            }
+            let initial = try JSONSerialization.jsonObject(with: Data(contentsOf: phase)) as? [String: Any] ?? [:]
+            checks = initial["checks"] as? [String: Bool] ?? [:]
+            checks["restartRestoresOriginalSkillSourceAndSelection"] = initial["pid"] as? Int != Int(getpid()) &&
+                importer.batch?.id == initial["batch"] as? String && importer.unfinished &&
+                importer.batch?.items.filter { $0.state == "pending" && $0.record.category == .skills && $0.record.sshHost == route.sshHost }.count == 2
+            guard control.showSettingsCategory("imports") else { throw PetError("不能恢复 SSH Skills 导入页") }
+            try button("继续导入").performClick(nil)
+            try await settle { importer.active }
+            guard let completed = importer.batch, let copied = completed.items.first(where: { $0.record.title == "release-check" }),
+                  let stale = completed.items.first(where: { $0.record.title == "source-changed" }) else { throw PetError("缺少 SSH Skills 恢复结果") }
+            let installed = try AgentSkillImport.destinationURL(copied.record, store: tasks)
+            let currentResources = try resources(installed), originalResources = try resources(release)
+            checks["globalInstallKeepsAllNestedBinaryAndTextResources"] = copied.state == "imported" && currentResources == originalResources
+            checks["changedResourceSkipsOnlyTheOriginalSkill"] = completed.state == "completed" && stale.state == "failed" &&
+                stale.detail.contains("资源已变化") && (try? AgentSkillImport.destinationURL(stale.record, store: tasks)) == nil &&
+                completed.items.filter { $0.state == "imported" }.count == 4
+            let script = try AgentFiles(workspace: installed.path).entryMetadata(installed.appendingPathComponent("scripts/check.sh"))
+            checks["importOnlyCopiesScriptBytes"] = script.permissions == 0o600 &&
+                !fm.fileExists(atPath: output.appendingPathComponent("unexpected-script-output").path)
+            try detectSSH(skills)
+            try await settle { importer.scanning || importer.preview(for: skills) == nil }
+            checks["rescanningFindsInstalledDigestAndNewSourceVersion"] = importer.preview(for: skills)?.records.contains {
+                $0.title == "release-check" && $0.issue == "已经导入"
+            } == true && importer.preview(for: skills)?.available.count == 1
+            try button("返回导入").performClick(nil)
+
+            let qoderRoot = output.appendingPathComponent("Qoder 会话"), project = output.appendingPathComponent("本机 Skill 项目")
+            let qoder = AgentImportRoute(source: .qoder, category: .skills, root: qoderRoot.path, workspace: project.path, sshHost: route.sshHost)
+            try fm.createDirectory(at: project, withIntermediateDirectories: true)
+            try tasks.organization.register(project.path, mode: .coding)
+            try chooseSSH(qoder)
+            try openCategory(.skills)
+            guard let picker = find(content, NSPopUpButton.self, { $0.accessibilityLabel() == "Skills目标" }),
+                  let destination = picker.itemArray.first(where: { $0.representedObject as? String == project.path }), let action = picker.action else {
+                throw PetError("SSH Skills 缺少项目目标选择")
+            }
+            picker.select(destination)
+            NSApp.sendAction(action, to: picker.target, from: picker)
+            checks["navigationKeepsSelectedProjectWithRemoteSkillSource"] = control.captureSettingsNavigation()?.dataImport?.routes.contains { $0.route == qoder } == true
+            try button("重新检测").performClick(nil)
+            try await settle { importer.scanning || importer.preview(for: qoder) == nil }
+            guard let preview = importer.preview(for: qoder), preview.available.count == 1,
+                  let item = preview.records.first(where: { $0.title == "project-brief" && $0.issue == nil }) else {
+                throw PetError(importer.preview(for: qoder)?.issue ?? "缺少 Qoder 项目 Skill")
+            }
+            try button("导入 1 项").performClick(nil)
+            try await settle { importer.active }
+            let target = try AgentSkillImport.destinationURL(item, store: tasks)
+            let qoderSource = qoderRoot.appendingPathComponent(".qoder/skills/交付 '简报'")
+            let projectResources = try resources(target), expectedResources = try resources(qoderSource)
+            let global = try tasks.extensions.catalog(workspace: nil).map(\.name)
+            let local = try tasks.extensions.catalog(workspace: project.path).first { $0.name == item.title }
+            checks["qoderPackageAppearsInOnlyTheChosenProject"] = importer.batch?.items.first?.state == "imported" &&
+                projectResources == expectedResources && local?.managed == true && local?.scope == "项目" && !global.contains(item.title)
+            let profile = tasks.directory.deletingLastPathComponent()
+            checks["noTransferScratchRemains"] = try !fm.contentsOfDirectory(atPath: profile.path).contains { $0.hasPrefix("ssh-import-transfer-") }
+            let success = checks.values.allSatisfy { $0 } && requests == 0 && initial["modelRequests"] as? Int == 0
+            try write(["checks": checks, "binaryHash": binaryHash, "appPID": getpid(), "modelRequests": requests, "success": success],
+                      to: output.appendingPathComponent("ssh-skills-report.json"))
+            guard success else { throw PetError("SSH Skills 导入检查失败") }
+            return
+        }
         if CommandLine.arguments.contains("--ssh-memory-import-check") {
             let memory = AgentImportRoute(source: .codex, category: .memory, root: root.path, workspace: nil, sshHost: route.sshHost)
             let phase = output.appendingPathComponent("ssh-memory-paused.json")
@@ -77,7 +199,7 @@ import AppKit
                 let categories = AgentImportCategory.allCases.filter { category in
                     find(content, NSButton.self, { $0.accessibilityIdentifier() == "import-category-" + category.rawValue }) != nil
                 }
-                checks["overviewShowsTaskAndMemoryOnly"] = Set(categories) == Set([.tasks, .memory])
+                checks["overviewShowsSupportedSSHCategories"] = Set(categories) == Set([.tasks, .memory, .skills])
                 try button("检测可导入内容").performClick(nil)
                 try await settle { importer.scanning || importer.preview(for: memory) == nil }
                 let records = importer.preview(for: memory)?.records ?? [], valid = records.filter { $0.issue == nil }

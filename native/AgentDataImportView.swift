@@ -244,8 +244,10 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
             }
         }
         let saved = local + AgentImportSource.allCases.flatMap { source in
-            AgentSSHImport.categories.compactMap { category in
-                remote[source]?[category].map { AgentImportNavigation.SourceRoute(route: $0, checked: reviewed[$0]) }
+            AgentSSHImport.categories.compactMap { category -> AgentImportNavigation.SourceRoute? in
+                guard let route = remote[source]?[category], let host = route.sshHost,
+                      AgentSSHImport.valid(host: host, root: route.root) else { return nil }
+                return AgentImportNavigation.SourceRoute(route: route, checked: reviewed[route])
             }
         }
         let reading = editing.flatMap { readings[route($0)] }
@@ -510,10 +512,10 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         detail.enclosingScrollView?.isHidden = !hasSelection; open.isHidden = !hasSelection; original.isHidden = !hasSelection
         guard hasSelection else { setDetail(""); open.isEnabled = false; original.isEnabled = false; return }
         let record = rows[table.selectedRow]
+        let source = record.sshHost.map { $0 + ":" + record.file } ?? record.file
         if let plan = record.memory {
             let names = plan.parts.prefix(8).map(\.name).joined(separator: "、")
             let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局记忆"
-            let source = record.sshHost.map { $0 + ":" + record.file } ?? record.file
             var lines = [record.title, "来源 · " + source, destination]
             if !names.isEmpty { lines.append("目标文件 · " + names + (plan.parts.count > 8 ? " 等\(plan.parts.count)份" : "")) }
             if let status = record.issue ?? states[record.id] { lines.append(status) }
@@ -525,12 +527,13 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         }
         if let plan = record.skill {
             let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局 Skills"
-            var lines = [record.title, "来源 · " + record.file, destination]
+            var lines = [record.title, "来源 · " + source, destination]
             if plan.fileCount > 0 { lines.append("\(plan.fileCount) 个文件") }
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             open.isEnabled = states[record.id] == "已导入" || record.issue == "已经导入"
-            original.isEnabled = (try? AgentSkillImport.sourceURL(record, root: root)) != nil
+            original.isHidden = record.sshHost != nil
+            original.isEnabled = record.sshHost == nil && (try? AgentSkillImport.sourceURL(record, root: root)) != nil
             return
         }
         if let plan = record.connector {
@@ -622,7 +625,8 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         refresh()
     }
     private func loadRemoteFields(fallbackHost: String = "") {
-        let route = remoteRoutes[selectedSource]?[.tasks] ?? remoteRoutes[selectedSource]?[.memory]
+        let saved = remoteRoutes[selectedSource]
+        let route = AgentSSHImport.categories.lazy.compactMap { saved?[$0] }.first
         sshHost.stringValue = route?.sshHost ?? fallbackHost
         sshRoot.stringValue = route?.root ?? "~/" + selectedSource.homeName
     }

@@ -2,12 +2,12 @@ import Foundation
 import BlueFatFishTerminal
 import Darwin
 
-/// Remote session and memory paths are arguments to fixed read-only scripts.
-/// Preview decoding retains one file at a time and never extracts an archive.
+/// Remote paths are arguments to fixed read-only scripts.
+/// Preview decoding retains one record or Skill package at a time.
 struct AgentSSHImport: Sendable {
     let profile: URL
     let home: URL?
-    static let categories: [AgentImportCategory] = [.tasks, .memory]
+    static let categories: [AgentImportCategory] = [.tasks, .memory, .skills]
 
     static func valid(host: String, root: String) -> Bool {
         guard TerminalSurface.validSSHDestination(host), root.utf8.count <= 4096,
@@ -81,6 +81,112 @@ struct AgentSSHImport: Sendable {
               parts.count == 1 || folders.contains(String(parts[0])) else { return false }
         let folder = parts.count == 2 ? String(parts[0]) : (route.root as NSString).lastPathComponent
         return AgentMemoryImport.allowed(String(name), consolidated: route.source == .codex && folders.contains(folder))
+    }
+
+    func discoverSkills(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
+        try await skillsResponse(route, wanted: "") { input in
+            try Self.scanSkillFrames(input, route: route) { file, package in
+                AgentSkillImport.preview(route.source, file: Self.prefix(route) + file, workspace: route.workspace, sshHost: route.sshHost) {
+                    try package.get()
+                }
+            }.sorted { $0.file.localizedStandardCompare($1.file) == .orderedAscending }
+        }
+    }
+
+    func readSkill(_ record: AgentImportCandidate, route: AgentImportRoute) async throws -> AgentSkillPackage {
+        let prefix = Self.prefix(route), file = String(record.file.dropFirst(prefix.count))
+        guard record.sshHost == route.sshHost, record.source == route.source, record.category == .skills,
+              record.targetWorkspace == route.workspace, record.file.hasPrefix(prefix), Self.validSkillDefinition(file, source: route.source) else {
+            throw PetError("SSH Skill 与原来源不符，请重新检测")
+        }
+        return try await skillsResponse(route, wanted: file) { input in
+            let packages: [AgentSkillPackage] = try Self.scanSkillFrames(input, route: route) { path, package in
+                guard path == file else { throw FrameError.invalid }
+                return try package.get()
+            }
+            guard packages.count == 1, let package = packages.first else { throw PetError("远端 Skill 已移除或离开检测目录") }
+            return package
+        }
+    }
+
+    private func skillsResponse<Value>(_ route: AgentImportRoute, wanted: String,
+                                      decode: @escaping @Sendable (FileHandle) throws -> Value) async throws -> Value {
+        guard route.category == .skills else { throw PetError("缺少 SSH Skills 来源") }
+        let arguments = [wanted, route.source.homeName, String(AgentSkillPackage.maximumEntries),
+                         String(AgentSkillPackage.maximumFileBytes), String(AgentSkillPackage.maximumTotalBytes),
+                         String(AgentImportReaders.maximumRecords)]
+        return try await response(route, script: Self.scanSkills, arguments: arguments + AgentSkillImport.containerPaths(for: route.source),
+                                  timeout: wanted.isEmpty ? 1800 : 60, decode: decode)
+    }
+
+    private static func validRelativePath(_ path: String) -> Bool {
+        !path.isEmpty && path.rangeOfCharacter(from: .controlCharacters) == nil &&
+            path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    private static func validSkillDefinition(_ path: String, source: AgentImportSource) -> Bool {
+        guard validRelativePath(path) else { return false }
+        let parts = path.split(separator: "/")
+        guard parts.last == "SKILL.md" else { return false }
+        if parts.count == 1 || parts.count == 2 && !parts[0].hasPrefix(".") { return true }
+        return AgentSkillImport.containerPaths(for: source).contains { directory in
+            guard path.hasPrefix(directory + "/") else { return false }
+            let leaf = path.dropFirst(directory.count + 1).split(separator: "/")
+            return leaf.count == 1 || leaf.count == 2 && !leaf[0].hasPrefix(".")
+        }
+    }
+
+    private static func scanSkillFrames<Value>(_ input: FileHandle, route: AgentImportRoute,
+                                               decode: (String, Result<AgentSkillPackage, Error>) throws -> Value) throws -> [Value] {
+        var reader = ResponseReader(input: input), result: [Value] = []
+        guard try reader.field(limit: 16) == "BFF-SKILLS-1" else { throw FrameError.invalid }
+        while true {
+            let definition = try reader.field(limit: 4096)
+            if definition.isEmpty { break }
+            guard validSkillDefinition(definition, source: route.source) else { throw FrameError.invalid }
+            guard result.count < AgentImportReaders.maximumRecords else { throw PetError("来源超过 5000 份 Skills，请分别导入") }
+            let value = try autoreleasepool {
+                let package = try readSkillPackage(&reader, file: prefix(route) + definition)
+                return try decode(definition, package)
+            }
+            result.append(value)
+        }
+        guard try !reader.hasByte() else { throw FrameError.invalid }
+        return result
+    }
+
+    private static func readSkillPackage(_ reader: inout ResponseReader, file: String) throws -> Result<AgentSkillPackage, Error> {
+        var resources: [String: Data] = [:], names = Set<String>(), count = 0, total = 0
+        while true {
+            let path = try reader.field(limit: 4096)
+            if path.isEmpty { break }
+            let field = try reader.field(limit: 10)
+            count += 1
+            guard count <= AgentSkillPackage.maximumEntries, validRelativePath(path),
+                  !AgentSkillPackage.ignoresResource(path), !AgentFiles.sensitive(path),
+                  let size = Int(field), (0...AgentSkillPackage.maximumFileBytes).contains(size),
+                  size <= AgentSkillPackage.maximumTotalBytes - total else { throw FrameError.invalid }
+            total += size
+            names.insert(path.precomposedStringWithCanonicalMapping.lowercased())
+            resources[path] = try reader.body(count: size)
+        }
+        let status = try reader.field(limit: 2)
+        let issue: String
+        switch status {
+        case "0":
+            guard names.count == count else { return .failure(PetError("Skill 资源路径重复")) }
+            let name = ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            return Result { try AgentSkillPackage(resources: resources, fallbackName: name) }
+        case "43": issue = "远端 Skill 来源已变化或无法读取"
+        case "47": issue = "Skill 资源含符号链接，请先整理为普通文件"
+        case "48": issue = "Skill 资源含受保护文件"
+        case "49": issue = "Skill 资源超过 2000 项，请缩小目录"
+        case "50": issue = "Skill 单份资源超过 2 MB"
+        case "51": issue = "Skill 资源总量超过 20 MB"
+        case "52": issue = "Skill 资源路径无效或包含特殊文件"
+        default: throw FrameError.invalid
+        }
+        return .failure(PetError(issue))
     }
 
     private static func prefix(_ route: AgentImportRoute) -> String {
@@ -274,9 +380,10 @@ struct AgentSSHImport: Sendable {
             if diagnostic.contains("host identification has changed") { throw PetError("SSH 主机密钥已变化，请核对主机身份") }
             if diagnostic.contains("host key verification failed") { throw PetError("SSH 主机尚未验证，请先核对已知主机密钥") }
             if diagnostic.contains("permission denied") && result.exitCode == 255 { throw PetError("SSH 无法使用当前密钥登录，请检查本机配置") }
-            if result.exitCode == 42 { throw PetError("找不到远程" + (category == .memory ? "记忆" : "会话") + "目录，或目录不可读取") }
+            if result.exitCode == 42 { throw PetError("找不到远程" + (category == .tasks ? "会话" : category.title) + "目录，或目录不可读取") }
             if result.exitCode == 43 { throw PetError("远端来源文件已移动、不可读取或是链接，请重新检测") }
             if result.exitCode == 44 { throw PetError("未找到远程记忆文件夹，请核对 SSH 来源目录") }
+            if result.exitCode == 45 { throw PetError("Skill 来源项目过多，请选择较小的目录") }
             if result.exitCode == 46 { throw PetError("请为 Qoder 项目记忆选择目标项目") }
             throw PetError("无法读取 SSH 来源，请检查连接与远端目录后重试")
         }
@@ -381,6 +488,109 @@ struct AgentSSHImport: Sendable {
     if [ "$found" = no ]; then
         [ "${here##*/}" != "$home_name" ] || exit 44
         visit . || exit $?
+    fi
+    printf '\0'
+    """#
+
+    private static let scanSkills = #"""
+    wanted=$1
+    home_name=$2
+    entry_limit=$3
+    file_limit=$4
+    total_limit=$5
+    folder_limit=$6
+    shift 6
+    here=$(pwd -P) || exit 42
+    [ "$here" != / ] || exit 42
+
+    walk_package() {
+        [ -r "$1" ] && [ -x "$1" ] || return 43
+        for member in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+            [ ! -L "$member" ] || return 47
+            [ -e "$member" ] || continue
+            visited=$((visited + 1))
+            [ "$visited" -le "$entry_limit" ] || return 49
+            case "${member##*/}" in
+                .*|\#(AgentSkillPackage.ignoredResourceNames.joined(separator: "|"))) continue ;;
+            esac
+            case "$member" in *[[:cntrl:]]*) return 52 ;; esac
+            lower=$(printf '%s' "${member##*/}" | tr '[:upper:]' '[:lower:]') || return 43
+            case "$lower" in
+                \#(AgentFiles.sensitiveNames.joined(separator: "|"))|.env.*|\#(AgentFiles.sensitiveExtensions.map { "*." + $0 }.joined(separator: "|"))) return 48 ;;
+            esac
+            if [ -d "$member" ]; then
+                [ "$(cd -P "$member" && pwd -P)" = "$package_root/${member#./}" ] || return 43
+                walk_package "$member" || return $?
+            else
+                [ -f "$member" ] || return 52
+                size=$(wc -c 2>/dev/null < "$member") || return 43
+                size=$((size + 0))
+                [ "$size" -le "$file_limit" ] || return 50
+                total=$((total + size))
+                [ "$total" -le "$total_limit" ] || return 51
+                [ -f "$member" ] && [ ! -L "$member" ] || return 43
+                printf '%s\0%s\0' "${member#./}" "$size" || return 43
+                head -c "$size" "$member" || return 43
+            fi
+        done
+        return 0
+    }
+
+    emit_package() {
+        definition=SKILL.md
+        expected=$here
+        if [ "$1" != . ]; then
+            definition="${1#./}/SKILL.md"
+            expected="$here/${1#./}"
+        fi
+        if [ -n "$wanted" ] && [ "$wanted" != "$definition" ]; then return 0; fi
+        printf '%s\0' "$definition" || return 43
+        (
+            cd -P "$1" || exit 43
+            package_root=$(pwd -P) || exit 43
+            [ "$package_root" = "$expected" ] || exit 43
+            [ ! -L SKILL.md ] || exit 47
+            [ -f SKILL.md ] || exit 52
+            visited=0
+            total=0
+            walk_package .
+        )
+        printf '\0%s\0' "$?"
+    }
+
+    list_packages() {
+        [ -r "$1" ] && [ -x "$1" ] || return 43
+        if [ -e "$1/SKILL.md" ] || [ -L "$1/SKILL.md" ]; then
+            emit_package "$1"
+            return $?
+        fi
+        folder_count=0
+        for folder in "$1"/*; do
+            [ -e "$folder" ] || [ -L "$folder" ] || continue
+            folder_count=$((folder_count + 1))
+            [ "$folder_count" -le "$folder_limit" ] || return 45
+            [ -d "$folder" ] && [ ! -L "$folder" ] || continue
+            if [ -e "$folder/SKILL.md" ] || [ -L "$folder/SKILL.md" ]; then
+                emit_package "$folder" || return 43
+            fi
+        done
+        return 0
+    }
+
+    printf 'BFF-SKILLS-1\0'
+    if [ "${here##*/}" = skills ] || [ -e ./SKILL.md ] || [ -L ./SKILL.md ]; then
+        list_packages . || exit $?
+    else
+        found=no
+        for container do
+            [ -d "./$container" ] && [ ! -L "./$container" ] || continue
+            [ "$(cd -P "./$container" && pwd -P)" = "$here/$container" ] || continue
+            found=yes
+            list_packages "./$container" || exit $?
+        done
+        if [ "$found" = no ] && [ "${here##*/}" != "$home_name" ] && [ "${here##*/}" != .agents ]; then
+            list_packages . || exit $?
+        fi
     fi
     printf '\0'
     """#

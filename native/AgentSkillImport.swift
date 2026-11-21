@@ -37,11 +37,14 @@ enum AgentSkillImport {
     private static func folders(_ files: AgentFiles, source: AgentImportSource) throws -> [URL] {
         let definition = try files.literalURL("SKILL.md")
         if try files.root.lastPathComponent == "skills" || files.entryMetadata(definition).kind != "missing" { return [files.root] }
-        let paths = source == .codex ? ["skills", ".agents/skills", ".codex/skills"] : ["skills", ".qoder/skills"]
-        let folders = try paths.map(files.literalURL).filter { try files.entryMetadata($0).kind == "directory" }
+        let folders = try containerPaths(for: source).map(files.literalURL).filter { try files.entryMetadata($0).kind == "directory" }
         if !folders.isEmpty { return folders }
         if [source.homeName, ".agents"].contains(files.root.lastPathComponent) { return [] }
         return [files.root]
+    }
+
+    static func containerPaths(for source: AgentImportSource) -> [String] {
+        source == .codex ? ["skills", ".agents/skills", ".codex/skills"] : ["skills", ".qoder/skills"]
     }
 
     static func discover(_ source: AgentImportSource, root: URL, workspace: String?) throws -> [AgentImportCandidate] {
@@ -65,26 +68,34 @@ enum AgentSkillImport {
                 let entry = try files.entryMetadata(file)
                 guard entry.kind != "missing" else { continue }
                 guard result.count < 5000 else { throw PetError("来源超过 5000 份 Skills，请分别导入") }
-                let date = entry.modified ?? Date(), folderName = file.deletingLastPathComponent().lastPathComponent
-                let sourceID = "skill:" + AgentFiles.hash(Data(file.path.utf8))
-                var record = AgentImportCandidate(source: source, sourceID: sourceID, file: file.path, rawHash: "", sourceHash: "", title: folderName, created: date, updated: date)
-                record.skill = AgentSkillImportPlan(workspace: workspace, fileCount: 0)
-                do {
-                    let package = try readPackage(file, files: files)
-                    record.title = package.name
-                    record.preview = String(package.text.prefix(1000))
-                    record.rawHash = AgentFiles.hash(package.resources["SKILL.md"]!)
-                    record.sourceHash = AgentExtensions.digest(package.resources)
-                    record.skill = AgentSkillImportPlan(workspace: workspace, fileCount: package.resources.count)
-                } catch { record.issue = error.localizedDescription }
-                result.append(record)
+                result.append(preview(source, file: file.path, workspace: workspace, date: entry.modified ?? Date()) {
+                    try readPackage(file, files: files)
+                })
             }
         }
         return result
     }
 
+    static func preview(_ source: AgentImportSource, file: String, workspace: String?, date: Date = Date(), sshHost: String? = nil,
+                        package: () throws -> AgentSkillPackage) -> AgentImportCandidate {
+        let name = ((file as NSString).deletingLastPathComponent as NSString).lastPathComponent
+        let sourceID = "skill:" + AgentFiles.hash(Data(file.utf8))
+        var record = AgentImportCandidate(source: source, sourceID: sourceID, file: file, rawHash: "", sourceHash: "", title: name,
+                                          created: date, updated: date, sshHost: sshHost)
+        record.skill = AgentSkillImportPlan(workspace: workspace, fileCount: 0)
+        do {
+            let skill = try package()
+            record.title = skill.name
+            record.preview = String(skill.text.prefix(1000))
+            record.rawHash = AgentFiles.hash(skill.resources["SKILL.md"]!)
+            record.sourceHash = AgentExtensions.digest(skill.resources)
+            record.skill = AgentSkillImportPlan(workspace: workspace, fileCount: skill.resources.count)
+        } catch { record.issue = error.localizedDescription }
+        return record
+    }
+
     static func sourceURL(_ record: AgentImportCandidate, root: URL) throws -> URL {
-        guard record.skill != nil else { throw PetError("缺少 Skill 来源") }
+        guard record.skill != nil, record.sshHost == nil else { throw PetError("缺少本机 Skill 来源") }
         let files = try sourceFiles(root), file = try files.literalURL(record.file)
         let folder = file.deletingLastPathComponent()
         guard file.lastPathComponent == "SKILL.md", try files.entryMetadata(file).kind == "file",
@@ -104,7 +115,10 @@ enum AgentSkillImport {
     }
 
     static func read(_ record: AgentImportCandidate, root: URL) throws -> AgentSkillPackage {
-        let package = try readPackage(sourceURL(record, root: root), files: sourceFiles(root))
+        try validated(readPackage(sourceURL(record, root: root), files: sourceFiles(root)), against: record)
+    }
+
+    private static func validated(_ package: AgentSkillPackage, against record: AgentImportCandidate) throws -> AgentSkillPackage {
         guard package.name == record.title, package.resources.count == record.skill?.fileCount,
               AgentExtensions.digest(package.resources) == record.sourceHash else {
             throw PetError("Skill 的说明或资源已变化，请重新检测")
@@ -135,7 +149,7 @@ enum AgentSkillImport {
                   AgentExtensions.digest(resources) == record.sourceHash else { return .conflict }
             return .installed
         }
-        if let visible { return !visible.managed && visible.pluginName == nil && visible.file.path == record.file ? .shared : .conflict }
+        if let visible { return record.sshHost == nil && !visible.managed && visible.pluginName == nil && visible.file.path == record.file ? .shared : .conflict }
         return .ready
     }
 
@@ -174,8 +188,17 @@ enum AgentSkillImport {
     }
 
     @MainActor static func install(_ record: AgentImportCandidate, root: URL, store: AgentStore) async throws {
+        try await install(record, store: store) {
+            try await Task.detached(priority: .utility) {
+                try readPackage(sourceURL(record, root: root), files: sourceFiles(root))
+            }.value
+        }
+    }
+
+    @MainActor static func install(_ record: AgentImportCandidate, store: AgentStore, load: () async throws -> AgentSkillPackage) async throws {
         guard try pendingTarget(record, store: store) != nil else { return }
-        let package = try await Task.detached(priority: .utility) { try read(record, root: root) }.value
+        let package = try validated(await load(), against: record)
+        try Task.checkCancellation()
         guard let (files, target) = try pendingTarget(record, store: store) else { return }
         try package.publish(to: target, files: files)
         let definition = target.appendingPathComponent("SKILL.md")

@@ -2,9 +2,18 @@ import Foundation
 import Darwin
 
 struct AgentSkillPackage: Sendable {
+    static let maximumEntries = 2000
+    static let maximumFileBytes = 2_000_000
+    static let maximumTotalBytes = 20_000_000
+    static let ignoredResourceNames = ["node_modules", "__pycache__"]
+
     let name: String
     let text: String
     let resources: [String: Data]
+
+    static func ignoresResource(_ path: String) -> Bool {
+        path.split(separator: "/").contains { $0.hasPrefix(".") || ignoredResourceNames.contains(String($0)) }
+    }
 
     init(resources: [String: Data], fallbackName: String) throws {
         guard let data = resources["SKILL.md"], let text = String(data: data, encoding: .utf8) else {

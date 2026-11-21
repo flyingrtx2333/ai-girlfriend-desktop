@@ -265,17 +265,17 @@ struct AgentExtensionDocument: Sendable {
         var result: [String: Data] = [:], total = 0, visited = 0
         while let url = iterator.nextObject() as? URL {
             try Task.checkCancellation(); visited += 1
-            guard visited <= 2000 else { throw PetError("Skill 资源超过 2000 项，请缩小目录") }
+            guard visited <= AgentSkillPackage.maximumEntries else { throw PetError("Skill 资源超过 2000 项，请缩小目录") }
             let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]), path = files.relative(url)
             guard values.isSymbolicLink != true else { throw PetError("Skill 资源含符号链接，请先整理为普通文件：" + path) }
-            if path.split(separator: "/").contains(where: { $0.hasPrefix(".") || ["node_modules", "__pycache__"].contains(String($0)) }) {
+            if AgentSkillPackage.ignoresResource(path) {
                 if values.isDirectory == true { iterator.skipDescendants() }
                 continue
             }
             guard !AgentFiles.sensitive(path) else { throw PetError("Skill 资源含受保护文件：" + path) }
             if values.isDirectory == true { continue }
-            let data = try files.readData(url, maximum: 2_000_000); total += data.count
-            guard total <= 20_000_000 else { throw PetError("Skill 资源总量超过 20MB") }
+            let data = try files.readData(url, maximum: AgentSkillPackage.maximumFileBytes); total += data.count
+            guard total <= AgentSkillPackage.maximumTotalBytes else { throw PetError("Skill 资源总量超过 20MB") }
             result[path] = data
         }
         if let failure { throw failure }
