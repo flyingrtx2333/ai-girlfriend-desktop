@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 const suffix = '/@betteroffice/docx-react/dist/chunk-4ZGDANBA.mjs';
 const sourceHash = 'be9a8f6738e622a910521f8484af27c3b6e4448a0835389708ac036b83f8b6a8';
 const anchor = 'readSelectionInfo:async()=>{let i=await ie();';
+const commentDraft = 'beginAddComment:D,adding:u!==null';
+const reviewRef = 'useImperativeHandle(n,()=>K.ref,[K])';
 const bridge = `
 readHostSelection:async()=>{
   const binding=await Xe();
@@ -32,11 +34,20 @@ export function docxSelectionBridge() {
     name: 'office-docx-selection-bridge',
     transform(source, id) {
       if (!id.replaceAll('\\', '/').endsWith(suffix)) return;
-      if (createHash('sha256').update(source).digest('hex') !== sourceHash || source.split(anchor).length !== 2) {
+      if (createHash('sha256').update(source).digest('hex') !== sourceHash || [anchor, commentDraft, reviewRef].some(marker => source.split(marker).length !== 2)) {
         this.error('The DOCX worker selection bridge needs review for this SDK build.');
       }
       patched = true;
-      return { code: source.replace(anchor, bridge + anchor), map: null };
+      return {
+        code: source.replace(anchor, bridge + anchor)
+          .replace(commentDraft, 'commentSelection:u?.draft.selection??null,' + commentDraft)
+          .replace(reviewRef, `useImperativeHandle(n,()=>Object.assign(K.ref,{
+            hostCommentSelection:()=>jt.commentSelection,
+            openHostCommentDraft:jt.beginAddComment,
+            openHostReplyDraft:id=>{Ke(true);Me("comment-"+id);}
+          }),[K,jt.commentSelection,jt.beginAddComment,Ke,Me])`),
+        map: null,
+      };
     },
     generateBundle() {
       if (!patched) this.error('The DOCX worker selection bridge was not installed.');

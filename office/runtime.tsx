@@ -159,7 +159,8 @@ async function load(url: string, name: string, locked: boolean) {
     defineViewPlugin = module.definePptxPlugin;
   }
   if (token !== generation) throw new Error('文档已切换');
-  workspaceView = createOfficeView(format, rootElement, () => editor, () => { if (token === generation && ready) notify('view-change'); }, defineViewPlugin);
+  workspaceView = createOfficeView(format, rootElement, () => editor, () => { if (token === generation && ready) notify('view-change'); },
+    defineViewPlugin, hasReviewDraft => { if (token === generation && ready) notify('review-draft', { hasReviewDraft }); });
   if (workspaceView.plugin) properties.plugins = [workspaceView.plugin];
   const loaded = new Promise<void>((resolve, reject) => { pendingReady = { resolve, reject }; });
   root.render(<EditorBoundary key={token}><LoadedEditor Component={Component} properties={properties} format={format} token={token} /></EditorBoundary>);
@@ -192,7 +193,8 @@ function exportChunk(offset: number, length: number) {
 function finishExport(saved: boolean) {
   exported = null;
   if (saved && revision === exportedRevision) dirty = false;
-  notify('dirty', { value: dirty, revision }); return { dirty, revision };
+  const state = editorState();
+  notify('dirty', { value: dirty, revision, hasReviewDraft: state.hasReviewDraft }); return state;
 }
 async function read(request: any = {}) {
   if (!ready || !editor) throw new Error('文档尚未打开');
@@ -217,8 +219,9 @@ async function verifyClean() {
   if (!ready || !editor) throw new Error('办公文件尚未打开');
   if (currentFormat === 'docx') await perform(() => editor.flushPendingInput());
   else await perform(() => editor.version());
-  return { dirty, ready, revision };
+  return editorState();
 }
+function editorState() { return { ready, dirty, format: currentFormat, revision, readOnly, hasReviewDraft: workspaceView?.hasReviewDraft() === true }; }
 async function captureView() {
   if (!ready || !workspaceView) throw new Error('办公文件尚未打开');
   const before = revision, view = await perform(() => workspaceView!.capture());
@@ -230,7 +233,11 @@ async function restoreView(view: OfficeView, focus = false) {
   operationBusy += 1; updateInteraction();
   try { await perform(() => workspaceView!.restore(view)); }
   finally { operationBusy = Math.max(0, operationBusy - 1); updateInteraction(); }
-  if (focus) { editor.focus(); await workspaceView.applyScroll(view); }
+  if (focus) {
+    await workspaceView.focus();
+    await workspaceView.applyScroll(view);
+    if (view.review?.some(draft => draft.focused)) await docxReview.show(editor);
+  }
   return await captureView();
 }
 async function selectionInfo() {
@@ -283,5 +290,5 @@ async function inspectContent(request: any = {}) {
   return { version: result.version, slides: result.slides.map((s: any) => ({ id: s.id, title: s.title, hidden: s.hidden })), stories: result.stories.slice(offset, offset + limit).map((s: any) => ({ id: s.storyId, slideId: s.slideId, shapeId: s.shapeId, ...text(s.text) })), total: result.stories.length, offset, next_offset: offset + limit < result.stories.length ? offset + limit : null };
 }
 async function inspect(request: any = {}) { return await perform(() => inspectContent(request)); }
-(window as any).BlueFatFishOffice = { load, beginExport, exportChunk, finishExport, read, inspect, edit, verifyClean, captureView, restoreView, selectionInfo, focusEditor, setInteractionLocked, navigateDocxReview, docxReviewGeometry: docxReview.geometry, state: () => ({ ready, dirty, format: currentFormat, revision, readOnly }), close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; docxReview.reset(); ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
+(window as any).BlueFatFishOffice = { load, beginExport, exportChunk, finishExport, read, inspect, edit, verifyClean, captureView, restoreView, selectionInfo, focusEditor, setInteractionLocked, navigateDocxReview, docxReviewGeometry: docxReview.geometry, state: editorState, close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; docxReview.reset(); ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
 notify('shell-ready');

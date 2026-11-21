@@ -15,6 +15,7 @@ import Darwin
     private var web: WKWebView!, server: AgentOfficeHTTP?, base: URL?, snapshot: AgentOfficeSnapshot?
     private var ready = false, closed = false, conflict = false, lastReadOnly: Bool?
     private var recoveredDirty = false, editorRevision = 0, recoveryBaseRevision = 0, lastExportedRevision = 0
+    private var documentDirty = false, hasReviewDraft = false
     private var lastExportedView: String?
     private var opening: Task<Void, Error>?, uiTask: Task<Void, Never>?, watchTask: Task<Void, Never>?
     private var shell: CheckedContinuation<Void, Error>?, shellTimeout: Task<Void, Never>?, watcher: DispatchSourceFileSystemObject?
@@ -51,29 +52,39 @@ import Darwin
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private var manuallyWritable: Bool { (try? office.task(taskID, root: files.root, manualWrite: true)) != nil }
+    private var editingStatus: String {
+        if conflict && documentDirty { return "磁盘文件已变化，可另存为新文件" }
+        if hasReviewDraft { return conflict ? "原文件已变化，批注草稿已保留" : "批注草稿未提交" }
+        return documentDirty ? "未保存" : ""
+    }
     func updateAvailability() {
         guard !closed else { return }
         let locked = !manuallyWritable
         let metadata = try? files.entryMetadata(file), sourceWritable = metadata?.kind == "file" && (metadata?.permissions ?? 0) & 0o222 != 0
-        save.isEnabled = ready && dirty && !locked && !working && !conflict && sourceWritable
-        saveCopy.isEnabled = ready && dirty && !locked && !working; reload.isEnabled = !working
+        save.isEnabled = ready && documentDirty && !locked && !working && !conflict && sourceWritable
+        saveCopy.isEnabled = ready && documentDirty && !locked && !working; reload.isEnabled = !working
         body.isEnabled = ready && !working; comments.isEnabled = body.isEnabled
         if ready, lastReadOnly != locked { lastReadOnly = locked; web.evaluateJavaScript("BlueFatFishOffice.setInteractionLocked(\(locked ? "true" : "false"))", in: nil, in: .page) { _ in } }
         if locked && !working && state.stringValue.isEmpty { state.stringValue = "只读" }
-        else if !locked && state.stringValue == "只读" { state.stringValue = dirty ? "未保存" : "" }
-        if ready, dirty, !locked, !working, !sourceWritable { state.stringValue = metadata?.kind == "missing" ? "原文件已不存在，可另存为新文件" : "原文件只读或不可用，可另存为新文件"; state.toolTip = state.stringValue }
+        else if !locked && state.stringValue == "只读" { state.stringValue = editingStatus }
+        if ready, documentDirty, !locked, !working, !sourceWritable { state.stringValue = metadata?.kind == "missing" ? "原文件已不存在，可另存为新文件" : "原文件只读或不可用，可另存为新文件"; state.toolTip = state.stringValue }
     }
     struct RecoveryState: Codable, Equatable, Sendable {
         var version = 1
         var taskID: String, file: String, sourceRoot: String, openedHash: String, openedSignature: String
         var openedPermissions: Int, editorRevision: Int, dirty: Bool
         var view: String? = nil
+        var documentDirty: Bool? = nil
     }
     private static func viewObject(_ value: String, format: String) throws -> [String: Any] {
-        guard value.utf8.count <= 65_536, let data = value.data(using: .utf8),
+        let fields: Set<String> = ["version", "format", "zoom", "selection", "scroll"]
+        guard value.utf8.count <= (format == "docx" ? 1_200_000 : 65_536), let data = value.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys) == ["version", "format", "zoom", "selection", "scroll"],
+              Set(object.keys) == fields || format == "docx" && Set(object.keys) == fields.union(["review"]),
               object["version"] as? Int == 1, object["format"] as? String == format else { throw PetError("办公位置格式不受支持，原草稿已保留") }
+        if let review = object["review"] {
+            guard let values = review as? [[String: Any]], (1...2).contains(values.count) else { throw PetError("批注草稿格式无效，原记录已保留") }
+        }
         return object
     }
     private func encodedView(_ value: Any?) throws -> String {
@@ -84,7 +95,7 @@ import Darwin
     }
     static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
         guard page.kind == "office", let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(object.keys).isSubset(of: ["version", "taskID", "file", "sourceRoot", "openedHash", "openedSignature", "openedPermissions", "editorRevision", "dirty", "view"]) else { throw PetError("办公恢复格式不受支持，原草稿已保留") }
+              Set(object.keys).isSubset(of: ["version", "taskID", "file", "sourceRoot", "openedHash", "openedSignature", "openedPermissions", "editorRevision", "dirty", "view", "documentDirty"]) else { throw PetError("办公恢复格式不受支持，原草稿已保留") }
         let value = try JSONDecoder().decode(RecoveryState.self, from: page.state)
         guard value.version == 1, value.taskID == page.taskID, value.dirty == page.dirty, value.editorRevision >= 0,
               value.file.hasPrefix("/"), value.sourceRoot.hasPrefix("/"), !value.file.contains("\0"), !value.sourceRoot.contains("\0"),
@@ -94,15 +105,18 @@ import Darwin
               value.sourceRoot == "/" || value.file.hasPrefix(value.sourceRoot + "/"), AgentOffice.supports(value.file),
               value.openedHash.count == 64, value.openedHash.allSatisfy({ $0.isASCII && $0.isHexDigit && !$0.isUppercase }),
               !value.openedSignature.isEmpty, value.openedSignature.utf8.count <= 16384, (0...0o7777).contains(value.openedPermissions) else { throw PetError("办公恢复记录版本或来源无效，原草稿已保留") }
-        if let view = value.view { _ = try viewObject(view, format: URL(fileURLWithPath: value.file).pathExtension.lowercased()) }
+        let review = try value.view.map { try viewObject($0, format: URL(fileURLWithPath: value.file).pathExtension.lowercased())["review"] != nil } ?? false
+        guard review == (value.documentDirty != nil), !review || value.dirty else { throw PetError("批注草稿状态不一致，原记录已保留") }
         return value
     }
     private func recoveryPage(revision: Int, view: String) throws -> AgentWorkspaceRecovery.Page {
         let (logical, overflow) = recoveryBaseRevision.addingReportingOverflow(revision)
         guard !overflow else { throw PetError("办公恢复版本无效，原草稿已保留") }
-        let value = RecoveryState(taskID: taskID, file: file.path, sourceRoot: files.root.path, openedHash: openedHash, openedSignature: openedSignature, openedPermissions: openedPermissions, editorRevision: logical, dirty: dirty, view: view)
+        let review = try Self.viewObject(view, format: file.pathExtension.lowercased())["review"] != nil
+        let requiresAsset = documentDirty || review
+        let value = RecoveryState(taskID: taskID, file: file.path, sourceRoot: files.root.path, openedHash: openedHash, openedSignature: openedSignature, openedPermissions: openedPermissions, editorRevision: logical, dirty: requiresAsset, view: view, documentDirty: review ? documentDirty : nil)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        return .init(taskID: taskID, kind: "office", state: try encoder.encode(value), dirty: dirty, asset: nil)
+        return .init(taskID: taskID, kind: "office", state: try encoder.encode(value), dirty: requiresAsset, asset: nil)
     }
     func persistWorkspaceRecovery(previous: AgentWorkspaceRecovery.Page?, write: (AgentWorkspaceRecovery.Page, URL?) async throws -> Void) async throws {
         if let opening { try await opening.value }
@@ -111,11 +125,14 @@ import Darwin
         guard let captured = try await evaluate("return await BlueFatFishOffice.captureView()") as? [String: Any],
               let capturedRevision = captured["revision"] as? Int, capturedRevision == editorRevision else { throw PetError("办公内容已变化，正在重新保存位置") }
         let page = try recoveryPage(revision: capturedRevision, view: encodedView(captured["view"]))
-        if let previous, previous.kind == page.kind, previous.state == page.state, previous.dirty == page.dirty, (dirty ? previous.asset != nil : previous.asset == nil) { return }
-        if !dirty { try await write(page, nil); return }
-        if let previous, let old = try? Self.recoveryState(previous), old.editorRevision == recoveryBaseRevision + capturedRevision, previous.asset != nil {
+        if let previous, previous.kind == page.kind, previous.state == page.state, previous.dirty == page.dirty, (page.dirty ? previous.asset != nil : previous.asset == nil) { return }
+        if !page.dirty { try await write(page, nil); return }
+        if let previous, let old = try? Self.recoveryState(previous), old.openedHash == openedHash, old.editorRevision == recoveryBaseRevision + capturedRevision, previous.asset != nil {
             var retained = page; retained.asset = previous.asset
             try await write(retained, nil); return
+        }
+        if !documentDirty, let snapshot, snapshot.hash == openedHash {
+            try await write(page, snapshot.file); return
         }
         working = true; updateAvailability()
         defer { working = false; updateAvailability() }
@@ -130,7 +147,9 @@ import Darwin
     private func applyEditorState(_ value: [String: Any]) {
         let revision = value["revision"] as? Int, changed = revision.map { $0 >= 0 && $0 != editorRevision } == true
         if let revision, revision >= 0 { editorRevision = revision }
-        dirty = recoveredDirty || (value["dirty"] ?? value["value"]) as? Bool == true
+        if let changedDocument = (value["dirty"] ?? value["value"]) as? Bool { documentDirty = recoveredDirty || changedDocument }
+        if let review = value["hasReviewDraft"] as? Bool { hasReviewDraft = review }
+        dirty = documentDirty || hasReviewDraft
         window?.isDocumentEdited = dirty
         if changed { onWorkspaceChange?() }
     }
@@ -141,6 +160,7 @@ import Darwin
         guard !dirty else { throw PetError("此窗口仍有未保存的编辑，请先保留内容或关闭窗口") }
         let recovery = try loaded.map { try Self.recoveryState($0.saved.value) }
         if let recovery { guard recovery.taskID == taskID, recovery.file == file.path, recovery.sourceRoot == files.root.path, (recovery.dirty ? loaded?.asset != nil && loaded?.saved.value.asset != nil : loaded?.saved.value.asset == nil) else { throw PetError("办公恢复附件或来源不匹配") } }
+        let view = try recovery?.view.map { try Self.viewObject($0, format: file.pathExtension.lowercased()) }
         let operation = Task { @MainActor [weak self] in
             guard let self else { throw CancellationError() }
             working = true; state.stringValue = "正在打开…"; updateAvailability()
@@ -171,21 +191,22 @@ import Darwin
             editorRevision = 0; lastExportedRevision = 0; lastExportedView = nil
             if let recovery, recovery.dirty {
                 openedHash = recovery.openedHash; openedSignature = recovery.openedSignature; openedPermissions = recovery.openedPermissions
-                recoveryBaseRevision = recovery.editorRevision; recoveredDirty = true
+                recoveryBaseRevision = recovery.editorRevision; recoveredDirty = recovery.documentDirty ?? true
+                documentDirty = recoveredDirty; hasReviewDraft = view?["review"] != nil
                 let signature = openedSignature, hash = openedHash
                 conflict = await Task.detached { (try? files.entryMetadata(file).signature) != signature || (try? files.fileHash(file, maximum: AgentOffice.maximum)) != hash }.value
-                state.stringValue = conflict ? "原文件已变化，可另存为新文件" : "已恢复未保存内容"
+                state.stringValue = conflict ? editingStatus : hasReviewDraft ? "已恢复批注草稿" : "已恢复未保存内容"
             } else {
                 openedHash = pinned.hash; openedSignature = pinned.signature; openedPermissions = pinned.permissions
-                recoveryBaseRevision = 0; recoveredDirty = false; conflict = false; state.stringValue = ""
+                recoveryBaseRevision = 0; recoveredDirty = false; documentDirty = false; hasReviewDraft = false; conflict = false; state.stringValue = ""
             }
-            if let view = recovery?.view {
+            if let view {
                 if recovery?.dirty == true || recovery?.openedHash == pinned.hash {
-                    _ = try await evaluate("return await BlueFatFishOffice.restoreView(view,focus)", args: ["view": try Self.viewObject(view, format: file.pathExtension.lowercased()), "focus": isPageVisible])
+                    _ = try await evaluate("return await BlueFatFishOffice.restoreView(view,focus)", args: ["view": view, "focus": isPageVisible])
                     if isPageVisible { presentingWindow?.makeFirstResponder(web) }
                 } else { state.stringValue = "原文件已变化，上次位置未恢复" }
             }
-            ready = true; dirty = recoveredDirty; lastReadOnly = nil; window?.isDocumentEdited = dirty; state.toolTip = state.stringValue; watch()
+            ready = true; dirty = documentDirty || hasReviewDraft; lastReadOnly = nil; window?.isDocumentEdited = dirty; state.toolTip = state.stringValue; watch()
         }
         opening = operation
         do { try await operation.value; opening = nil }
@@ -211,9 +232,10 @@ import Darwin
               let body = message.body as? [String: Any], let action = body["action"] as? String else { return }
         switch action {
         case "shell-ready": finishShell(.success(()))
-        case "dirty":
+        case "dirty", "review-draft":
             applyEditorState(body)
-            if !working { state.stringValue = conflict ? "磁盘文件已变化，可另存为新文件" : dirty ? "未保存" : "" }; updateAvailability()
+            if !working { state.stringValue = editingStatus }; updateAvailability()
+            if action == "review-draft" { onWorkspaceChange?() }
         case "view-change": onWorkspaceChange?()
         case "save-request": saveFile()
         case "open-request": chooseFile()
@@ -287,7 +309,7 @@ import Darwin
             let exported = try await exportFile()
             let written = try await office.recordWrite(self, source: exported, agent: agent, expected: expected)
             openedHash = written.0; openedSignature = written.1; conflict = false
-            await acknowledge(true); state.stringValue = dirty ? "未保存" : "已保存"
+            await acknowledge(true); state.stringValue = dirty ? editingStatus : "已保存"
         } catch {
             await acknowledge(false); state.stringValue = error is CancellationError ? "修改保留在窗口，尚未保存" : error.localizedDescription
             throw error
@@ -295,6 +317,7 @@ import Darwin
     }
     func saveDocument() async throws {
         guard ready, !working else { throw PetError("办公文件正在处理") }
+        if hasReviewDraft && !documentDirty { throw PetError("先提交批注，再保存 Word 文件") }
         _ = try office.task(taskID, root: files.root, manualWrite: true)
         working = true; state.stringValue = "正在保存…"; updateAvailability()
         defer { working = false; updateAvailability(); onWorkspaceChange?() }
@@ -313,7 +336,7 @@ import Darwin
             do {
                 let notice = try await evaluate("return await BlueFatFishOffice.navigateDocxReview(showComments)", args: ["showComments": showComments]) as? String ?? ""
                 if !notice.isEmpty { state.stringValue = notice }
-                else if state.stringValue.hasPrefix("暂无可查看的批注") { state.stringValue = dirty ? "未保存" : ""; updateAvailability() }
+                else if state.stringValue.hasPrefix("暂无可查看的批注") { state.stringValue = editingStatus; updateAvailability() }
             } catch { state.stringValue = error.localizedDescription }
             state.toolTip = state.stringValue
         }
@@ -414,6 +437,8 @@ import Darwin
             "loopbackURL": base?.absoluteString ?? "", "snapshot": snapshot?.folder.path ?? "", "saveEnabled": save.isEnabled,
             "checks": ["officeUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === settingsHostWindow, "officeHasNoFloatingWindow": window?.isVisible != true, "officeToolbarFits": !frames.isEmpty && frames.allSatisfy { content.bounds.insetBy(dx: -1, dy: -1).contains($0) }, "officeEditorHasUsableSize": web.bounds.width >= 450 && web.bounds.height >= 250]]
         if ready, !working, !closed {
+            value["documentDirty"] = documentDirty
+            value["hasReviewDraft"] = hasReviewDraft
             value["editor"] = try? await evaluate("return BlueFatFishOffice.state()")
             value["view"] = try? await evaluate("return await BlueFatFishOffice.captureView()")
             if file.pathExtension.lowercased() == "docx" {

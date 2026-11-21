@@ -1,25 +1,42 @@
+import { createDocxReviewDrafts, type DocxReviewDraft } from './docx-review-drafts';
+
 // View coordinates belong to the exact document bytes stored by the native
 // journal. Session IDs are resolved again after opening those bytes.
 type Point = { part: string; ordinal: number; paragraphID: string | null; storyKind: string | null; itemID: string | null; offset: number; sourceHash?: string | null };
-export type OfficeView = { version: 1; format: string; zoom: number | 'fit'; selection: any; scroll: { path: number[]; x: number; y: number }[] };
+export type WordRange = { anchor: Point; focus: Point };
+export type OfficeView = { version: 1; format: string; zoom: number | 'fit'; selection: any; scroll: { path: number[]; x: number; y: number }[]; review?: DocxReviewDraft[] };
 const issue = () => new Error('办公位置记录无效，原草稿已保留');
 const integer = (value: any, maximum = 100_000_000) => Number.isSafeInteger(value) && value >= 0 && value <= maximum;
 const text = (value: any, maximum = 2048) => typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\0');
 function keys(value: any, names: string[]) { return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === names.length && Object.keys(value).every(key => names.includes(key)); }
 function path(value: any) { return Array.isArray(value) && value.length > 0 && value.length <= 40 && value.every((n: any) => integer(n, 1_000_000)); }
 export function validateOfficeView(value: any, format: string): asserts value is OfficeView {
-  if (!keys(value, ['version', 'format', 'zoom', 'selection', 'scroll']) || value.version !== 1 || value.format !== format || !['docx', 'xlsx', 'pptx'].includes(format) ||
+  const fields = ['version', 'format', 'zoom', 'selection', 'scroll'];
+  if (!(keys(value, fields) || format === 'docx' && keys(value, [...fields, 'review'])) || value.version !== 1 || value.format !== format || !['docx', 'xlsx', 'pptx'].includes(format) ||
       !(typeof value.zoom === 'number' && Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 5 || format === 'pptx' && value.zoom === 'fit') ||
       !Array.isArray(value.scroll) || value.scroll.length > 32 || value.scroll.some((s: any) => !keys(s, ['path', 'x', 'y']) || !path(s.path) || ![s.x, s.y].every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1e9)) ||
       new Set(value.scroll.map((s: any) => JSON.stringify(s.path))).size !== value.scroll.length) throw issue();
   const selected = value.selection;
-  if (selected === null) return;
   if (format === 'docx') {
     const point = (p: any) => (keys(p, ['part', 'ordinal', 'paragraphID', 'storyKind', 'itemID', 'offset']) || keys(p, ['part', 'ordinal', 'paragraphID', 'storyKind', 'itemID', 'offset', 'sourceHash'])) && text(p.part) && p.part.startsWith('/') && integer(p.ordinal, 1_000_000) && integer(p.offset) &&
       (p.paragraphID === null || typeof p.paragraphID === 'string' && /^[a-fA-F0-9]{8}$/.test(p.paragraphID)) &&
       (p.storyKind === null || ['body', 'header', 'footer', 'footnote', 'endnote', 'comment'].includes(p.storyKind)) && (p.itemID === null || text(p.itemID)) &&
       (p.sourceHash == null || typeof p.sourceHash === 'string' && /^[0-9a-f]{64}$/.test(p.sourceHash));
-    if (!keys(selected, ['anchor', 'focus']) || !point(selected.anchor) || !point(selected.focus)) throw issue();
+    const range = (r: any) => keys(r, ['anchor', 'focus']) && point(r.anchor) && point(r.focus);
+    if (selected !== null && !range(selected)) throw issue();
+    if ('review' in value) {
+      const common = ['kind', 'text', 'focused', 'start', 'end', 'direction', 'x', 'y'];
+      if (!Array.isArray(value.review) || value.review.length < 1 || value.review.length > 2 ||
+          value.review.some((d: any) => !(keys(d, [...common, 'range']) && d.kind === 'comment' && range(d.range) ||
+            keys(d, [...common, 'commentID']) && d.kind === 'reply' && integer(d.commentID, Number.MAX_SAFE_INTEGER)) ||
+            !text(d.text, 128_000) || typeof d.focused !== 'boolean' || !integer(d.start, d.text.length) ||
+            !integer(d.end, d.text.length) || d.end < d.start || !['none', 'forward', 'backward'].includes(d.direction) ||
+            ![d.x, d.y].every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1e9)) ||
+          new Set(value.review.map((d: any) => d.kind)).size !== value.review.length ||
+          value.review.filter((d: any) => d.focused).length > 1) throw issue();
+    }
+  } else if (selected === null) {
+    return;
   } else if (format === 'xlsx') {
     const cell = (p: any) => keys(p, ['row', 'col']) && integer(p.row, 1_048_575) && integer(p.col, 16_383);
     const cells = selected.cells;
@@ -79,7 +96,9 @@ async function resolveWordPoint(editor: any, identities: any[], point: Point) {
   return { story: matches[0].session.story, paraId: matches[0].session.paraId, offset: point.offset };
 }
 
-export function createOfficeView(format: string, root: HTMLElement, editor: () => any, changed: () => void, definePlugin?: (value: any) => any) {
+export function createOfficeView(format: string, root: HTMLElement, editor: () => any, changed: () => void,
+    definePlugin?: (value: any) => any, reviewChanged: (hasDraft: boolean) => void = () => {}) {
+  const reviewDrafts = format === 'docx' ? createDocxReviewDrafts(root, editor, reviewChanged) : null;
   let context: any = null, unsubscribe: (() => void) | null = null, signature = '', savedParagraphs = false;
   const update = (value: any) => {
     context = value;
@@ -94,9 +113,13 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
   root.addEventListener('scroll', changed, true);
   async function capture(): Promise<OfficeView> {
     const api = editor(); let selection: any = null;
+    let review: DocxReviewDraft[] = [];
     if (format === 'docx') {
       const current = await api.readHostSelection();
-      if (current) { const identities = (await api.getParagraphIdentities()).paragraphs; selection = { anchor: wordPoint(identities, current.anchor, savedParagraphs), focus: wordPoint(identities, current.focus, savedParagraphs) }; }
+      const identities = current || reviewDrafts?.pending() ? (await api.getParagraphIdentities()).paragraphs : [];
+      const portable = (value: any) => ({ anchor: wordPoint(identities, value.anchor, savedParagraphs), focus: wordPoint(identities, value.focus, savedParagraphs) });
+      if (current) selection = portable(current);
+      review = await reviewDrafts!.capture(async value => portable(value));
     } else if (format === 'xlsx') {
       const catalog = await api.readCells({ ranges: [] }); if (!catalog.ok) throw issue();
       const current = context?.snapshot.selection, id = current?.sheetId ?? context?.snapshot.layout?.sheetId;
@@ -120,6 +143,7 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
     }
     const zoom = format === 'docx' ? api.getZoom() : api.commands.getState('zoom').value;
     const value: OfficeView = { version: 1, format, zoom, selection, scroll: scrollElements(root).map(element => ({ path: scrollPath(root, element), x: element.scrollLeft, y: element.scrollTop })) };
+    if (review.length) value.review = review;
     validateOfficeView(value, format); return value;
   }
   async function navigate(action: (value: any) => Promise<any>) {
@@ -134,12 +158,15 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
     if (format === 'docx') { await api.whenLayoutComplete({ timeoutMs: 30_000 }); api.setZoom(value.zoom); }
     else if (!(await api.commands.execute('zoom', { scale: value.zoom })).ok) throw issue();
     const selection = value.selection;
-    if (selection && format === 'docx') {
+    if (format === 'docx' && (selection || value.review)) {
       const identities = (await api.getParagraphIdentities()).paragraphs;
-      const requested = { anchor: await resolveWordPoint(api, identities, selection.anchor), focus: await resolveWordPoint(api, identities, selection.focus) };
-      if (!await api.restoreHostSelection(requested)) throw issue();
-      const actual = await api.readHostSelection();
-      if (JSON.stringify(actual) !== JSON.stringify(requested)) throw issue();
+      const select = async (range: WordRange) => {
+        const requested = { anchor: await resolveWordPoint(api, identities, range.anchor), focus: await resolveWordPoint(api, identities, range.focus) };
+        if (!await api.restoreHostSelection(requested)) throw issue();
+        if (JSON.stringify(await api.readHostSelection()) !== JSON.stringify(requested)) throw issue();
+      };
+      if (selection) await select(selection);
+      if (value.review) await reviewDrafts!.restore(value.review, select, selection);
     } else if (selection && format === 'xlsx') {
       const catalog = await api.readCells({ ranges: [] }), sheet = catalog.ok && catalog.sheets[selection.sheetIndex];
       if (!sheet || sheet.name !== selection.sheetName) throw issue();
@@ -175,11 +202,12 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
   }
   async function focus() {
     const scroll = scrollElements(root).map(element => ({ path: scrollPath(root, element), x: element.scrollLeft, y: element.scrollTop }));
-    editor().focus(); await applyScroll({ scroll });
+    if (!reviewDrafts?.focusDraft()) editor().focus();
+    await applyScroll({ scroll });
   }
-  return { plugin, capture, restore, applyScroll, focus, saved() { savedParagraphs = true; }, ready() {
+  return { plugin, capture, restore, applyScroll, focus, hasReviewDraft: () => reviewDrafts?.pending() === true, saved() { savedParagraphs = true; }, ready() {
     const zoom = () => format === 'docx' ? editor().getZoom() : editor().commands.getState('zoom').value;
     let previous = zoom();
     unsubscribe = editor().commands.subscribe(() => { const next = zoom(); if (next !== previous) { previous = next; changed(); } });
-  }, dispose() { unsubscribe?.(); root.removeEventListener('scroll', changed, true); context = null; } };
+  }, dispose() { unsubscribe?.(); reviewDrafts?.dispose(); root.removeEventListener('scroll', changed, true); context = null; } };
 }
