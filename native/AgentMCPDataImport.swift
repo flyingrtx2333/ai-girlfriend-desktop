@@ -7,13 +7,25 @@ struct AgentMCPImportPlan: Codable {
 }
 
 enum AgentMCPDataImport {
-    private static let maximumBytes = 512_000
+    static let maximumBytes = 512_000
+    static let maximumProjectionBytes = 1_000_000
     private static let missing = AgentMCP.importPlaceholder
+    static let credentialSuffixes = ["token", "key", "secret", "password", "authorization", "credential", "passphrase"]
+    private static let loopbackHosts = ["localhost", "127.0.0.1", "::1", "[::1]"]
 
     private struct SourceFile {
         let url: URL
         let files: AgentFiles
         let requiresProject: Bool
+    }
+
+    static func acceptsFile(_ name: String, source: AgentImportSource) -> Bool {
+        (name as NSString).pathExtension.lowercased() == (source == .codex ? "toml" : "json")
+    }
+
+    static func locations(_ source: AgentImportSource) -> [(path: String, project: Bool)] {
+        source == .codex ? [("config.toml", false), (".codex/config.toml", true)] :
+            [("settings.json", false), ("mcp.json", false), (".qoder/settings.json", true), (".mcp.json", true)]
     }
 
     private struct Definition: Codable, Sendable {
@@ -63,16 +75,12 @@ enum AgentMCPDataImport {
         let files = try AgentFiles(workspace: directory.path, followParentLinks: false)
         guard files.root.path == directory.standardizedFileURL.path else { throw PetError("连接器来源位置已变化，请重新选择") }
         if !isDirectory.boolValue {
-            let extensions = source == .codex ? ["toml"] : ["json"]
-            guard extensions.contains(root.pathExtension.lowercased()) else { throw PetError(source.title + "连接器配置文件格式不符") }
+            guard acceptsFile(root.lastPathComponent, source: source) else { throw PetError(source.title + "连接器配置文件格式不符") }
             let file = try files.literalURL(root.path)
             guard try files.entryMetadata(file).kind == "file" else { throw PetError("连接器配置需要是普通文件") }
             return [SourceFile(url: file, files: files, requiresProject: file.lastPathComponent == ".mcp.json")]
         }
-        let locations: [(String, Bool)] = source == .codex
-            ? [("config.toml", false), (".codex/config.toml", true)]
-            : [("settings.json", false), ("mcp.json", false), (".qoder/settings.json", true), (".mcp.json", true)]
-        return try locations.compactMap { path, project in
+        return try locations(source).compactMap { path, project in
             let file = try files.literalURL(path), entry = try files.entryMetadata(file)
             guard entry.kind != "missing" else { return nil }
             guard entry.kind == "file" else { throw PetError("连接器来源需要是普通文件：" + file.lastPathComponent) }
@@ -83,7 +91,7 @@ enum AgentMCPDataImport {
     static func configuredAddress(_ text: String) throws -> String {
         guard text.utf8.count <= 4000, var url = URLComponents(string: text), let scheme = url.scheme?.lowercased(),
               let host = url.host?.lowercased(), !host.isEmpty,
-              scheme == "https" || (scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)) else {
+              scheme == "https" || (scheme == "http" && loopbackHosts.contains(host)) else {
             throw PetError("远程连接器需要 HTTPS，本机可用 HTTP")
         }
         url.scheme = scheme
@@ -101,7 +109,7 @@ enum AgentMCPDataImport {
     static func scrubArguments(_ args: [String], command: String) -> [String] {
         func credentialOption(_ text: String) -> Bool {
             let key = text.lowercased().filter { $0.isASCII && $0.isLetter }
-            return ["token", "key", "secret", "password", "authorization", "credential", "passphrase"].contains { key.hasSuffix($0) }
+            return credentialSuffixes.contains { key.hasSuffix($0) }
         }
         let program = URL(fileURLWithPath: command).lastPathComponent
         let shells: Set<String> = ["sh", "bash", "zsh", "dash", "fish", "ksh"]
@@ -161,7 +169,7 @@ enum AgentMCPDataImport {
         return result
     }
 
-    private static func qoder(_ name: String, raw: Any) throws -> Definition {
+    private static func qoder(_ name: String, raw: Any, remote: Bool = false) throws -> Definition {
         guard let raw = raw as? [String: Any] else { throw PetError("连接器需要是配置对象") }
         func read<T>(_ key: String, as type: T.Type) throws -> T? {
             guard let value = raw[key] else { return nil }
@@ -177,14 +185,21 @@ enum AgentMCPDataImport {
               ["timeout", "timeoutSeconds"].allSatisfy({ raw[$0].map { CFGetTypeID($0 as CFTypeRef) != CFBooleanGetTypeID() } ?? true }) else {
             throw PetError("连接器超时字段无效")
         }
-        return try definition(name, type: read("type", as: String.self), command: read("command", as: String.self),
+        var value = try definition(name, type: read("type", as: String.self), command: read("command", as: String.self),
             args: read("args", as: [String].self) ?? [], cwd: read("cwd", as: String.self), url: read("url", as: String.self),
             env: Array(env.keys), headers: Array(headers.keys), bearer: bearer, timeout: seconds ?? timeout.map { $0 / 1000 },
             authorization: ["oauth", "auth", "oauthClientID", "oauthClientAuthMethod", "oauthIssuer", AgentMCP.oauthSecretKey].contains { raw[$0] != nil })
+        if remote {
+            if value.type == "stdio" { value.needsSetup = true }
+            if let address = value.url, let host = URLComponents(string: address)?.host?.lowercased(), loopbackHosts.contains(host) {
+                value.url = String(address.prefix { $0 != "?" }) + "?" + missing
+                value.needsSetup = true
+            }
+        }
+        return value
     }
 
-    private static func declarations(_ source: AgentImportSource, file: SourceFile) throws -> [String: Result<Definition, Error>] {
-        let data = try file.files.readData(file.url, maximum: maximumBytes)
+    private static func declarations(_ source: AgentImportSource, data: Data) throws -> [String: Result<Definition, Error>] {
         if source == .qoder {
             let object: [String: Any]
             do { object = try AgentConfigurationJSON.object(data) } catch { throw PetError("Qoder 连接器 JSON 格式无效") }
@@ -209,43 +224,83 @@ enum AgentMCPDataImport {
         })
     }
 
+    private struct Configuration {
+        let requiresProject: Bool
+        let entries: [String: Result<Definition, Error>]
+    }
+
+    private static func configuration(_ source: AgentImportSource, file: SourceFile) throws -> Configuration {
+        let data = try file.files.readData(file.url, maximum: maximumBytes)
+        return try .init(requiresProject: file.requiresProject, entries: declarations(source, data: data))
+    }
+
+    private static func remoteConfiguration(_ data: Data) throws -> Configuration {
+        let raw = try AgentConfigurationJSON.object(data)
+        guard let project = raw["project"], CFGetTypeID(project as CFTypeRef) == CFBooleanGetTypeID(),
+              let requiresProject = project as? Bool, let servers = raw["servers"] as? [String: Any], servers.count <= 128 else {
+            throw PetError("远端连接器配置格式无效")
+        }
+        let entries = servers.map { name, row in (name, Result { try qoder(name, raw: row, remote: true) }) }
+        return .init(requiresProject: requiresProject, entries: Dictionary(uniqueKeysWithValues: entries))
+    }
+
     static func discover(_ source: AgentImportSource, root: URL, workspace: String?) throws -> [AgentImportCandidate] {
         var rows: [AgentImportCandidate] = []
         for file in try sourceFiles(source, root: root) {
             try Task.checkCancellation()
             let time = try file.files.entryMetadata(file.url).modified ?? Date()
-            let values: [String: Result<Definition, Error>]
-            do { values = try declarations(source, file: file) }
-            catch {
-                let sourceID = "mcp-file:" + AgentFiles.hash(Data(file.url.path.utf8))
-                var record = AgentImportCandidate(source: source, sourceID: sourceID, file: file.url.path, rawHash: "", sourceHash: "",
-                                                  title: file.url.lastPathComponent, created: time, updated: time)
-                record.connector = AgentMCPImportPlan(workspace: workspace)
-                record.issue = error.localizedDescription
-                rows.append(record)
-                continue
-            }
-            for name in values.keys.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
-                let sourceID = "mcp:" + AgentFiles.hash(Data((file.url.path + "\0" + name).utf8))
-                var record = AgentImportCandidate(source: source, sourceID: sourceID, file: file.url.path, rawHash: "", sourceHash: "", title: name, created: time, updated: time)
-                record.connector = AgentMCPImportPlan(workspace: workspace)
-                switch values[name]! {
-                case .failure(let error): record.issue = error.localizedDescription
-                case .success(let definition):
-                    record.sourceHash = try definition.hash(); record.rawHash = record.sourceHash
-                    record.preview = definition.preview
-                    record.connector?.needsSetup = definition.needsSetup
-                    if definition.authorizationReview { record.warnings.append("连接前检查授权与工具范围") }
-                    if file.requiresProject, workspace == nil { record.issue = "项目来源，请选择目标项目" }
-                }
-                rows.append(record)
+            rows += try preview(source, file: file.url.path, workspace: workspace, time: time) {
+                try configuration(source, file: file)
             }
         }
         return rows
     }
 
+    static func previewRemote(_ source: AgentImportSource, file: String, workspace: String?, host: String?,
+                              read: () throws -> Data) throws -> [AgentImportCandidate] {
+        try preview(source, file: file, workspace: workspace, time: .distantPast, sshHost: host) {
+            try remoteConfiguration(read())
+        }
+    }
+
+    private static func preview(_ source: AgentImportSource, file: String, workspace: String?, time: Date, sshHost: String? = nil,
+                                load: () throws -> Configuration) throws -> [AgentImportCandidate] {
+        let config: Configuration
+        do { config = try load() }
+        catch {
+            let sourceID = "mcp-file:" + AgentFiles.hash(Data(file.utf8))
+            var record = AgentImportCandidate(source: source, sourceID: sourceID, file: file, rawHash: "", sourceHash: "",
+                title: (file as NSString).lastPathComponent, created: time, updated: time, sshHost: sshHost)
+            record.connector = AgentMCPImportPlan(workspace: workspace)
+            record.issue = error.localizedDescription
+            return [record]
+        }
+        return try config.entries.keys.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }).map { name in
+            let sourceID = "mcp:" + AgentFiles.hash(Data((file + "\0" + name).utf8))
+            var record = AgentImportCandidate(source: source, sourceID: sourceID, file: file, rawHash: "", sourceHash: "", title: name,
+                created: time, updated: time, sshHost: sshHost)
+            record.connector = AgentMCPImportPlan(workspace: workspace)
+            switch config.entries[name]! {
+            case .failure(let error): record.issue = error.localizedDescription
+            case .success(let definition):
+                record.sourceHash = try definition.hash(); record.rawHash = record.sourceHash
+                record.preview = definition.preview
+                record.connector?.needsSetup = definition.needsSetup
+                if definition.authorizationReview { record.warnings.append("连接前检查授权与工具范围") }
+                if sshHost != nil {
+                    if definition.type == "stdio" { record.warnings.append("启用前请核对本机程序和工作目录") }
+                    if let address = definition.url, let host = URLComponents(string: address)?.host?.lowercased(), loopbackHosts.contains(host) {
+                        record.warnings.append("启用前请更换远端回环地址")
+                    }
+                }
+                if config.requiresProject, workspace == nil { record.issue = "项目来源，请选择目标项目" }
+            }
+            return record
+        }
+    }
+
     private static func sourceFile(_ record: AgentImportCandidate, root: URL) throws -> SourceFile {
-        guard record.connector != nil, let file = try sourceFiles(record.source, root: root).first(where: { $0.url.path == record.file }) else {
+        guard record.connector != nil, record.sshHost == nil, let file = try sourceFiles(record.source, root: root).first(where: { $0.url.path == record.file }) else {
             throw PetError("连接器来源已变化，请重新检测")
         }
         return file
@@ -276,16 +331,29 @@ enum AgentMCPDataImport {
     }
 
     @MainActor static func install(_ record: AgentImportCandidate, root: URL, store: AgentStore) async throws {
+        try await install(record, store: store) {
+            try await Task.detached(priority: .utility) {
+                try configuration(record.source, file: sourceFile(record, root: root))
+            }.value
+        }
+    }
+
+    @MainActor static func installRemote(_ record: AgentImportCandidate, store: AgentStore, read: () async throws -> Data) async throws {
+        try await install(record, store: store) {
+            let data = try await read()
+            return try await Task.detached(priority: .utility) { try remoteConfiguration(data) }.value
+        }
+    }
+
+    @MainActor private static func install(_ record: AgentImportCandidate, store: AgentStore, load: () async throws -> Configuration) async throws {
         let workspace = record.targetWorkspace
         try requireDestination(workspace, store: store)
         if store.mcp.containsImported(record.targetID, workspace: workspace) { return }
-        let definition = try await Task.detached(priority: .utility) {
-            let file = try sourceFile(record, root: root)
-            guard !file.requiresProject || workspace != nil else { throw PetError("项目来源，请选择目标项目") }
-            guard let value = try declarations(record.source, file: file)[record.title], case .success(let definition) = value,
-                  try definition.hash() == record.sourceHash else { throw PetError("来源连接器配置已变化，请重新检测") }
-            return definition
-        }.value
+        let config = try await load()
+        guard !config.requiresProject || workspace != nil else { throw PetError("项目来源，请选择目标项目") }
+        guard let value = config.entries[record.title], case .success(let definition) = value,
+              try definition.hash() == record.sourceHash else { throw PetError("来源连接器配置已变化，请重新检测") }
+        try Task.checkCancellation()
         try requireDestination(workspace, store: store)
         try store.mcp.addImported(definition.server(id: record.targetID, workspace: workspace))
     }

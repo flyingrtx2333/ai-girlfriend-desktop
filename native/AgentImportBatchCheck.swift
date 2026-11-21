@@ -60,6 +60,127 @@ import AppKit
         let importer = tasks.dataImport
         let root = output.appendingPathComponent("Codex '公开样例'")
         let route = AgentImportRoute(source: .codex, category: .tasks, root: root.path, workspace: nil, sshHost: "whale-import")
+        if CommandLine.arguments.contains("--ssh-connector-import-check") {
+            let phase = output.appendingPathComponent("ssh-connector-paused.json")
+            let sourceFile = root.appendingPathComponent("config.toml")
+            let connectors = AgentImportRoute(source: .codex, category: .connectors, root: route.root, workspace: nil, sshHost: route.sshHost)
+            let model = tasks.mcp, files = FileManager.default
+            func write(_ value: [String: Any], to url: URL) throws {
+                try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: url, options: .atomic)
+            }
+            if !files.fileExists(atPath: phase.path) {
+                try chooseSSH(route)
+                try button("检测可导入内容").performClick(nil)
+                try await settle { importer.scanning || importer.preview(for: connectors) == nil }
+                let records = importer.preview(for: connectors)?.records ?? []
+                let available = records.filter { $0.issue == nil }
+                checks["codexPreviewKeepsThreeConnectionsAndReportsBadRow"] = available.count == 3 && records.count == 4 &&
+                    records.contains { $0.title == "invalid-row" && $0.issue != nil } && importer.preview(for: route)?.available.count == 2
+                guard let index = records.firstIndex(where: { $0.title == "public-stdio" }) else { throw PetError("缺少远端 STDIO 预览") }
+                let selected = records[index]
+                checks["previewShowsNamesAndPlaceholdersWithoutCredentialValues"] = selected.preview.contains("PUBLIC_TOKEN") &&
+                    selected.preview.contains("FORWARDED") && selected.preview.contains("待填写") &&
+                    !records.contains { $0.preview.contains("WIRE_CANARY") }
+                checks["remoteProgramRequiresReviewBeforeEnable"] = selected.connector?.needsSetup == true &&
+                    selected.warnings.contains("启用前请核对本机程序和工作目录")
+                try openCategory(.connectors)
+                guard let list = find(content, NSTableView.self, { $0.accessibilityLabel() == "可导入连接器" }) else { throw PetError("缺少连接器预览列表") }
+                list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+                content.layoutSubtreeIfNeeded()
+                let detail = find(content, NSTextView.self, { $0.accessibilityLabel() == "导入预览" })
+                let confirm = try button("导入 7 项")
+                checks["narrowWindowShowsRemoteOriginWithConfirmAndSetupState"] = detail?.string.contains("whale-import:" + sourceFile.path) == true &&
+                    detail?.string.contains("待配置") == true && confirm.visibleRect.width >= confirm.bounds.width - 1 &&
+                    confirm.visibleRect.height >= confirm.bounds.height - 1 && find(content, NSButton.self, { $0.title == "来源文件" }) == nil
+                checks["reviewKeepsTheSelectedRemoteConnectors"] = control.captureSettingsNavigation()?.dataImport?.routes
+                    .first(where: { $0.route == connectors })?.checked?.count == 3
+                try button("返回导入").performClick(nil)
+                let notify = importer.onChange
+                importer.onChange = { [weak importer] in
+                    notify?()
+                    if let importer, importer.batch?.state == "running", importer.batch?.items.filter({ $0.state == "imported" }).count == 4 {
+                        importer.pause()
+                    }
+                }
+                defer { importer.onChange = notify }
+                try button("导入 7 项").performClick(nil)
+                try await settle { importer.active || importer.batch == nil }
+                guard let batch = importer.batch, batch.state == "paused" else { throw PetError("连接器导入批次没有暂停") }
+                checks["mixedBatchKeepsThreeRemoteConnectionsPending"] = batch.items.filter { $0.state == "imported" && $0.record.category != .connectors }.count == 4 &&
+                    batch.items.filter { $0.state == "pending" && batch.route(for: $0) == connectors }.count == 3 && model.servers.isEmpty
+                let before = try String(contentsOf: sourceFile, encoding: .utf8)
+                let after = before.replacingOccurrences(of: "/before-update", with: "/after-update")
+                    .replacingOccurrences(of: "WIRE_CANARY_ENV", with: "WIRE_CANARY_ROTATED")
+                guard before != after else { throw PetError("连接器来源变更样例有误") }
+                try Data(after.utf8).write(to: sourceFile)
+                try write(["batch": batch.id, "pid": getpid(), "checks": checks, "modelRequests": requests], to: phase)
+                return
+            }
+            let initial = try JSONSerialization.jsonObject(with: Data(contentsOf: phase)) as? [String: Any] ?? [:]
+            checks = initial["checks"] as? [String: Bool] ?? [:]
+            checks["restartRestoresOriginalRemoteConnectorSelection"] = initial["pid"] as? Int != Int(getpid()) && importer.unfinished &&
+                importer.batch?.id == initial["batch"] as? String && importer.batch?.items.filter {
+                    $0.state == "pending" && $0.record.category == .connectors && $0.record.sshHost == route.sshHost
+                }.count == 3
+            guard control.showSettingsCategory("imports") else { throw PetError("不能恢复 SSH 连接器页") }
+            try button("继续导入").performClick(nil)
+            try await settle { importer.active }
+            let servers = model.servers
+            guard let stdio = servers.first(where: { $0.name == "public-stdio" }),
+                  let portable = servers.first(where: { $0.name == "public-https" }) else { throw PetError("缺少已导入连接器") }
+            checks["actualDefinitionChangeRejectedWhileCredentialRotationKeepsSelection"] = importer.batch?.state == "completed" &&
+                importer.batch?.items.contains { $0.record.title == "changed-source" && $0.state == "failed" && $0.detail.contains("已变化") } == true &&
+                servers.count == 2
+            let document = try model.document(stdio)
+            checks["storedStdioHasOnlyCredentialPlaceholdersAndNames"] = stdio.configured == false && !stdio.enabled &&
+                document.contains("PUBLIC_TOKEN") && document.contains(AgentMCP.importPlaceholder) && !document.contains("WIRE_CANARY")
+            checks["portableHttpsKeepsAddressAndTimeoutWhileDisabled"] = portable.configured == true && !portable.enabled &&
+                portable.url == "https://example.invalid/mcp" && portable.timeoutSeconds == 29
+
+            let qoderFile = output.appendingPathComponent("Qoder 会话/.qoder/settings.json")
+            let project = output.appendingPathComponent("本机 MCP 项目")
+            let global = AgentImportRoute(source: .qoder, category: .connectors, root: qoderFile.path, workspace: nil, sshHost: route.sshHost)
+            let scoped = AgentImportRoute(source: .qoder, category: .connectors, root: qoderFile.path, workspace: project.path, sshHost: route.sshHost)
+            try files.createDirectory(at: project, withIntermediateDirectories: true)
+            try tasks.organization.register(project.path, mode: .coding)
+            try detectSSH(global)
+            try await settle { importer.scanning || importer.preview(for: global) == nil }
+            checks["directQoderProjectFileCannotImportToGlobal"] = importer.preview(for: global)?.records.count == 2 &&
+                importer.preview(for: global)?.records.allSatisfy { $0.file == qoderFile.path && $0.issue?.contains("选择目标项目") == true } == true
+            guard let picker = find(content, NSPopUpButton.self, { $0.accessibilityLabel() == "连接器目标" }),
+                  let item = picker.itemArray.first(where: { $0.representedObject as? String == project.path }), let action = picker.action else {
+                throw PetError("缺少连接器项目选择")
+            }
+            picker.select(item)
+            NSApp.sendAction(action, to: picker.target, from: picker)
+            try button("重新检测").performClick(nil)
+            try await settle { importer.scanning || importer.preview(for: scoped) == nil }
+            guard let result = importer.preview(for: scoped), let index = result.records.firstIndex(where: { $0.title == "project-loopback" }),
+                  let table = find(content, NSTableView.self, { $0.accessibilityLabel() == "可导入连接器" }) else { throw PetError("缺少项目连接器预览") }
+            let row = result.records[index]
+            checks["remoteLoopbackRequiresNewAddressAndOriginalTokensAreRedacted"] = row.connector?.needsSetup == true &&
+                row.preview.contains("待填写") && row.warnings.contains("启用前请更换远端回环地址") &&
+                !result.records.contains { $0.preview.contains("WIRE_CANARY") }
+            try button("全选").performClick(nil)
+            table.scrollRowToVisible(index)
+            guard let checkbox = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? NSButton else { throw PetError("缺少连接器勾选入口") }
+            checkbox.performClick(nil)
+            try button("导入 1 项").performClick(nil)
+            try await settle { importer.active }
+            let installed = model.availableServers(workspace: project.path).first { $0.id == row.targetID }
+            checks["onlySelectedProjectConnectionIsSavedDisabledAndUnconfigured"] = installed?.workspace == project.path &&
+                installed?.configured == false && installed?.enabled == false && installed?.url?.contains(AgentMCP.importPlaceholder) == true &&
+                installed?.hasBearerToken == true && !model.servers.contains { $0.name == row.title } &&
+                !model.availableServers(workspace: project.path).contains { $0.name == "project-unused-sse" } && importer.batch?.items.count == 1
+            let profile = tasks.directory.deletingLastPathComponent()
+            checks["importDoesNotRunSourceProgramOrKeepTransferScratch"] = try !files.fileExists(atPath: output.appendingPathComponent("unexpected-script-output").path) &&
+                !files.contentsOfDirectory(atPath: profile.path).contains { $0.hasPrefix("ssh-import-transfer-") }
+            let success = checks.values.allSatisfy { $0 } && requests == 0 && initial["modelRequests"] as? Int == 0
+            try write(["checks": checks, "binaryHash": binaryHash, "appPID": getpid(), "modelRequests": requests, "success": success],
+                      to: output.appendingPathComponent("ssh-connectors-report.json"))
+            guard success else { throw PetError("SSH 连接器导入检查失败") }
+            return
+        }
         if CommandLine.arguments.contains("--ssh-automation-import-check") {
             guard let runtime = agentRuntime else { throw PetError("缺少定时任务运行时") }
             let schedules = tasks.automations, fm = FileManager.default
@@ -338,7 +459,7 @@ import AppKit
                 let categories = AgentImportCategory.allCases.filter { category in
                     find(content, NSButton.self, { $0.accessibilityIdentifier() == "import-category-" + category.rawValue }) != nil
                 }
-                checks["overviewShowsSupportedSSHCategories"] = Set(categories) == Set([.tasks, .memory, .skills, .automations])
+                checks["overviewShowsSupportedSSHCategories"] = Set(categories) == Set([.tasks, .memory, .skills, .connectors, .automations])
                 try button("检测可导入内容").performClick(nil)
                 try await settle { importer.scanning || importer.preview(for: memory) == nil }
                 let records = importer.preview(for: memory)?.records ?? [], valid = records.filter { $0.issue == nil }

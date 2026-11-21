@@ -540,13 +540,14 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         }
         if let plan = record.connector {
             let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局连接器"
-            var lines = [record.title, "来源 · " + record.file, destination]
+            var lines = [record.title, "来源 · " + source, destination]
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             if record.issue == nil { lines.append(plan.needsSetup ? "待配置 · 导入后需补全" : "导入后可在连接器中启用") }
             lines.append(contentsOf: record.warnings)
             setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             open.isEnabled = store.mcp.containsImported(record.targetID, workspace: plan.workspace)
-            original.isEnabled = (try? AgentMCPDataImport.reveal(record, root: root)) != nil
+            original.isHidden = record.sshHost != nil
+            original.isEnabled = record.sshHost == nil && (try? AgentMCPDataImport.reveal(record, root: root)) != nil
             return
         }
         if let plan = record.automation {

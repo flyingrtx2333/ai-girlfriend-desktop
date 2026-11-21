@@ -7,7 +7,7 @@ import Darwin
 struct AgentSSHImport: Sendable {
     let profile: URL
     let home: URL?
-    static let categories: [AgentImportCategory] = [.tasks, .memory, .skills, .automations]
+    static let categories: [AgentImportCategory] = [.tasks, .memory, .skills, .connectors, .automations]
 
     static func valid(host: String, root: String) -> Bool {
         guard TerminalSurface.validSSHDestination(host), root.utf8.count <= 4096,
@@ -246,6 +246,67 @@ struct AgentSSHImport: Sendable {
                                   timeout: wanted.isEmpty ? 1800 : 60, decode: decode)
     }
 
+    func discoverConnectors(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
+        let explicit = Self.explicitConnectorFile(route)
+        return try await connectorResponse(route, explicit: explicit, wanted: "") { input in
+            let groups: [[AgentImportCandidate]] = try Self.scanFrames(input, maximum: AgentMCPDataImport.maximumProjectionBytes,
+                oversized: "远端连接器配置超过大小限制") { path, bytes in
+                guard Self.validConnectorPath(path, source: route.source, explicit: explicit) else { throw FrameError.invalid }
+                let file = explicit == nil ? Self.prefix(route) + path : route.root
+                return try AgentMCPDataImport.previewRemote(route.source, file: file, workspace: route.workspace, host: route.sshHost) {
+                    try bytes.get()
+                }
+            }
+            return groups.flatMap { $0 }
+        }
+    }
+
+    func readConnector(_ record: AgentImportCandidate, route: AgentImportRoute) async throws -> Data {
+        let explicit = Self.explicitConnectorFile(route), prefix = Self.prefix(route)
+        let path: String
+        if let explicit, record.file == route.root { path = explicit }
+        else if explicit == nil && record.file.hasPrefix(prefix) { path = String(record.file.dropFirst(prefix.count)) }
+        else { throw PetError("SSH 连接器与原来源不符，请重新检测") }
+        guard record.sshHost == route.sshHost, record.source == route.source, record.category == .connectors,
+              record.targetWorkspace == route.workspace, Self.validConnectorPath(path, source: route.source, explicit: explicit) else {
+            throw PetError("SSH 连接器与原来源不符，请重新检测")
+        }
+        return try await connectorResponse(route, explicit: explicit, wanted: path) { input in
+            let files: [Data] = try Self.scanFrames(input, maximum: AgentMCPDataImport.maximumProjectionBytes,
+                oversized: "远端连接器配置超过大小限制") { file, bytes in
+                guard file == path else { throw FrameError.invalid }
+                return try bytes.get()
+            }
+            guard files.count == 1, let data = files.first else { throw PetError("远端连接器文件已移除或离开检测目录") }
+            return data
+        }
+    }
+
+    private static func explicitConnectorFile(_ route: AgentImportRoute) -> String? {
+        let name = (route.root as NSString).lastPathComponent
+        return !route.root.hasSuffix("/") && AgentMCPDataImport.acceptsFile(name, source: route.source) ? name : nil
+    }
+
+    private static func validConnectorPath(_ path: String, source: AgentImportSource, explicit: String?) -> Bool {
+        guard validRelativePath(path) else { return false }
+        if let explicit { return path == explicit }
+        return AgentMCPDataImport.locations(source).contains { $0.path == path }
+    }
+
+    private func connectorResponse<Value>(_ route: AgentImportRoute, explicit: String?, wanted: String,
+                                         decode: @escaping @Sendable (FileHandle) throws -> Value) async throws -> Value {
+        guard route.category == .connectors, let host = route.sshHost, Self.valid(host: host, root: route.root) else {
+            throw PetError("缺少有效的 SSH 连接器来源")
+        }
+        let directory = explicit.map { String(route.root.dropLast($0.count)) } ?? route.root
+        let transfer = AgentImportRoute(source: route.source, category: route.category, root: directory, workspace: route.workspace, sshHost: host)
+        let locations = AgentMCPDataImport.locations(route.source).flatMap { [$0.path, $0.project ? "project" : "global"] }
+        let arguments = [route.source.rawValue, route.source.homeName, explicit ?? "", wanted, String(AgentMCPDataImport.maximumBytes),
+                         String(AgentMCPDataImport.maximumProjectionBytes), AgentMCP.importPlaceholder,
+                         AgentMCPDataImport.credentialSuffixes.joined(separator: ",")] + locations
+        return try await response(transfer, script: Self.scanConnectors, arguments: arguments, timeout: 60, decode: decode)
+    }
+
     private static func prefix(_ route: AgentImportRoute) -> String {
         route.root.hasSuffix("/") ? route.root : route.root + "/"
     }
@@ -444,6 +505,9 @@ struct AgentSSHImport: Sendable {
                 throw PetError((category == .automations ? "定时任务" : "Skill") + "来源项目过多，请选择较小的目录")
             }
             if result.exitCode == 46 { throw PetError("请为 Qoder 项目记忆选择目标项目") }
+            if result.exitCode == 47, category == .connectors {
+                throw PetError("远端缺少连接器解析组件，需要 Python " + (arguments.first == "codex" ? "3.11 或更高版本" : "3.8 或更高版本"))
+            }
             throw PetError("无法读取 SSH 来源，请检查连接与远端目录后重试")
         }
     }
@@ -703,6 +767,222 @@ struct AgentSSHImport: Sendable {
         done
     fi
     printf '\0'
+    """#
+
+    private static let scanConnectors = #"""
+    for python in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+        [ -x "$python" ] || continue
+        if [ "$1" = codex ]; then
+            "$python" -I -B -S -c 'import tomllib' >/dev/null 2>&1 || continue
+        else
+            "$python" -I -B -S -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1 || continue
+        fi
+        exec "$python" -I -B -S -X utf8 - "$@" <<'BFF_CONNECTORS'
+    import json
+    import math
+    import os
+    import re
+    import stat
+    import sys
+    from urllib.parse import urlsplit, urlunsplit
+
+    source, home_name, explicit, wanted, input_limit, output_limit, missing, suffixes = sys.argv[1:9]
+    if source == "codex":
+        import tomllib
+    input_limit, output_limit = int(input_limit), int(output_limit)
+    suffixes = tuple(suffixes.split(","))
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+
+    def read_config(path):
+        parts = path.split("/")
+        directory = os.open(".", os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in parts[:-1]:
+                child = os.open(part, flags | os.O_DIRECTORY, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            fd = os.open(parts[-1], flags | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise OSError()
+                return stream.read(input_limit + 1)
+        finally:
+            os.close(directory)
+
+    def field(row, key, kind, default=None):
+        if key not in row:
+            return default
+        value = row[key]
+        if type(value) is not kind:
+            raise ValueError()
+        return value
+
+    def keys(row, key):
+        values = field(row, key, dict, {})
+        if any(type(value) is not str for value in values.values()):
+            raise ValueError()
+        return set(values)
+
+    def number(row, key):
+        value = row.get(key)
+        if key in row and (type(value) not in (int, float) or not math.isfinite(value)):
+            raise ValueError()
+        return value
+
+    def safe_url(value):
+        if "://" not in value:
+            return value
+        try:
+            url = urlsplit(value)
+            if not url.netloc:
+                return value if url.scheme == "file" and "?" not in value and "#" not in value else missing
+            if "@" in url.netloc or "?" in value or "#" in value:
+                return urlunsplit((url.scheme, url.netloc.rsplit("@", 1)[-1], url.path, missing, ""))
+            return value
+        except ValueError:
+            return missing
+
+    def safe_args(args, command):
+        if any(type(arg) is not str for arg in args):
+            raise ValueError()
+        program = os.path.basename(command or "")
+        shell = program in {"sh", "bash", "zsh", "dash", "fish", "ksh"}
+        interpreter = program.startswith(("python", "node", "perl", "ruby", "deno"))
+        output, hide_next = [], False
+        for arg in args:
+            if hide_next:
+                output.append(missing)
+                hide_next = False
+                continue
+            if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", arg):
+                output.append(safe_url(arg))
+                continue
+            key, equals, value = arg.partition("=")
+            credential = re.sub("[^a-zA-Z]", "", key).lower().endswith(suffixes)
+            header = key in {"-H", "--header", "--http-header"}
+            inline = (shell and (key == "--command" or re.fullmatch(r"-[ilxersbuvn]*c[ilxersbuvn]*", key))) or (
+                interpreter and key in {"-c", "-e", "--eval"})
+            if equals and (credential or inline or header or re.match(r"^(authorization\s*:|bearer\s+)", value, re.IGNORECASE)):
+                output.append(key + "=" + missing)
+            elif not equals and ((arg.startswith("-") and credential) or inline or header):
+                output.append(arg)
+                hide_next = True
+            elif (shell or interpreter) and re.match(r"^-[ce].+", arg):
+                output.append(arg[:2] + missing)
+            elif re.match(r"^(authorization\s*:|bearer\s+)", arg, re.IGNORECASE):
+                output.append(missing)
+            else:
+                clean = safe_url(value if equals else arg)
+                output.append(key + "=" + clean if equals else clean)
+        return output
+
+    def connector(row):
+        if not isinstance(row, dict):
+            raise ValueError()
+        result = {}
+        for key in ("command", "cwd", "url") + (("type",) if source == "qoder" else ()):
+            value = field(row, key, str)
+            if value is not None:
+                result[key] = safe_url(value) if key == "url" else value
+        args = field(row, "args", list, [])
+        if args:
+            result["args"] = safe_args(args, result.get("command"))
+        env = keys(row, "env")
+        if source == "codex":
+            for variable in field(row, "env_vars", list, []):
+                env.add(variable if type(variable) is str else field(variable, "name", str))
+            headers = keys(row, "http_headers") | keys(row, "env_http_headers")
+            bearer = field(row, "bearer_token_env_var", str, "")
+            seconds = number(row, "tool_timeout_sec")
+            if seconds is None:
+                seconds = number(row, "startup_timeout_sec")
+            auth = {"auth", "oauth", "http_headers_helper", "enabled_tools", "disabled_tools", "default_tools_approval_mode", "tools"}
+        else:
+            headers = keys(row, "headers")
+            bearer = field(row, "bearerToken", str, "")
+            seconds = number(row, "timeoutSeconds")
+            milliseconds = number(row, "timeout")
+            if milliseconds is not None:
+                if seconds is not None:
+                    raise ValueError()
+                seconds = milliseconds / 1000
+            auth = {"auth", "oauth", "oauthClientID", "oauthClientAuthMethod", "oauthIssuer", "oauthClientSecret"}
+        if any(not isinstance(name, str) for name in env):
+            raise ValueError()
+        if env:
+            result["env"] = dict.fromkeys(sorted(env), "")
+        if headers:
+            result["headers"] = dict.fromkeys(sorted(headers), "")
+        if bearer:
+            result["bearerToken"] = missing
+        if seconds is not None:
+            result["timeoutSeconds"] = seconds
+        if auth.intersection(row):
+            result["auth"] = True
+        return result
+
+    def unique_pairs(pairs):
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError()
+        return result
+
+    def project_config(data, project):
+        text = data.decode("utf-8")
+        content = tomllib.loads(text) if source == "codex" else json.loads(text, object_pairs_hook=unique_pairs)
+        if not isinstance(content, dict):
+            raise ValueError()
+        key = "mcp_servers" if source == "codex" else "mcpServers"
+        entries = field(content, key, dict, {})
+        if source == "qoder" and key not in content and isinstance(content.get("name"), str) and ("command" in content or "url" in content):
+            entries = {content["name"]: content}
+        if len(entries) > 128:
+            raise ValueError()
+        result = {}
+        for name, row in entries.items():
+            try:
+                result[name] = connector(row)
+            except (ValueError, TypeError, AttributeError, OverflowError):
+                result[name] = None
+        return json.dumps({"project": project, "servers": result}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    root = os.getcwd()
+    if root == "/" and not explicit:
+        sys.exit(42)
+    home_source = os.path.join(os.path.realpath(os.environ.get("HOME", "/")), home_name)
+    locations = [(explicit, "global")] if explicit else list(zip(sys.argv[9::2], sys.argv[10::2]))
+    out = sys.stdout.buffer
+    out.write(b"BFF-SESSIONS-1\0")
+    for path, scope in locations:
+        if wanted and path != wanted:
+            continue
+        parent = os.path.dirname(os.path.join(root, path))
+        project = scope == "project" or path == ".mcp.json" or os.path.basename(parent) == home_name and parent != home_source
+        try:
+            data = read_config(path)
+        except FileNotFoundError:
+            if explicit:
+                sys.exit(43)
+            continue
+        except OSError:
+            out.write(path.encode("utf-8") + b"\0?\0")
+            continue
+        projection = b""
+        if len(data) <= input_limit:
+            try:
+                projection = project_config(data, project)
+            except (ValueError, TypeError, RecursionError, OverflowError, UnicodeError):
+                projection = b"{}"
+        out.write(path.encode("utf-8") + b"\0")
+        if not projection or len(projection) > output_limit:
+            out.write(b"-\0")
+        else:
+            out.write(str(len(projection)).encode("ascii") + b"\0")
+            out.write(projection)
+    out.write(b"\0")
+    BFF_CONNECTORS
+    done
+    exit 47
     """#
 
     private static let readFile = #"""
