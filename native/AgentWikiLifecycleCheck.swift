@@ -58,6 +58,41 @@ import AppKit
             await wait(0.15)
             mainWindow.contentView?.layoutSubtreeIfNeeded()
             checks["openingReaderKeepsMinimumWindowSize"] = mainWindow.frame.size == narrow
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            guard let readerView = reader.pageContentView,
+                  let compare = descendants(readerView).compactMap({ $0 as? NSButton }).first(where: { $0.title == "比较" }) else {
+                throw PetError("缺少 Wiki 比较入口")
+            }
+            compare.performClick(nil)
+            guard let comparison = host.currentController as? AgentFileConflictWindow else { throw PetError("Wiki 比较未打开") }
+            for _ in 0..<100 {
+                if comparison.checkState["loading"] as? Bool == false { break }
+                await wait(0.025)
+            }
+            let journal = try await host.captureWorkspaceRecovery(active: true)
+            guard let page = journal?.readers.first, let path = try AgentRecordWindow.recoveryState(page).file else {
+                throw PetError("Wiki 比较未写入阅读器状态")
+            }
+            var recovering = try AgentRecordWindow.recoveryState(page)
+            checks["visibleWikiComparisonRestoresAsActiveReader"] = journal?.active == true && recovering.conflict?.file == path
+            comparison.close()
+            do {
+                let file = URL(fileURLWithPath: path), held = output.appendingPathComponent("held-recovery-document.md")
+                let draft = try AgentTextFile.decode(files.readData(file)).text + "\n\n保留的 Wiki 原稿。"
+                recovering.dirty = true; recovering.text = draft; recovering.conflict = nil
+                recovering.mode = 1; recovering.textViewport = nil; recovering.markdownViewport = nil
+                let offline = AgentWorkspaceRecovery.Page(taskID: id, kind: "record", state: try JSONEncoder().encode(recovering), dirty: true, asset: nil)
+                try FileManager.default.moveItem(at: file, to: held)
+                defer { try? FileManager.default.moveItem(at: held, to: file) }
+                let restored = AgentRecordWindow(store: tasks, taskID: id, section: 6, wikiOnly: true)
+                try restored.restoreWorkspaceRecovery(offline)
+                let snapshot = await restored.markdownEditingReadback()
+                let retained = try AgentRecordWindow.recoveryState(await restored.captureWorkspaceRecovery())
+                checks["missingWikiKeepsOriginalDraftInReadOnlyEditor"] = snapshot["draft"] as? String == draft &&
+                    snapshot["sourceEditable"] as? Bool == false && retained.file == path && retained.dirty
+                checks["missingWikiKeepsOriginalPublicationAndDocument"] = retained.wikiDirectory?.root == before.root &&
+                    retained.wikiDirectory?.document == recovering.wikiDirectory?.document
+            }
             var created: [String] = []
             reader.configureWikiRuntime(runtime) { next in created.append(next); runtime.cancel(next) }
             func inspect(_ name: String, _ review: AgentKnowledgeReviewWindow) {

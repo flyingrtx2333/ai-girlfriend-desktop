@@ -286,7 +286,7 @@ struct AgentFileConflictSnapshot {
     var canNavigateWorkspace: Bool { !resolving }
     func windowWillClose(_ notification: Notification) { job?.cancel(); onClose?(); onClose = nil }
     var checkState: [String: Any] {
-        guard AgentTaskWorkspace.readbackEnabled || ["--file-conflict-check", "--text-encoding-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
+        guard AgentTaskWorkspace.readbackEnabled || AgentKnowledgePageHost.readbackEnabled || ["--file-conflict-check", "--text-encoding-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
         return ["visible": isPageVisible, "diskHash": review?.diskHash ?? "", "draftHash": review?.draftHash ?? "", "loading": loading, "resolving": resolving, "overwriteEnabled": overwrite.isEnabled, "adoptEnabled": adopt.isEnabled, "mode": mode.selectedSegment, "patch": diff.patch, "state": state.stringValue]
     }
 }
