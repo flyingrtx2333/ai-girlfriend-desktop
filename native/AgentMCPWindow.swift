@@ -179,7 +179,10 @@ import UniformTypeIdentifiers
         guard configurationKind.selectedSegment != displayedConfiguration else { return }
         do {
             if configurationKind.selectedSegment == 0 { try installForm() }
-            else if let form { editor.string = try form.document() }
+            else if let form {
+                guard !form.hasUncommittedClientSecret else { throw PetError("请先保存或清空客户端密钥，再切换到 JSON") }
+                editor.string = try form.document()
+            }
             applyConfigurationKind(); draftViewport.changed(); focusDetail()
         } catch { configurationKind.selectedSegment = displayedConfiguration; state.showSaveFailure(error); focusDetail() }
     }
@@ -399,9 +402,12 @@ import UniformTypeIdentifiers
     }
     @objc private func saveConfig() {
         do {
-            if configurationKind.selectedSegment == 0, let form { editor.string = try form.document() }
+            let activeForm = configurationKind.selectedSegment == 0 ? form : nil
+            if let activeForm { editor.string = try activeForm.document() }
             if let object = try? JSONSerialization.jsonObject(with: Data(editor.string.utf8)) as? [String: Any], object["mcpServers"] != nil { try reviewImport(document: editor.string); return }
-            let server = try service.save(editor.string, id: selected?.id, expectedRevision: selected?.revision, workspace: workspace); dirty = false; reload(server.id); state.stringValue = "已保存"; detailPage?.onSettingsRecoveryChange?()
+            let server = try service.save(editor.string, id: selected?.id, expectedRevision: selected?.revision, workspace: workspace,
+                                          enteredOAuthClientSecret: activeForm?.enteredClientSecret)
+            dirty = false; reload(server.id); state.stringValue = "已保存"; detailPage?.onSettingsRecoveryChange?()
         }
         catch { state.showSaveFailure(error) }
     }

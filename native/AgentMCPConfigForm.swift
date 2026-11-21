@@ -12,7 +12,9 @@ import BlueFatFishMCP
     private(set) var view = NSScrollView()
     private let name = AgentDialogTextField(), transport = NSPopUpButton(), command = AgentDialogTextField(), directory = AgentDialogTextField(), address = AgentDialogTextField(), bearer = AgentSecureTextField(), timeout = AgentDialogTextField()
     private let authentication = NSPopUpButton(), clientID = AgentDialogTextField()
+    private let issuer = AgentDialogTextField(), clientSecret = AgentSecureTextField()
     private var authenticationRow = NSView(), clientRow = NSView(), redirectRow = NSView(), bearerRow = NSView()
+    private var issuerRow = NSView(), clientSecretRow = NSView()
     private let arguments = AgentMCPConfigRows(title: "参数", paired: false, secure: false, limit: 100)
     private let environment = AgentMCPConfigRows(title: "环境变量", paired: true, secure: true, limit: 64)
     private let headers = AgentMCPConfigRows(title: "请求头", paired: true, secure: true, limit: 64)
@@ -22,7 +24,14 @@ import BlueFatFishMCP
     var onChange: (() -> Void)?
     var firstInput: NSView { name.isEnabled ? name : type == "stdio" ? command : address }
     var type: String { ["stdio", "http", "sse"][max(0, transport.indexOfSelectedItem)] }
-    private var usesOAuth: Bool { type == "http" && authentication.indexOfSelectedItem == 1 }
+    private static let secretMethods: [MCPOAuthClientAuthentication.Method] = [.basic, .post]
+    private var usesOAuth: Bool { type == "http" && authentication.indexOfSelectedItem > 0 }
+    private var secretMethod: MCPOAuthClientAuthentication.Method? {
+        let index = authentication.indexOfSelectedItem - 2
+        return usesOAuth && Self.secretMethods.indices.contains(index) ? Self.secretMethods[index] : nil
+    }
+    var hasUncommittedClientSecret: Bool { !clientSecret.stringValue.isEmpty }
+    var enteredClientSecret: String? { secretMethod != nil && hasUncommittedClientSecret ? clientSecret.stringValue : nil }
 
     init(document: String, pluginLocked: Bool) throws {
         guard document.utf8.count <= 64_000 else { throw PetError("MCP 配置最多 64 KB，请缩短后再切换。") }
@@ -31,20 +40,32 @@ import BlueFatFishMCP
         let keys = AgentMCP.configurationKeys
         guard Set(value.keys).isSubset(of: keys) else { throw PetError("请先在 JSON 中处理未知配置字段：" + Set(value.keys).subtracting(keys).sorted().joined(separator: ", ")) }
         guard value["args"] == nil || value["args"] is [String], value["env"] == nil || value["env"] is [String: String], value["headers"] == nil || value["headers"] is [String: String],
-              ["command", "cwd", "url", "bearerToken", "oauthClientID"].allSatisfy({ value[$0] == nil || value[$0] is String }), value["timeoutSeconds"] == nil || value["timeoutSeconds"] is Double else { throw PetError("JSON 配置字段格式无效，原文已保留") }
+              ["command", "cwd", "url", "bearerToken", "oauthClientID", "oauthClientAuthMethod", "oauthIssuer", AgentMCP.oauthSecretKey].allSatisfy({ value[$0] == nil || value[$0] is String }), value["timeoutSeconds"] == nil || value["timeoutSeconds"] is Double else { throw PetError("JSON 配置字段格式无效，原文已保留") }
         if value["oauthClientID"] != nil, type != "http" || (value["bearerToken"] as? String)?.isEmpty == false || (value["headers"] as? [String: String])?.isEmpty == false {
             throw PetError("请先在 JSON 中修正 OAuth 认证配置")
+        }
+        let methodIndex: Int?
+        if let method = value["oauthClientAuthMethod"] as? String {
+            guard let index = Self.secretMethods.firstIndex(where: { $0.rawValue == method }), value["oauthClientID"] != nil,
+                  Self.masked(value[AgentMCP.oauthSecretKey] as? String ?? "") else { throw PetError("请先在 JSON 中修正 OAuth 客户端认证配置") }
+            methodIndex = index + 2
+        } else {
+            guard value["oauthIssuer"] == nil, value[AgentMCP.oauthSecretKey] == nil else { throw PetError("请先在 JSON 中选择 OAuth 客户端认证方式") }
+            methodIndex = nil
         }
         if let raw = value["timeoutSeconds"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID() { throw PetError("timeoutSeconds 必须是秒数") }
         original = value; source = document
         super.init()
         name.stringValue = title; name.isEnabled = !pluginLocked
         transport.addItems(withTitles: ["STDIO", "HTTP", "SSE"]); transport.selectItem(at: ["stdio", "http", "sse"].firstIndex(of: type)!); transport.isEnabled = !pluginLocked
-        authentication.addItems(withTitles: ["手动凭据", "浏览器授权（OAuth）"])
-        authentication.selectItem(at: value["oauthClientID"] == nil ? 0 : 1)
+        authentication.addItems(withTitles: ["手动凭据", "浏览器授权（OAuth）", "客户端密钥（Basic）", "客户端密钥（表单）"])
+        authentication.selectItem(at: methodIndex ?? (value["oauthClientID"] == nil ? 0 : 1))
         clientID.stringValue = value["oauthClientID"] as? String ?? ""
         clientID.placeholderString = "留空自动注册"
         clientID.toolTip = "填写预注册的客户端 ID 或 HTTPS 客户端元数据地址。"
+        issuer.stringValue = value["oauthIssuer"] as? String ?? ""
+        issuer.placeholderString = "https://auth.example.com"
+        issuer.toolTip = "预注册客户端所属授权服务的签发者地址。"
         command.stringValue = value["command"] as? String ?? ""; directory.stringValue = value["cwd"] as? String ?? ""
         address.stringValue = value["url"] as? String ?? ""
         let bearerValue = value["bearerToken"] as? String ?? ""
@@ -58,18 +79,20 @@ import BlueFatFishMCP
         local = AgentSettingsStyle.section("本机程序", id: "mcp-stdio", rows: [AgentSettingsStyle.labeledField("命令", command), arguments.view, environment.view, AgentSettingsStyle.labeledField("工作目录", directory)])
         authenticationRow = AgentSettingsStyle.formRow("认证", authentication, trailing: true)
         clientRow = AgentSettingsStyle.labeledField("客户端 ID", clientID)
+        issuerRow = AgentSettingsStyle.labeledField("OAuth 签发者", issuer)
+        clientSecretRow = AgentSettingsStyle.labeledField("客户端密钥", clientSecret)
         let redirect = NSTextField(labelWithString: MCPConnection.oauthLoopbackRedirectURI)
         redirect.font = .monospacedSystemFont(ofSize: 12, weight: .regular); redirect.isSelectable = true
         redirect.lineBreakMode = .byTruncatingMiddle; redirect.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         redirect.setAccessibilityLabel("MCP 回调地址"); redirect.toolTip = "实际授权会使用可用的本机端口。"
         redirectRow = AgentSettingsStyle.formRow("回调地址", redirect, trailing: true)
         bearerRow = AgentSettingsStyle.labeledField("Bearer Token", bearer)
-        remote = AgentSettingsStyle.section("远程连接", id: "mcp-http", rows: [AgentSettingsStyle.labeledField("地址", address), authenticationRow, clientRow, redirectRow, bearerRow, headers.view], separatesRows: false)
+        remote = AgentSettingsStyle.section("远程连接", id: "mcp-http", rows: [AgentSettingsStyle.labeledField("地址", address), authenticationRow, clientRow, issuerRow, clientSecretRow, redirectRow, bearerRow, headers.view], separatesRows: false)
         view = AgentSettingsStyle.form([
             AgentSettingsStyle.section("基本信息", id: "mcp-basic", rows: [AgentSettingsStyle.labeledField("名称", name), AgentSettingsStyle.formRow("传输方式", transport, trailing: true)]),
             local, remote, AgentSettingsStyle.section("连接选项", id: "mcp-timeout", rows: [AgentSettingsStyle.labeledField("超时（毫秒）", timeout)])
         ], label: "MCP 配置表单")
-        for (field, label) in [(name, "名称"), (command, "命令"), (directory, "工作目录"), (address, "地址"), (bearer, "Bearer Token"), (clientID, "客户端 ID"), (timeout, "超时毫秒")] { field.delegate = self; field.setAccessibilityLabel("MCP " + label); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for (field, label) in [(name, "名称"), (command, "命令"), (directory, "工作目录"), (address, "地址"), (bearer, "Bearer Token"), (clientID, "客户端 ID"), (issuer, "OAuth 签发者"), (clientSecret, "客户端密钥"), (timeout, "超时毫秒")] { field.delegate = self; field.setAccessibilityLabel("MCP " + label); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         transport.setAccessibilityLabel("MCP 传输方式"); transport.target = self; transport.action = #selector(changed)
         authentication.setAccessibilityLabel("MCP 认证方式"); authentication.target = self; authentication.action = #selector(changed)
         for rows in [arguments, environment, headers] { rows.onChange = { [weak self] in self?.onChange?() } }
@@ -78,22 +101,28 @@ import BlueFatFishMCP
     private func updateTransport() {
         local.isHidden = type != "stdio"; remote.isHidden = type == "stdio"
         authenticationRow.isHidden = type != "http"; clientRow.isHidden = !usesOAuth
+        issuerRow.isHidden = secretMethod == nil; clientSecretRow.isHidden = secretMethod == nil
+        clientID.placeholderString = secretMethod == nil ? "留空自动注册" : "预注册的客户端 ID"
+        let savedSecretMatches = original[AgentMCP.oauthSecretKey] as? String == AgentMCP.placeholder &&
+            original["oauthClientAuthMethod"] as? String == secretMethod?.rawValue && original["oauthIssuer"] as? String == issuer.stringValue &&
+            original["oauthClientID"] as? String == clientID.stringValue && original["url"] as? String == address.stringValue
+        clientSecret.placeholderString = savedSecretMatches ? "已保存 · 留空沿用" : "待填写"
         redirectRow.isHidden = !usesOAuth || clientID.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         bearerRow.isHidden = usesOAuth; headers.view.isHidden = usesOAuth
     }
     func controlTextDidChange(_ notification: Notification) {
-        if notification.object as? NSTextField === clientID { updateTransport() }
+        if let field = notification.object as? NSTextField, field === clientID || field === issuer || field === address { updateTransport() }
         onChange?()
     }
     @objc private func changed() { updateTransport(); onChange?() }
     func setEnabled(_ enabled: Bool, pluginLocked: Bool) {
-        for field in [name, command, directory, address, bearer, clientID, timeout] { field.isEnabled = enabled }
+        for field in [name, command, directory, address, bearer, clientID, issuer, clientSecret, timeout] { field.isEnabled = enabled }
         authentication.isEnabled = enabled
         name.isEnabled = enabled && !pluginLocked; transport.isEnabled = enabled && !pluginLocked
         for rows in [arguments, environment, headers] { rows.setEnabled(enabled) }
     }
     private var draftFields: [String: NSTextField] {
-        ["name": name, "command": command, "cwd": directory, "url": address, "bearerToken": bearer, "oauthClientID": clientID, "timeout": timeout]
+        ["name": name, "command": command, "cwd": directory, "url": address, "bearerToken": bearer, "oauthClientID": clientID, "oauthIssuer": issuer, "timeout": timeout]
     }
     var recoveryFields: [String: NSTextField] {
         var fields = draftFields.filter { $0.key != "bearerToken" }
@@ -103,6 +132,7 @@ import BlueFatFishMCP
         return fields
     }
     func captureDraft() -> Draft? {
+        guard !hasUncommittedClientSecret else { return nil }
         let draft = Draft(source: source, fields: draftFields.mapValues(\.stringValue), transport: transport.indexOfSelectedItem,
                           authentication: authentication.indexOfSelectedItem, arguments: arguments.draftRows,
                           environment: environment.draftRows, headers: headers.draftRows)
@@ -119,7 +149,8 @@ import BlueFatFishMCP
     private static func canPreserveDraft(_ draft: Draft) -> Bool {
         let keys: Set<String> = ["name", "command", "cwd", "url", "bearerToken", "oauthClientID", "timeout"]
         let paired = draft.environment + draft.headers
-        return (0...2).contains(draft.transport) && (0...1).contains(draft.authentication) && Set(draft.fields.keys) == keys &&
+        let fields = Set(draft.fields.keys)
+        return (0...2).contains(draft.transport) && (0...3).contains(draft.authentication) && (fields == keys || fields == keys.union(["oauthIssuer"])) &&
             draft.fields.values.allSatisfy { $0.utf8.count <= 64_000 } && masked(draft.fields["bearerToken"] ?? "") &&
             draft.arguments.count <= 100 && draft.environment.count <= 64 && draft.headers.count <= 64 &&
             draft.arguments.allSatisfy { $0.key == nil && $0.value.utf8.count <= 64_000 } &&
@@ -145,7 +176,7 @@ import BlueFatFishMCP
         let plain = keys.subtracting(maps + numbers + ["args"])
         return Set(value.keys).isSubset(of: keys) && plain.allSatisfy { value[$0] == nil || value[$0] is String } &&
             numbers.allSatisfy { value[$0] == nil || value[$0] is NSNumber } && (value["args"] == nil || value["args"] is [String]) &&
-            masked(value["bearerToken"] as? String ?? "") && maps.allSatisfy { key in
+            masked(value["bearerToken"] as? String ?? "") && masked(value[AgentMCP.oauthSecretKey] as? String ?? "") && maps.allSatisfy { key in
                 value[key] == nil || (value[key] as? [String: String])?.values.allSatisfy(masked) == true
             }
     }
@@ -175,7 +206,15 @@ import BlueFatFishMCP
             if !directory.stringValue.isEmpty { value["cwd"] = directory.stringValue }
         } else {
             value["url"] = address.stringValue
-            if usesOAuth { value["oauthClientID"] = clientID.stringValue }
+            if usesOAuth {
+                value["oauthClientID"] = clientID.stringValue
+                if let method = secretMethod {
+                    value["oauthClientAuthMethod"] = method.rawValue; value["oauthIssuer"] = issuer.stringValue
+                    if hasUncommittedClientSecret || original[AgentMCP.oauthSecretKey] as? String == AgentMCP.placeholder {
+                        value[AgentMCP.oauthSecretKey] = AgentMCP.placeholder
+                    }
+                }
+            }
             else {
                 value["bearerToken"] = bearer.stringValue.isEmpty && original["bearerToken"] as? String == AgentMCP.importPlaceholder ? AgentMCP.importPlaceholder : bearer.stringValue
                 value["headers"] = try headers.pairs()

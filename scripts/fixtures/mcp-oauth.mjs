@@ -10,8 +10,14 @@ const stock = { sku: 'LOCAL-17', name: '公开读盘样例', available: 47 };
 writeFileSync(path.join(directory, 'inventory.json'), JSON.stringify(stock) + '\n');
 const clients = new Map(), codes = new Map(), access = new Set(), refresh = new Map();
 const registeredClientID = 'fixture-pre-registered-app', redirectBase = 'http://127.0.0.1/oauth/callback';
+const secretClients = {
+  basic: { id: 'fixture-registered:basic+id', secret: 'public-fixture-basic: +/%=&-8312', method: 'client_secret_basic' },
+  post: { id: 'fixture-registered:post+id', secret: 'public-fixture-post: +/%=&-1748', method: 'client_secret_post' }
+};
 const certificate = readFileSync(path.join(directory, 'test-cert.pem'));
 let issuer, resource, browser, metadataClientID, rejectInitialization = false, allowsClientMetadata = true;
+let clientMethods = ['none', ...Object.values(secretClients).map(client => client.method)];
+let redirectToken = false;
 const scope = 'inventory:read';
 const token = () => 'public-fixture-' + randomUUID();
 function json(res, status, value) {
@@ -19,7 +25,8 @@ function json(res, status, value) {
   res.end(JSON.stringify(value));
 }
 async function bytes(req) { let body = ''; for await (const chunk of req) body += chunk; return body; }
-const clientMode = client => client === registeredClientID ? 'pre-registered' : client === metadataClientID ? 'metadata' : clients.has(client) ? 'dynamic' : null;
+const clientMode = client => Object.keys(secretClients).find(mode => secretClients[mode].id === client)
+  ?? (client === registeredClientID ? 'pre-registered' : client === metadataClientID ? 'metadata' : clients.has(client) ? 'dynamic' : null);
 const mint = (res, client, wasRefresh) => {
   const value = token(), renewal = token();
   access.add(value); refresh.set(renewal, client);
@@ -51,7 +58,7 @@ async function route(req, res) {
     return json(res, 200, { issuer, authorization_endpoint: issuer + '/authorize', token_endpoint: issuer + '/token',
       registration_endpoint: issuer + '/register', client_id_metadata_document_supported: allowsClientMetadata,
       response_types_supported: ['code'], code_challenge_methods_supported: ['S256'],
-      grant_types_supported: ['authorization_code', 'refresh_token'], token_endpoint_auth_methods_supported: ['none'] });
+      grant_types_supported: ['authorization_code', 'refresh_token'], token_endpoint_auth_methods_supported: clientMethods });
   }
   if (url.pathname === '/client-metadata.json' && req.socket.encrypted) {
     log({ event: 'client-metadata-fetched', tls: true });
@@ -67,6 +74,9 @@ async function route(req, res) {
   }
   if (url.pathname === '/authorize') {
     const client = q.get('client_id'), mode = clientMode(client), redirect = q.get('redirect_uri');
+    if (q.has('client_secret') || req.headers.authorization || [...q.values()].some(value => Object.values(secretClients).some(client => value.includes(client.secret)))) {
+      log({ event: 'client-credential-outside-token' }); return json(res, 400, { error: 'unexpected_client_authentication' });
+    }
     if (!mode || !/^http:\/\/127\.0\.0\.1:\d{1,5}\/oauth\/callback$/.test(redirect ?? '') || q.get('resource') !== resource || q.get('scope') !== scope
         || q.get('response_type') !== 'code' || q.get('code_challenge_method') !== 'S256' || !q.get('state')
         || !/^[A-Za-z0-9_-]{43}$/.test(q.get('code_challenge') ?? '')) return json(res, 400, { error: 'invalid_request' });
@@ -96,18 +106,42 @@ async function route(req, res) {
     return res.end(`<meta charset="utf-8"><title>小鲸本机授权验收</title><h1>本机库存授权</h1><p>小鲸请求读取公开样例库存。</p><a href="${choice('allow')}">批准库存读取</a> <a href="${choice('deny')}">取消授权</a>`);
   }
   if (url.pathname === '/token' && req.method === 'POST' && req.socket.encrypted) {
-    const value = new URLSearchParams(await bytes(req)), client = value.get('client_id');
-    if (value.get('resource') !== resource || !clientMode(client)) return json(res, 400, { error: 'invalid_target' });
+    const value = new URLSearchParams(await bytes(req));
+    let client = value.get('client_id'), credential = value.get('client_secret');
+    let method = credential === null ? 'none' : 'client_secret_post';
+    if (req.headers.authorization) {
+      const match = /^Basic ([A-Za-z0-9+/=]+)$/.exec(req.headers.authorization);
+      const parts = match ? Buffer.from(match[1], 'base64').toString('utf8').split(':') : [];
+      if (parts.length !== 2 || value.has('client_id') || value.has('client_secret')) return json(res, 400, { error: 'duplicate_or_invalid_client_authentication' });
+      [client, credential] = parts.map(part => new URLSearchParams('value=' + part).get('value'));
+      method = 'client_secret_basic';
+    }
+    const mode = clientMode(client), registered = secretClients[mode], usesSecret = registered !== undefined;
+    if (value.get('resource') !== resource || !mode) return json(res, 400, { error: 'invalid_target' });
+    if (usesSecret && (method !== registered.method || credential !== registered.secret)) {
+      log({ event: 'client-rejected', mode, method });
+      return json(res, 401, { error: 'invalid_client', error_description: credential });
+    }
+    if (!usesSecret && method !== 'none') return json(res, 400, { error: 'unexpected_client_authentication' });
+    if (usesSecret) {
+      log({ event: 'client-authenticated', mode, method, hasTLS: true, grant: value.get('grant_type') });
+      if (redirectToken) {
+        res.writeHead(307, { Location: issuer + '/unexpected-token' }); return res.end();
+      }
+    }
     if (value.get('grant_type') === 'refresh_token') {
       if (refresh.get(value.get('refresh_token')) !== client) return json(res, 400, { error: 'invalid_grant' });
       refresh.delete(value.get('refresh_token'));
       return mint(res, client, true);
     }
     const state = codes.get(value.get('code'));
-    if (!state || value.get('grant_type') !== 'authorization_code' || state.client !== value.get('client_id') || state.redirect !== value.get('redirect_uri')
+    if (!state || value.get('grant_type') !== 'authorization_code' || state.client !== client || state.redirect !== value.get('redirect_uri')
         || state.challenge !== createHash('sha256').update(value.get('code_verifier') ?? '').digest('base64url')) return json(res, 400, { error: 'invalid_grant' });
     codes.delete(value.get('code'));
     return mint(res, client, false);
+  }
+  if (url.pathname === '/unexpected-token') {
+    log({ event: 'token-redirect-followed' }); return json(res, 400, {});
   }
   if (url.pathname === '/fixture/expire' && req.method === 'POST') {
     access.clear(); log({ event: 'fixture-expired' }); return json(res, 200, { expired: true });
@@ -119,10 +153,19 @@ async function route(req, res) {
     allowsClientMetadata = false; log({ event: 'fixture-client-metadata-disabled' });
     return json(res, 200, { ready: true });
   }
+  if (url.pathname === '/fixture/omit-client-methods' && req.method === 'POST') {
+    clientMethods = undefined; log({ event: 'fixture-client-methods-omitted' }); return json(res, 200, { ready: true });
+  }
+  if (url.pathname === '/fixture/redirect-token' && req.method === 'POST') {
+    redirectToken = true; log({ event: 'fixture-token-redirect' }); return json(res, 200, { ready: true });
+  }
   if (url.pathname === '/mcp' || url.pathname === '/mcp-next') {
     if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
     if (url.pathname === '/mcp-next') { log({ event: 'other-resource', receivedAuthorization: !!req.headers.authorization }); return json(res, 404, {}); }
     const message = JSON.parse(await bytes(req));
+    if (req.headers.authorization?.startsWith('Basic ') || 'client_secret' in message) {
+      log({ event: 'client-credential-outside-token' }); return json(res, 400, {});
+    }
     const allowed = access.has((req.headers.authorization ?? '').replace(/^Bearer /, ''));
     log({ event: 'rpc', method: message.method, authorized: allowed, ...(message.method === 'tools/call' ? { sku: message.params.arguments.sku } : {}) });
     if (!allowed) {
@@ -148,5 +191,5 @@ await Promise.all([http, https].map(server => new Promise(resolve => server.list
 browser = `http://127.0.0.1:${http.address().port}`;
 issuer = `https://localhost:${https.address().port}`; resource = browser + '/mcp';
 metadataClientID = issuer + '/client-metadata.json';
-writeFileSync(path.join(directory, 'ready.json'), JSON.stringify({ pid: process.pid, browser, issuer, resource, registeredClientID, metadataClientID }) + '\n');
+writeFileSync(path.join(directory, 'ready.json'), JSON.stringify({ pid: process.pid, browser, issuer, resource, registeredClientID, metadataClientID, secretClients }) + '\n', { mode: 0o600 });
 process.on('SIGTERM', () => { http.closeAllConnections(); https.closeAllConnections(); http.close(); https.close(() => process.exit(0)); });

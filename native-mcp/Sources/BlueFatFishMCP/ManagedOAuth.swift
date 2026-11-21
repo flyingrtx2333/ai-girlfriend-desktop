@@ -2,6 +2,23 @@ import Foundation
 import MCP
 import os
 
+public struct MCPOAuthClientAuthentication: Sendable {
+    public enum Method: String, Codable, Sendable {
+        case basic = "client_secret_basic"
+        case post = "client_secret_post"
+    }
+
+    let method: Method, issuer: URL, secret: String
+
+    public init(method: Method, issuer: URL, secret: String) throws {
+        guard !secret.isEmpty, secret.utf8.count <= 16_000,
+              !secret.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            throw MCPConnectionError("OAuth 客户端密钥无效或过长")
+        }
+        self.method = method; self.issuer = issuer; self.secret = secret
+    }
+}
+
 final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
     private struct Grant: Codable, Sendable {
         var endpoint: URL, issuer: URL, tokenEndpoint: URL
@@ -20,13 +37,17 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
 
     let maxAuthorizationAttempts = 2
     private let endpoint: URL, clientID: String
+    private let clientAuthentication: MCPOAuthClientAuthentication?
     private let state: OSAllocatedUnfairLock<State>
     private let browser: Browser?, persist: SaveGrant
     private let network: URLSession, ownsNetwork: Bool
 
-    init(endpoint: URL, clientID: String, grant: Data?, timeout: Double, browser: Browser?, persist: @escaping SaveGrant, network: URLSession?) throws {
+    init(endpoint: URL, clientID: String, clientAuthentication: MCPOAuthClientAuthentication?, grant: Data?, timeout: Double,
+         browser: Browser?, persist: @escaping SaveGrant, network: URLSession?) throws {
         try Self.validateClientID(clientID)
+        if let clientAuthentication { _ = try Self.validateRegisteredIssuer(clientAuthentication.issuer.absoluteString, clientID: clientID) }
         self.endpoint = endpoint; self.clientID = clientID
+        self.clientAuthentication = clientAuthentication
         self.browser = browser; self.persist = persist
         let saved = try grant.flatMap { data -> Grant? in
             guard data.count <= 64_000, let saved = try? JSONDecoder().decode(Grant.self, from: data),
@@ -36,6 +57,7 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
             }
             // Older versions could dynamically register even with a configured client ID.
             guard clientID.isEmpty || saved.token.clientID == clientID else { return nil }
+            if let clientAuthentication, saved.issuer != clientAuthentication.issuer { return nil }
             return saved
         }
         state = OSAllocatedUnfairLock(initialState: State(grant: saved))
@@ -102,6 +124,9 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
                       !clientID.isEmpty || (context.registrationEndpoint.map(Self.secureURL) ?? true) else {
                     throw MCPConnectionError("授权服务地址无效")
                 }
+                if let clientAuthentication, issuer != clientAuthentication.issuer {
+                    throw MCPConnectionError("发现的授权服务与已配置的 OAuth 签发者不一致，请核对地址")
+                }
                 let service = Service(issuer: issuer, token: token, resource: context.resource)
                 result.withLock { $0.service = service }
                 guard !clientID.isEmpty else { return nil }
@@ -129,6 +154,7 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
     private struct AuthorizationMetadata: Decodable {
         let issuer: URL?, authorization_endpoint: URL?, token_endpoint: URL?
         let code_challenge_methods_supported: [String]?, client_id_metadata_document_supported: Bool?
+        let token_endpoint_auth_methods_supported: [String]?
     }
 
     private func loginWithClientID(_ context: OAuthConfiguration.AccessTokenProviderContext, service: Service,
@@ -146,6 +172,12 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
         if Self.looksLikeMetadataURL(clientID), metadata.client_id_metadata_document_supported != true {
             throw MCPConnectionError("授权服务不支持客户端元数据地址，请更改客户端 ID 或留空使用自动注册")
         }
+        if let clientAuthentication {
+            let methods = metadata.token_endpoint_auth_methods_supported ?? [MCPOAuthClientAuthentication.Method.basic.rawValue]
+            guard metadata.issuer == clientAuthentication.issuer, methods.contains(clientAuthentication.method.rawValue) else {
+                throw MCPConnectionError("授权服务未声明当前客户端认证方式，请核对签发者和认证方式")
+            }
+        }
         let verifier = PKCE.makeVerifier(), nonce = UUID().uuidString
         let challenge = try PKCE.makeChallenge(from: verifier), flow = OAuthAuthorizationCodeFlow()
         let scopeSelector = DefaultOAuthScopeSelector()
@@ -157,6 +189,7 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
                       "client_id": clientID, "resource": service.resource.absoluteString]
         fields["scope"] = context.requestedScopes.flatMap(scopeSelector.serialize)
         guard let reply = try await tokenReply(fields, endpoint: service.token, session: session) else {
+            if clientAuthentication != nil { throw MCPConnectionError("授权服务拒绝当前客户端，请核对客户端 ID、密钥、认证方式和回调地址") }
             throw MCPConnectionError("授权服务拒绝当前客户端，请核对客户端 ID 和回调地址")
         }
         return OAuthAccessToken(value: reply.access_token, tokenType: "Bearer",
@@ -201,9 +234,18 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
     }
 
     private func tokenReply(_ values: [String: String], endpoint: URL, session: URLSession) async throws -> TokenReply? {
-        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-        let body = values.sorted { $0.key < $1.key }.map { key, value in key + "=" + (value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "") }.joined(separator: "&")
         var request = URLRequest(url: endpoint)
+        var fields = values
+        if let clientAuthentication {
+            switch clientAuthentication.method {
+            case .basic:
+                fields["client_id"] = nil
+                request.setValue("Basic " + basicCredential(clientAuthentication.secret), forHTTPHeaderField: "Authorization")
+            case .post:
+                fields["client_secret"] = clientAuthentication.secret
+            }
+        }
+        let body = fields.sorted { $0.key < $1.key }.map { key, value in key + "=" + Self.formEncoded(value) }.joined(separator: "&")
         request.httpMethod = "POST"; request.httpBody = Data(body.utf8)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -217,6 +259,15 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
         return answer
     }
 
+    private static func formEncoded(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return (value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "").replacingOccurrences(of: "%20", with: "+")
+    }
+
+    private func basicCredential(_ secret: String) -> String {
+        Data((Self.formEncoded(clientID) + ":" + Self.formEncoded(secret)).utf8).base64EncodedString()
+    }
+
     private func retain(_ grant: Grant) async throws {
         try Task.checkCancellation()
         guard state.withLock({ !$0.stopped }) else { throw CancellationError() }
@@ -227,7 +278,12 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
     }
 
     func credentialValues() -> [String] {
-        state.withLock { state in [state.grant?.token.value, state.grant?.token.refreshToken].compactMap { $0 } }
+        var values = state.withLock { state in [state.grant?.token.value, state.grant?.token.refreshToken].compactMap { $0 } }
+        if let clientAuthentication {
+            values += [clientAuthentication.secret, Self.formEncoded(clientAuthentication.secret)]
+            if clientAuthentication.method == .basic { values.append(basicCredential(clientAuthentication.secret)) }
+        }
+        return values
     }
 
     func stop() {
@@ -254,6 +310,18 @@ final class ManagedOAuth: HTTPClientAuthorizer, Sendable {
                 throw MCPConnectionError("客户端元数据需要带路径的 HTTPS 地址")
             }
         }
+    }
+
+    static func validateRegisteredIssuer(_ issuer: String, clientID: String) throws -> URL {
+        try validateClientID(clientID)
+        guard !clientID.isEmpty, !looksLikeMetadataURL(clientID) else {
+            throw MCPConnectionError("客户端密钥需要填写预注册的客户端 ID")
+        }
+        guard issuer.utf8.count <= 2048, let url = URL(string: issuer, encodingInvalidCharacters: false), secureURL(url),
+              url.query == nil, !OAuthURLValidator().isPrivateIPHost(url.host ?? "") else {
+            throw MCPConnectionError("OAuth 签发者需要使用无查询参数的 HTTPS 地址")
+        }
+        return url
     }
 
     private static func validBearer(_ value: String) -> Bool {

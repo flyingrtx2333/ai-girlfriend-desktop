@@ -35,7 +35,7 @@ try {
   }
   if (ready?.pid !== fixture.pid) throw Error('本机 OAuth 服务未就绪。');
   if (manual) {
-    console.log(JSON.stringify({ output, resource: ready.resource, browser: ready.browser, registeredClientID: ready.registeredClientID,
+    console.log(JSON.stringify({ output, resource: ready.resource, browser: ready.browser, issuer: ready.issuer, registeredClientID: ready.registeredClientID,
       metadataClientID: ready.metadataClientID, fixturePID: fixture.pid }));
     process.exitCode = await fixtureExit;
   } else {
@@ -58,6 +58,7 @@ try {
       try { const value = JSON.parse(line); return value.sku === stock.sku && value.name === stock.name && value.available === stock.available; } catch { return false; }
     });
     const count = (event, mode) => events.filter(e => e.event === event && e.mode === mode && e.resourceBound && (event !== 'approved' || e.pkce)).length;
+    const secretAuthentication = (mode, method, grant) => events.filter(e => e.event === 'client-authenticated' && e.mode === mode && e.method === method && e.grant === grant && e.hasTLS).length;
     const metadataDisabled = events.findIndex(e => e.event === 'fixture-client-metadata-disabled');
     const afterMetadataDisabled = events.slice(metadataDisabled + 1);
     const independent = {
@@ -69,9 +70,17 @@ try {
         && events.some(e => e.event === 'client-metadata-validated' && e.exactClientID && e.loopback)
         && count('approved', 'metadata') === 1 && count('exchanged', 'metadata') === 1 && count('refreshed', 'metadata') === 1,
       oneDynamicRefreshAndTwoGrants: count('refreshed', 'dynamic') === 1 && count('exchanged', 'dynamic') === 2,
+      basicClientAuthenticatesCodeAndRefresh: secretAuthentication('basic', 'client_secret_basic', 'authorization_code') === 3
+        && secretAuthentication('basic', 'client_secret_basic', 'refresh_token') === 1 && count('exchanged', 'basic') === 2 && count('refreshed', 'basic') === 1,
+      postClientAuthenticatesCodeAndRefresh: secretAuthentication('post', 'client_secret_post', 'authorization_code') === 1
+        && secretAuthentication('post', 'client_secret_post', 'refresh_token') === 1 && count('exchanged', 'post') === 1 && count('refreshed', 'post') === 1,
+      boundConsentAndIncorrectSecretRejected: count('approved', 'basic') === 4 && count('approved', 'post') === 1
+        && events.filter(e => e.event === 'client-rejected' && e.mode === 'basic' && e.method === 'client_secret_basic').length === 1,
+      basicDefaultAndBlockedRedirect: events.some(e => e.event === 'fixture-client-methods-omitted') && events.some(e => e.event === 'fixture-token-redirect')
+        && !events.some(e => e.event === 'token-redirect-followed' || e.event === 'client-credential-outside-token'),
       noFallbackWithoutMetadataSupport: metadataDisabled >= 0 && afterMetadataDisabled.some(e => e.event === 'issuer-metadata' && !e.clientMetadataSupported)
         && !afterMetadataDisabled.some(e => ['registered', 'approved', 'consent-page', 'client-metadata-fetched'].includes(e.event)),
-      inventoryMatchesIndependentSource: Object.keys(report.inventory).length === 8 && Object.values(report.inventory).every(matching) && events.filter(e => e.event === 'rpc' && e.method === 'tools/call' && e.authorized && e.sku === stock.sku).length === 8,
+      inventoryMatchesIndependentSource: Object.keys(report.inventory).length === 14 && Object.values(report.inventory).every(matching) && events.filter(e => e.event === 'rpc' && e.method === 'tools/call' && e.authorized && e.sku === stock.sku).length === 14,
       onlyRequestedResourceReceivesGrant: !events.some(e => e.event === 'other-resource' || e.event === 'fixture-error'),
       credentialsOmittedFromLogs: !protocol.includes('public-fixture-') && !protocol.includes('local-client-'),
       failedHandshakeActuallyReturned: events.some(e => e.event === 'public-credential-in-error'),

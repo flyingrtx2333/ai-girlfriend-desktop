@@ -9,6 +9,7 @@ struct AgentMCPServer: Codable, Identifiable {
     var headerKeys: [String]? = nil, workingDirectory: String? = nil
     // An empty ID requests dynamic registration. A URL identifies a client metadata document.
     var oauthClientID: String? = nil
+    var oauthClientAuthMethod: MCPOAuthClientAuthentication.Method? = nil, oauthIssuer: String? = nil
     var plugin: AgentPluginMCPReference? = nil
     var credentialRevision: String? = nil, configured: Bool? = nil, pluginEnabled: Bool? = nil
     var workspace: String? = nil
@@ -17,13 +18,16 @@ struct AgentMCPServer: Codable, Identifiable {
         if type == "stdio" { return Set(environmentKeys) }
         var keys = Set((headerKeys ?? []).map { "header:" + $0 })
         if hasBearerToken { keys.insert("bearerToken") }
+        if oauthClientAuthMethod != nil { keys.insert(AgentMCP.oauthSecretKey) }
         return keys
     }
 }
 
 @MainActor final class AgentMCP {
     nonisolated static let tools = ["list_mcp_servers", "connect_mcp", "list_mcp_tools", "call_mcp_tool", "list_mcp_resources", "read_mcp_resource", "disconnect_mcp"]
-    nonisolated static let configurationKeys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds", "oauthClientID"]
+    nonisolated static let oauthSecretKey = "oauthClientSecret"
+    private static let oauthGrantKey = "oauthGrant"
+    nonisolated static let configurationKeys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds", "oauthClientID", "oauthClientAuthMethod", "oauthIssuer", oauthSecretKey]
     nonisolated static let externalOperations = ["connect_mcp", "call_mcp_tool", "list_mcp_resources", "read_mcp_resource"]
     static let placeholder = "${KEYCHAIN}"
     nonisolated static let importPlaceholder = "${INPUT_REQUIRED}"
@@ -139,9 +143,7 @@ struct AgentMCPServer: Codable, Identifiable {
         } else {
             guard ["http", "sse"].contains(server.type), let address = server.url, let url = URL(string: address), let host = url.host?.lowercased(), url.user == nil, url.password == nil, url.fragment == nil, url.scheme == "https" || (url.scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)) else { throw PetError("MCP 远程地址无效") }
         }
-        if let clientID = server.oauthClientID {
-            try Self.validateOAuth(type: server.type, clientID: clientID, bearer: server.hasBearerToken, headers: server.headerKeys ?? [])
-        }
+        _ = try Self.validateOAuth(server)
         if let revision, revision != server.revision { throw PetError("连接器配置已变化，请重新读取并批准") }
         return server
     }
@@ -154,10 +156,19 @@ struct AgentMCPServer: Codable, Identifiable {
         guard headers.count <= 64, Set(headers.keys.map { $0.lowercased() }).count == headers.count,
               headers.allSatisfy({ key, value in key.utf8.count <= 128 && key.range(of: "^[A-Za-z0-9!#$%&'*+.^_`|~-]+\\z", options: .regularExpression) != nil && !forbidden.contains(key.lowercased()) && value.utf8.count <= 16_000 && !value.unicodeScalars.contains(where: { [0, 10, 13].contains($0.value) }) }) else { throw PetError("HTTP 请求头无效、重复或包含保留字段") }
     }
-    private static func validateOAuth(type: String, clientID: String, bearer: Bool, headers: [String]) throws {
-        guard type == "http" else { throw PetError("OAuth 认证需要 HTTP 传输") }
-        guard !bearer, headers.isEmpty else { throw PetError("OAuth 认证需清除手动 Token 和请求头") }
+    private static func validateOAuth(_ server: AgentMCPServer) throws -> URL? {
+        if server.oauthClientAuthMethod == nil, server.oauthIssuer != nil { throw PetError("OAuth 签发者需要选择客户端密钥认证方式") }
+        guard let clientID = server.oauthClientID else {
+            if server.oauthClientAuthMethod != nil { throw PetError("客户端密钥需要填写预注册的客户端 ID") }
+            return nil
+        }
+        guard server.type == "http" else { throw PetError("OAuth 认证需要 HTTP 传输") }
+        guard !server.hasBearerToken, (server.headerKeys ?? []).isEmpty else { throw PetError("OAuth 认证需清除手动 Token 和请求头") }
+        if server.oauthClientAuthMethod != nil {
+            return try MCPConnection.validateOAuthRegisteredIssuer(server.oauthIssuer ?? "", clientID: clientID)
+        }
         try MCPConnection.validateOAuthClientID(clientID)
+        return nil
     }
     func document(_ server: AgentMCPServer?) throws -> String {
         if let server, let reference = server.plugin, server.configured == false, let plugins {
@@ -168,9 +179,14 @@ struct AgentMCPServer: Codable, Identifiable {
         if let server, ["http", "sse"].contains(server.type) { value["url"] = server.url ?? (server.type == "sse" ? "https://example.com/sse" : "https://example.com/mcp"); value["bearerToken"] = server.hasBearerToken == true ? placeholder : ""; if let keys = server.headerKeys, !keys.isEmpty { value["headers"] = Dictionary(uniqueKeysWithValues: keys.map { ($0, placeholder) }) } }
         else { value["command"] = server?.command ?? "/opt/homebrew/bin/node"; value["args"] = server?.args ?? []; value["env"] = Dictionary(uniqueKeysWithValues: (server?.environmentKeys ?? []).map { ($0, placeholder) }); value["cwd"] = server?.workingDirectory }
         value["oauthClientID"] = server?.oauthClientID
+        if let server, let method = server.oauthClientAuthMethod {
+            value["oauthClientAuthMethod"] = method.rawValue; value["oauthIssuer"] = server.oauthIssuer
+            value[Self.oauthSecretKey] = placeholder
+        }
         return String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
     }
-    @discardableResult func save(_ text: String, id: String? = nil, expectedRevision: String? = nil, workspace: String? = nil) throws -> AgentMCPServer {
+    @discardableResult func save(_ text: String, id: String? = nil, expectedRevision: String? = nil, workspace: String? = nil,
+                                 enteredOAuthClientSecret: String? = nil) throws -> AgentMCPServer {
         if let loadError { throw PetError(loadError) }
         guard text.utf8.count <= 64_000 else { throw PetError("MCP 配置最多 64 KB，请缩短后保存。") }
         let value = try AgentConfigurationJSON.object(Data(text.utf8))
@@ -207,7 +223,15 @@ struct AgentMCPServer: Codable, Identifiable {
             guard let id = client as? String else { throw PetError("OAuth 客户端 ID 必须是文字") }
             server.oauthClientID = id.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let submitted: [String: String]
+        if let raw = value["oauthClientAuthMethod"] {
+            guard let name = raw as? String, let method = MCPOAuthClientAuthentication.Method(rawValue: name) else { throw PetError("OAuth 客户端认证方式无效") }
+            server.oauthClientAuthMethod = method
+        }
+        if let raw = value["oauthIssuer"] {
+            guard let address = raw as? String else { throw PetError("OAuth 签发者地址无效") }
+            server.oauthIssuer = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        var submitted: [String: String]
         if type == "stdio" {
             guard let command = value["command"] as? String, command.hasPrefix("/"), !command.contains("\0"), FileManager.default.isExecutableFile(atPath: command),
                   let args = value["args"] as? [String], args.count <= 100, args.allSatisfy({ !$0.contains("\0") && $0.utf8.count <= 4000 }),
@@ -233,8 +257,20 @@ struct AgentMCPServer: Codable, Identifiable {
             if !token.isEmpty { fields["bearerToken"] = token }
             submitted = fields
         }
-        if let clientID = server.oauthClientID {
-            try Self.validateOAuth(type: type, clientID: clientID, bearer: server.hasBearerToken, headers: server.headerKeys ?? [])
+        let issuer = try Self.validateOAuth(server), secretMarker = value[Self.oauthSecretKey]
+        guard secretMarker == nil || (secretMarker as? String) == Self.placeholder || (secretMarker as? String) == Self.importPlaceholder else {
+            throw PetError("请在表单的客户端密钥字段中填写密钥")
+        }
+        if let issuer, let method = server.oauthClientAuthMethod {
+            if let secret = enteredOAuthClientSecret {
+                guard secret != Self.placeholder, secret != Self.importPlaceholder else { throw PetError("请填写实际的 OAuth 客户端密钥") }
+                _ = try MCPOAuthClientAuthentication(method: method, issuer: issuer, secret: secret)
+                submitted[Self.oauthSecretKey] = secret
+            } else if (secretMarker as? String) == Self.placeholder {
+                submitted[Self.oauthSecretKey] = Self.placeholder
+            } else { throw PetError("请填写 OAuth 客户端密钥") }
+        } else if secretMarker != nil || enteredOAuthClientSecret != nil {
+            throw PetError("请为 OAuth 客户端密钥选择相应的认证方式")
         }
         for (key, value) in submitted {
             guard value.utf8.count <= 16_000, !value.contains("\0") else { throw PetError("凭据值无效或过长") }
@@ -242,25 +278,31 @@ struct AgentMCPServer: Codable, Identifiable {
         }
         let placeholders = submitted.filter { $0.value == Self.placeholder }
         let configured = old.flatMap { $0.configured == false ? nil : $0 }
+        let sameOAuthIdentity = configured.map { prior in
+            prior.type == server.type && prior.url == server.url && prior.oauthClientID == server.oauthClientID &&
+                prior.oauthClientAuthMethod == server.oauthClientAuthMethod && prior.oauthIssuer == server.oauthIssuer
+        } ?? false
+        if placeholders[Self.oauthSecretKey] != nil, !sameOAuthIdentity {
+            throw PetError("OAuth 地址或客户端身份已变化，请重新填写客户端密钥")
+        }
         if !placeholders.isEmpty, let configured,
            configured.type != server.type || configured.url != server.url {
             throw PetError("地址或传输方式已更改，请重新填写或清除已保存的凭据")
         }
         var wroteCredentials = false
-        if let configured, server.oauthClientID != nil, configured.oauthClientID == server.oauthClientID, configured.url == server.url {
+        if let configured, server.oauthClientID != nil, sameOAuthIdentity, enteredOAuthClientSecret == nil {
             server.credentialRevision = configured.credentialRevision ?? configured.revision
         } else if let configured, !placeholders.isEmpty, placeholders.count == submitted.count, Set(placeholders.keys) == configured.credentialKeys {
             server.credentialRevision = configured.credentialRevision ?? configured.revision
         } else if !submitted.isEmpty {
-            let previous = placeholders.isEmpty ? [:] : try (configured.map(credentials) ?? [:])
+            let previous = placeholders.isEmpty ? [:] : try (configured.map { try credentials($0) } ?? [:])
             var secrets = submitted
             for key in placeholders.keys {
                 let savedKey = key.hasPrefix("header:") ? previous.keys.first { $0.hasPrefix("header:") && $0.lowercased() == key.lowercased() } : key
                 guard let savedKey, let existing = previous[savedKey] else { throw PetError("没有已保存的凭据：" + key) }
                 secrets[key] = existing
             }
-            let secretText = String(decoding: try JSONSerialization.data(withJSONObject: secrets), as: UTF8.self)
-            try keychain.write(secretText, account: account(server)); wroteCredentials = true
+            try writeCredentials(secrets, for: server); wroteCredentials = true
         }
         var updated = savedServers.filter { $0.id != server.id }; updated.append(server)
         do { try persist(updated, project: server.workspace != nil) }
@@ -316,9 +358,11 @@ struct AgentMCPServer: Codable, Identifiable {
               server.oauthClientID != nil, let index = savedServers.firstIndex(where: { $0.id == id }) else { throw PetError("连接器 OAuth 配置已变化") }
         disconnect(serverID: id)
         let previous = try keychain.read(account(server))
-        try keychain.write("", account: account(server))
+        if server.oauthClientAuthMethod != nil { try writeCredentials(credentials(server), for: server) }
+        else { try keychain.write("", account: account(server)) }
         var updated = savedServers
-        updated[index].credentialRevision = nil; updated[index].revision = UUID().uuidString
+        updated[index].credentialRevision = server.oauthClientAuthMethod == nil ? nil : server.credentialRevision ?? server.revision
+        updated[index].revision = UUID().uuidString
         do { try persist(updated, project: server.workspace != nil) }
         catch { if !previous.isEmpty { try? keychain.write(previous, account: account(server)) }; throw error }
         savedServers = updated
@@ -342,13 +386,18 @@ struct AgentMCPServer: Codable, Identifiable {
     private static func validateBearerToken(_ token: String) throws {
         guard !token.unicodeScalars.contains(where: { [0, 10, 13].contains($0.value) }) else { throw PetError("Bearer Token 含有无效字符") }
     }
-    private func credentials(_ server: AgentMCPServer) throws -> [String: String] {
+    private func writeCredentials(_ secrets: [String: String], for server: AgentMCPServer) throws {
+        let text = String(decoding: try JSONSerialization.data(withJSONObject: secrets, options: [.sortedKeys]), as: UTF8.self)
+        try keychain.write(text, account: account(server))
+    }
+    private func credentials(_ server: AgentMCPServer, includingOAuthGrant: Bool = false) throws -> [String: String] {
         let keys = server.credentialKeys
         guard !keys.isEmpty else { return [:] }
         let value = try keychain.read(account(server))
         guard let secrets = try? JSONDecoder().decode([String: String].self, from: Data(value.utf8)), keys.isSubset(of: secrets.keys),
               !server.hasBearerToken || secrets["bearerToken"]?.isEmpty == false else { throw PetError("连接器凭据缺失或无法读取，请在设置中重新填写") }
-        let credentials = secrets.filter { keys.contains($0.key) }
+        if server.oauthClientAuthMethod != nil, secrets[Self.oauthSecretKey]?.isEmpty != false { throw PetError("请重新填写 OAuth 客户端密钥") }
+        let credentials = secrets.filter { keys.contains($0.key) || (includingOAuthGrant && server.oauthClientAuthMethod != nil && $0.key == Self.oauthGrantKey) }
         if server.type != "stdio" { try Self.validateBearerToken(credentials["bearerToken"] ?? "") }
         return credentials
     }
@@ -482,14 +531,24 @@ struct AgentMCPServer: Codable, Identifiable {
                     return try await self.receiveUserInput(data, owner: owner, server: server, session: session)
                 }
             }
-            let secrets = try credentials(server); session.redactions = Array(secrets.values).filter { !$0.isEmpty }
+            let record = try credentials(server, includingOAuthGrant: true)
+            let secrets = server.oauthClientAuthMethod == nil ? record : record.filter { $0.key != Self.oauthGrantKey }
+            session.redactions = Array(secrets.values).filter { !$0.isEmpty }
             let info: Data
             if server.type == "stdio" {
                 var env = ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME": NSHomeDirectory(), "TMPDIR": NSTemporaryDirectory(), "LANG": "en_US.UTF-8"]
                 for name in server.environmentKeys { guard let value = secrets[name] else { throw PetError("连接器环境凭据缺失，请重新保存") }; env[name] = value }
                 info = try await session.client.connectProgram(command: server.command!, arguments: server.args, environment: env, directory: server.workingDirectory ?? workspace ?? NSHomeDirectory(), timeout: server.timeoutSeconds)
             } else if let clientID = server.oauthClientID {
-                let encoded = try keychain.read(account(server))
+                let clientAuthentication: MCPOAuthClientAuthentication?
+                let encoded: String
+                if let method = server.oauthClientAuthMethod, let issuer = try Self.validateOAuth(server) {
+                    clientAuthentication = try MCPOAuthClientAuthentication(method: method, issuer: issuer, secret: secrets[Self.oauthSecretKey] ?? "")
+                    encoded = record[Self.oauthGrantKey] ?? ""
+                } else {
+                    clientAuthentication = nil
+                    encoded = try keychain.read(account(server))
+                }
                 let grant = encoded.isEmpty ? nil : Data(base64Encoded: encoded)
                 guard encoded.isEmpty || grant != nil else { throw PetError("本机 OAuth 授权记录无效，请在设置中移除后重新授权") }
                 guard grant != nil || browserAuthorization else { throw PetError("请在设置的连接器详情中授权并连接") }
@@ -497,13 +556,16 @@ struct AgentMCPServer: Codable, Identifiable {
                 if !browserAuthorization { browser = nil }
                 else if let fixture = oauthFixture { browser = fixture.open }
                 else { browser = { url in try await AgentMCP.openAuthorizationBrowser(url) } }
-                info = try await session.client.connectOAuth(endpoint: URL(string: server.url!)!, clientID: clientID, grant: grant,
+                info = try await session.client.connectOAuth(endpoint: URL(string: server.url!)!, clientID: clientID, clientAuthentication: clientAuthentication, grant: grant,
                     timeout: server.timeoutSeconds, browser: browser, authorizationNetwork: oauthFixture?.network) { [weak self, weak session] data in
                     try await MainActor.run {
                         try Task.checkCancellation()
                         guard let self, let session, self.sessions[sessionKey] === session else { throw CancellationError() }
                         _ = try self.server(id, revision: revision, workspace: workspace)
-                        try self.keychain.write(data.base64EncodedString(), account: self.account(server))
+                        if clientAuthentication != nil {
+                            var updated = secrets; updated[Self.oauthGrantKey] = data.base64EncodedString()
+                            try self.writeCredentials(updated, for: server)
+                        } else { try self.keychain.write(data.base64EncodedString(), account: self.account(server)) }
                     }
                 }
                 session.redactions = await session.client.oauthCredentialValues()
@@ -524,7 +586,10 @@ struct AgentMCPServer: Codable, Identifiable {
             session.capabilities = initialize?["capabilities"] as? [String: Any] ?? [:]
             return ["server": server.name, "connection": session.token, "serverInfo": session.info, "tool_count": (try JSONSerialization.jsonObject(with: session.catalog) as? [Any])?.count ?? 0]
         } catch {
-            if server.oauthClientID != nil { session.redactions = await session.client.oauthCredentialValues() }
+            if server.oauthClientID != nil {
+                let values = await session.client.oauthCredentialValues()
+                if !values.isEmpty { session.redactions = values }
+            }
             if sessions[sessionKey] === session { sessions[sessionKey] = nil; states[sessionKey] = "连接失败：" + String(redact(error.localizedDescription, session).prefix(300)); notify() }
             await session.client.disconnect(); throw PetError(redact(error.localizedDescription, session))
         }

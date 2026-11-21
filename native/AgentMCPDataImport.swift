@@ -180,7 +180,7 @@ enum AgentMCPDataImport {
         return try definition(name, type: read("type", as: String.self), command: read("command", as: String.self),
             args: read("args", as: [String].self) ?? [], cwd: read("cwd", as: String.self), url: read("url", as: String.self),
             env: Array(env.keys), headers: Array(headers.keys), bearer: bearer, timeout: seconds ?? timeout.map { $0 / 1000 },
-            authorization: raw["oauth"] != nil || raw["auth"] != nil)
+            authorization: ["oauth", "auth", "oauthClientID", "oauthClientAuthMethod", "oauthIssuer", AgentMCP.oauthSecretKey].contains { raw[$0] != nil })
     }
 
     private static func declarations(_ source: AgentImportSource, file: SourceFile) throws -> [String: Result<Definition, Error>] {

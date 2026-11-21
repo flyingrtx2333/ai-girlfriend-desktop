@@ -21,8 +21,10 @@ final class AgentCheckLocalTLS: NSObject, URLSessionDelegate, URLSessionTaskDele
 }
 
 private struct MCPOAuthFixture: Decodable, Sendable {
+    struct RegisteredClient: Decodable, Sendable { let id: String, secret: String, method: String }
     let browser: URL, issuer: URL, resource: URL
     let registeredClientID: String, metadataClientID: String
+    let secretClients: [String: RegisteredClient]?
 
     func localBrowserURL(_ authorization: URL) throws -> URL {
         guard authorization.scheme == "https", authorization.host == issuer.host, authorization.port == issuer.port,
@@ -175,15 +177,103 @@ private struct MCPOAuthFixture: Decodable, Sendable {
                 do { _ = try reloaded.save(encoded(invalid), id: metadata.id, expectedRevision: metadata.revision); return false }
                 catch { return error.localizedDescription.contains("带路径的 HTTPS 地址") }
             }
-            try reloaded.clearOAuth(metadata.id, revision: metadata.revision, workspace: nil)
+
+            guard let basic = fixture.secretClients?["basic"], let post = fixture.secretClients?["post"] else { throw PetError("缺少预注册密钥样例") }
+            func registration(_ name: String, _ client: MCPOAuthFixture.RegisteredClient) -> [String: Any] {
+                ["name": name, "type": "http", "url": fixture.resource.absoluteString, "timeoutSeconds": 7,
+                 "oauthClientID": client.id, "oauthIssuer": fixture.issuer.absoluteString, "oauthClientAuthMethod": client.method]
+            }
+            func failure(_ server: AgentMCPServer, on library: AgentMCP, opensBrowser: Bool, message: String) async -> Bool {
+                do {
+                    _ = try await library.connect(server.id, revision: server.revision, owner: owner, workspace: nil, browserAuthorization: opensBrowser)
+                    library.disconnect(owner: owner, serverID: server.id); return false
+                } catch { return error.localizedDescription.contains(message) && !error.localizedDescription.contains("public-fixture-") }
+            }
+            var basicConfig = registration("预注册 Basic 库存", basic)
+            let invalidOptions = ["oauthClientID": "", "oauthIssuer": "http://localhost/issuer", "oauthClientAuthMethod": "none"]
+            checks["secretRequiresFixedClientHTTPSIssuerAndKnownMethod"] = invalidOptions.allSatisfy { key, value in
+                var invalid = basicConfig; invalid[key] = value
+                return (try? reloaded.save(encoded(invalid), enteredOAuthClientSecret: basic.secret)) == nil
+            }
+            let wrongSecret = "public-fixture-wrong-secret"
+            var unsafeJSON = basicConfig; unsafeJSON[AgentMCP.oauthSecretKey] = wrongSecret
+            let raw = try encoded(unsafeJSON)
+            checks["clientSecretCannotEnterJSONSaveOrRecovery"] = !AgentMCPConfigForm.canPreserveDocument(raw) && (try? reloaded.save(raw)) == nil
+
+            let otherIssuer = basicConfig.merging(["name": "签发者不符", "oauthIssuer": "https://issuer.invalid"], uniquingKeysWith: { _, new in new })
+            let wrongIssuerServer = try reloaded.save(encoded(otherIssuer), enteredOAuthClientSecret: basic.secret)
+            checks["differentIssuerRejectsBeforeClientAuthorization"] = await failure(wrongIssuerServer, on: reloaded, opensBrowser: true, message: "签发者不一致")
+            let rejected = try reloaded.save(encoded(basicConfig.merging(["name": "密钥不符"], uniquingKeysWith: { _, new in new })), enteredOAuthClientSecret: wrongSecret)
+            checks["incorrectClientSecretIsRejectedAndRedacted"] = await failure(rejected, on: reloaded, opensBrowser: true, message: "核对客户端 ID、密钥")
+
+            var basicServer = try reloaded.save(encoded(basicConfig), enteredOAuthClientSecret: basic.secret)
+            let basicAccount = "mcp-\(basicServer.id)-\(basicServer.revision)"
+            let basicDocument = try reloaded.document(basicServer)
+            let basicForm = try AgentMCPConfigForm(document: basicDocument, pluginLocked: false)
+            let fields = try AgentConfigurationJSON.object(Data(basicForm.document().utf8))
+            checks["clientSecretMaskedInFormAndRecoverableDocument"] = fields[AgentMCP.oauthSecretKey] as? String == AgentMCP.placeholder &&
+                fields["oauthClientAuthMethod"] as? String == basic.method && fields["oauthIssuer"] as? String == fixture.issuer.absoluteString &&
+                basicForm.captureDraft() != nil && !basicDocument.contains(basic.secret)
+            basicConfig[AgentMCP.oauthSecretKey] = AgentMCP.placeholder
+            let changes = ["url": fixture.resource.absoluteString + "-next", "oauthClientID": post.id,
+                           "oauthIssuer": "https://issuer.invalid", "oauthClientAuthMethod": post.method]
+            checks["savedSecretCannotFollowAddressIssuerIDOrMethodChange"] = changes.allSatisfy { key, new in
+                var edit = basicConfig; edit[key] = new
+                do { _ = try reloaded.save(encoded(edit), id: basicServer.id, expectedRevision: basicServer.revision); return false }
+                catch { return error.localizedDescription.contains("重新填写客户端密钥") }
+            }
+            try await lookup(basicServer, on: reloaded, phase: "basic", opensBrowser: true)
+            let basicGrant = try permissions.read(basicAccount)
+            basicConfig["name"] = "更名后的 Basic 库存"
+            basicServer = try reloaded.save(encoded(basicConfig), id: basicServer.id, expectedRevision: basicServer.revision)
+            checks["nameChangeRetainsClientSecretAndGrant"] = try permissions.read(basicAccount) == basicGrant && basicServer.credentialRevision != nil
+
+            let confidential = AgentMCP(profile: service.profile, keychain: permissions)
+            confidential.oauthFixture = service.oauthFixture
+            basicServer = try confidential.server(basicServer.id)
+            try await lookup(basicServer, on: confidential, phase: "basic-reopen")
+            try await fixtureAction("expire")
+            try await lookup(basicServer, on: confidential, phase: "basic-refresh")
+            checks["basicGrantReopensAndRefreshes"] = try permissions.read(basicAccount) != basicGrant && inventory["basic-refresh"] != nil
+
+            try confidential.clearOAuth(basicServer.id, revision: basicServer.revision, workspace: nil)
+            basicServer = try confidential.server(basicServer.id)
+            let keptSecret = try AgentConfigurationJSON.object(Data(permissions.read(basicAccount).utf8))
+            let requiresConsent = await failure(basicServer, on: confidential, opensBrowser: false, message: "设置")
+            checks["clearAuthorizationKeepsRegistrationAndRequiresConsent"] = keptSecret[AgentMCP.oauthSecretKey] as? String == basic.secret && keptSecret.count == 1 && requiresConsent
+
+            let postConfig = registration("预注册表单库存", post)
+            var postServer = try confidential.save(encoded(postConfig), enteredOAuthClientSecret: post.secret)
+            try await lookup(postServer, on: confidential, phase: "post", opensBrowser: true)
+            let postAccount = "mcp-\(postServer.id)-\(postServer.revision)"
+            let postGrant = try permissions.read(postAccount)
+            try await fixtureAction("expire")
+            try await lookup(postServer, on: confidential, phase: "post-refresh")
+            checks["postAuthenticatesAtLoginAndRefresh"] = try permissions.read(postAccount) != postGrant && inventory["post-refresh"] != nil
+            postServer = try confidential.save(encoded(postConfig), id: postServer.id, expectedRevision: postServer.revision, enteredOAuthClientSecret: post.secret)
+            let replacementRequiresConsent = await failure(postServer, on: confidential, opensBrowser: false, message: "设置")
+            checks["reenteringSecretClearsPriorGrantAndApproval"] = try permissions.read(postAccount).isEmpty && replacementRequiresConsent
+
+            try await fixtureAction("omit-client-methods")
+            checks["postRequiresAdvertisedAuthenticationMethod"] = await failure(postServer, on: confidential, opensBrowser: true, message: "未声明当前客户端认证方式")
+            try await lookup(basicServer, on: confidential, phase: "basic-default", opensBrowser: true)
+            checks["basicUsesStandardDefaultWhenMethodsOmitted"] = inventory["basic-default"] != nil
+            try confidential.clearOAuth(basicServer.id, revision: basicServer.revision, workspace: nil)
+            try await fixtureAction("redirect-token")
+            checks["tokenEndpointRedirectDoesNotCompleteAuthorization"] = await failure(try confidential.server(basicServer.id), on: confidential, opensBrowser: true, message: "无效的 OAuth 凭据")
+            let registryText = try String(contentsOf: registry, encoding: .utf8)
+            checks["registeredSecretsAndTokensStayOutsideConnectorRegistry"] = !registryText.contains("public-fixture-") && !registryText.contains("oauthClientSecret") && !registryText.contains("oauthGrant")
+
+            try confidential.clearOAuth(metadata.id, revision: metadata.revision, workspace: nil)
             try await fixtureAction("disable-client-metadata")
-            let unsupported = try reloaded.server(metadata.id)
-            do { _ = try await reloaded.connect(unsupported.id, revision: unsupported.revision, owner: owner, workspace: nil, browserAuthorization: true); checks["unsupportedMetadataDoesNotRequestBrowser"] = false }
+            let unsupported = try confidential.server(metadata.id)
+            do { _ = try await confidential.connect(unsupported.id, revision: unsupported.revision, owner: owner, workspace: nil, browserAuthorization: true); checks["unsupportedMetadataDoesNotRequestBrowser"] = false }
             catch { checks["unsupportedMetadataDoesNotRequestBrowser"] = error.localizedDescription.contains("授权服务不支持客户端元数据地址") }
+            confidential.disconnect()
             reloaded.disconnect()
             reopened.disconnect()
         } catch { issue = error.localizedDescription }
-        let report: [String: Any] = ["checks": checks, "success": issue == nil && checks.count == 20 && checks.values.allSatisfy { $0 },
+        let report: [String: Any] = ["checks": checks, "success": issue == nil && checks.count == 35 && checks.values.allSatisfy { $0 },
             "modelRequests": requests, "inventory": inventory, "error": issue ?? "", "appPID": getpid()]
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("mcp-oauth-report.json"))
     }

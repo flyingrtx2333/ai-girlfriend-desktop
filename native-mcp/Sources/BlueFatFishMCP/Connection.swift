@@ -61,12 +61,15 @@ public actor MCPConnection {
     }
     public static let oauthLoopbackRedirectURI = OAuthCallback.redirectBase.absoluteString
     public static func validateOAuthClientID(_ clientID: String) throws { try ManagedOAuth.validateClientID(clientID) }
+    public static func validateOAuthRegisteredIssuer(_ issuer: String, clientID: String) throws -> URL {
+        try ManagedOAuth.validateRegisteredIssuer(issuer, clientID: clientID)
+    }
 
-    public func connectOAuth(endpoint: URL, clientID: String, grant: Data?, timeout: Double,
+    public func connectOAuth(endpoint: URL, clientID: String, clientAuthentication: MCPOAuthClientAuthentication? = nil, grant: Data?, timeout: Double,
                              browser: (@Sendable (URL) async throws -> Void)? = nil,
                              authorizationNetwork: URLSession? = nil,
                              persist: @escaping @Sendable (Data) async throws -> Void) async throws -> Data {
-        let authorization = try ManagedOAuth(endpoint: endpoint, clientID: clientID, grant: grant,
+        let authorization = try ManagedOAuth(endpoint: endpoint, clientID: clientID, clientAuthentication: clientAuthentication, grant: grant,
                                              timeout: timeout, browser: browser, persist: persist, network: authorizationNetwork)
         oauth = authorization
         return try await connectHTTP(endpoint: endpoint, bearerToken: "", headers: [:], timeout: timeout,
