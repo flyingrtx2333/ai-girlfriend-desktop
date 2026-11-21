@@ -3657,17 +3657,19 @@ final class FormDocumentView: NSView {
             checks[name + "-historyFiltersFitWithoutOverlap"] = page.checkHistoryFilterGeometry()
             checks[name + "-actualWindowSize"] = abs(window.contentView!.bounds.width - size.width) < 0.5 && abs(window.contentView!.bounds.height - size.height) < 0.5
         }
-        window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
+        window.setContentSize(NSSize(width: 780, height: 540)); window.contentView?.layoutSubtreeIfNeeded()
+        checks["compactInboxOpensOriginalDetail"] = page.checkOpenReading()
         let state = page.checkState()
         checks["sameWindowSidebarAndPage"] = page.presentingWindow === window && page.isVisible && !workbenchSidebar.isHidden && workbenchChrome.allSatisfy(\.isHidden) && taskSidebar.checkAttentionSelected()
         show(tab: "chat")
         checks["returnToTaskPreservesDraft"] = selectedTab == "chat" && agentTaskID == id && tasks.task(id)?.draft == draft && !chat.isHidden && attentionContent.isHidden
         showAttentionPage()
-        checks["pageReturnPreservesSelectionFilterAndReply"] = page.checkState()["selected"] as? String == state["selected"] as? String && page.checkState()["query"] as? String == state["query"] as? String && page.checkState()["reply"] as? String == state["reply"] as? String
+        checks["pageReturnPreservesSelectionFilterAndReply"] = page.checkState()["selected"] as? String == state["selected"] as? String && page.checkState()["query"] as? String == state["query"] as? String && page.checkState()["reply"] as? String == state["reply"] as? String && page.checkState()["reading"] as? Bool == true
         page.showSettings()
         checks["pageSettingsUsesSameWindowWithoutSheet"] = selectedTab == "settings" && settingsCategory == "attention" && !window.hasBlockingDialog && settingsBackButton?.title == "返回需要我"
         returnToChat()
-        checks["settingsReturnRestoresInbox"] = selectedTab == "attention" && page.isVisible && page.checkState()["selected"] as? String == state["selected"] as? String && page.checkState()["reply"] as? String == state["reply"] as? String
+        checks["settingsReturnRestoresInbox"] = selectedTab == "attention" && page.isVisible && page.checkState()["selected"] as? String == state["selected"] as? String && page.checkState()["reply"] as? String == state["reply"] as? String && page.checkState()["reading"] as? Bool == true
+        window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
         return ["checks": checks, "frames": frames]
     }
     func checkAttentionNavigationSelection() -> Bool {

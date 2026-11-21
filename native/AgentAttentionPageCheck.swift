@@ -34,6 +34,36 @@ import AppKit
             checks.merge(navigation["checks"] as? [String: Bool] ?? [:]) { _, new in new }; report["frames"] = navigation["frames"]
             let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("attention-fixtures.json"))) as! [String: Any]
             guard let ids = fixture["tasks"] as? [String: String], let child = ids["childQuestion"], let parent = ids["question"] else { throw PetError("缺少原生请求编号") }
+            guard let window = control.window, let content = window.contentView else { throw PetError("收件箱缺少实际窗口") }
+            let originalSize = content.bounds.size, originalAppearance = window.appearance
+            func resize(_ size: NSSize, _ appearance: NSAppearance.Name) {
+                window.appearance = NSAppearance(named: appearance); window.setContentSize(size); content.layoutSubtreeIfNeeded()
+            }
+            func render(_ name: String) throws {
+                content.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                guard let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw PetError("无法绘制收件箱窗口") }
+                bitmap.size = content.bounds.size; content.cacheDisplay(in: content.bounds, to: bitmap)
+                guard let data = bitmap.representation(using: .png, properties: [:]) else { throw PetError("收件箱窗口图像无法编码") }
+                try data.write(to: output.appendingPathComponent("attention-" + name + ".png"), options: .atomic)
+            }
+            resize(NSSize(width: 1320, height: 800), .aqua)
+            let wide = page.checkPageGeometry()
+            checks["wideWindowKeepsSideBySidePanes"] = content.bounds.size == NSSize(width: 1320, height: 800) &&
+                wide["mode"] as? String == "split" && (wide["bodyWidth"] as? CGFloat ?? 0) >= 500 &&
+                (wide["checks"] as? [String: Bool])?.values.allSatisfy { $0 } == true
+            try render("wide")
+            resize(NSSize(width: 780, height: 540), .darkAqua)
+            checks["narrowWindowHasActualMinimumSize"] = content.bounds.size == NSSize(width: 780, height: 540)
+            let reading = try page.checkCompactReading(capture: render)
+            checks.merge(reading) { _, new in new }
+            checks["minimumWindowDetailOpensAgain"] = page.checkOpenReading()
+            let minimum = page.checkPageGeometry()
+            resize(NSSize(width: 800, height: 550), .darkAqua)
+            let comparison = page.checkPageGeometry()
+            checks["sameSizeComparisonGivesBodyOverFiveHundredPoints"] = content.bounds.size == NSSize(width: 800, height: 550) &&
+                comparison["mode"] as? String == "detail" && (comparison["bodyWidth"] as? CGFloat ?? 0) >= 510
+            report["readingFrames"] = ["wide": wide, "minimum": minimum, "comparison": comparison]
+            window.appearance = originalAppearance; window.setContentSize(originalSize); content.layoutSubtreeIfNeeded()
             openTaskWindow(id, from: control)
             guard let other = additionalTaskWindows.last else { throw PetError("第二个任务窗口未打开") }
             other.showAttentionPage()
@@ -44,12 +74,15 @@ import AppKit
             for _ in 0..<100 { if other.window?.isVisible != true { break }; await wait(0.01) }
             checks["closingOtherWindowKeepsMainInboxAndDraft"] = other.window?.isVisible != true && page.isVisible && tasks.task(id)?.draft == "原任务尚未发送的草稿。"
             control.showAttentionPage()
+            resize(NSSize(width: 780, height: 540), .darkAqua)
             for (key, decision) in [("allow", "allow"), ("deny", "deny"), ("childQuestion", "公开的原生答复")] {
                 guard let taskID = ids[key], page.checkChooseTask(taskID, decision: decision) else { throw PetError("实际请求未进入对应操作：" + key) }
                 try await settled()
                 let expected = decision == "allow" || decision == "deny" ? decision : "answer:" + decision
                 checks["actualDecisionPreserved-" + key] = tasks.task(taskID)?.approvals.last?.decision == expected
+                checks["completedDetailReturnsToList-" + key] = page.checkState()["reading"] as? Bool == false
             }
+            window.appearance = originalAppearance; window.setContentSize(originalSize); content.layoutSubtreeIfNeeded()
             let project = try AgentFiles(workspace: output.appendingPathComponent("project").path)
             let source = try project.readData(project.resolve("README.md"), maximum: 100_000)
             checks["approvedWriteHasActualExpectedBytes"] = try project.readData(project.resolve("allowed.txt"), maximum: 100_000) == Data((AgentFiles.hash(source) + "\n").utf8)

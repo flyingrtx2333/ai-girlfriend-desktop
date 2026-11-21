@@ -1,12 +1,27 @@
 import AppKit
 
+@MainActor private final class AgentAttentionTable: NSTableView {
+    var onActivate: (() -> Bool)?
+
+    override func mouseDown(with event: NSEvent) {
+        let row = row(at: convert(event.locationInWindow, from: nil))
+        super.mouseDown(with: event)
+        if event.clickCount == 1, row >= 0, row == selectedRow { _ = onActivate?() }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if (event.keyCode == 36 || event.keyCode == 76), onActivate?() == true { return }
+        super.keyDown(with: event)
+    }
+}
+
 @MainActor final class AgentAttentionWindow: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSTextViewDelegate {
     var onOpenSettings: (() -> Void)?
     private struct ListState { var query = "", kind: String?, source: String?, sender: String?; var days = 0, limit = 50 }
     private let attention: AgentAttention, runtime: AgentRuntime
     private let tabs = NSSegmentedControl(labels: ["待关注", "历史"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), kind = NSPopUpButton(), source = NSPopUpButton(), time = NSPopUpButton(), sender = NSPopUpButton()
-    private let table = NSTableView(), status = NSTextField(wrappingLabelWithString: ""), more = AgentDialogButton(title: "加载更多", target: nil, action: nil)
+    private let table = AgentAttentionTable(), status = NSTextField(wrappingLabelWithString: ""), more = AgentDialogButton(title: "加载更多", target: nil, action: nil)
     private let detailTitle = NSTextField(wrappingLabelWithString: ""), metadata = NSTextField(labelWithString: ""), body = NSTextView()
     private let reply = NSTextView(), replyScroll = NSScrollView(), replyCaption = NSTextField(labelWithString: "答复")
     private let replyField = AgentThemeView(fill: .textBackgroundColor, stroke: AgentWorkbenchTheme.line)
@@ -20,6 +35,13 @@ import AppKit
     private weak var hostWindow: NSWindow?
     private var hostedContent: NSView?
     private let panes = NSView(), empty = NSTextField(labelWithString: "暂无待关注的事项")
+    private let list = NSScrollView(), details = NSStackView(), divider = NSBox(), bodyScroll = NSScrollView(), footer = NSStackView()
+    private let headingTitle = NSTextField(labelWithString: "需要我")
+    private let back = AgentDialogButton(title: "返回列表", target: nil, action: nil)
+    private var splitConstraints: [NSLayoutConstraint] = [], compactConstraints: [NSLayoutConstraint] = []
+    private var compact = false, detailRequested = false, canLoadMore = false
+    private var savedListPosition: CGFloat?
+    private var showingCompactDetail: Bool { compact && detailRequested && selected != nil }
     private var contentTop: NSLayoutConstraint!
     var presentingWindow: NSWindow? { hostWindow ?? window }
     var isVisible: Bool { (hostedContent?.window?.isVisible ?? window?.isVisible ?? false) && hostedContent?.isHiddenOrHasHiddenAncestor != true }
@@ -39,8 +61,12 @@ import AppKit
         let settings = NSButton(title: "设置", target: self, action: #selector(showSettings)), reload = NSButton(title: "刷新", target: self, action: #selector(reload))
         AgentWorkbenchTheme.toolbar(settings, title: "需要我设置", symbol: "gearshape")
         AgentWorkbenchTheme.toolbar(reload, title: "刷新", symbol: "arrow.clockwise")
-        let title = NSTextField(labelWithString: "需要我"); title.font = .systemFont(ofSize: 20, weight: .semibold)
-        let heading = NSStackView(views: [title, tabs, NSView(), reload, settings]); heading.spacing = 16; heading.alignment = .centerY
+        headingTitle.font = .systemFont(ofSize: 20, weight: .semibold)
+        back.target = self; back.action = #selector(backToList)
+        back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil); back.imagePosition = .imageLeading
+        back.keyEquivalent = "\u{1b}"; back.keyEquivalentModifierMask = []
+        back.identifier = .init("attention-detail-back"); AgentDialogStyle.action(back)
+        let heading = NSStackView(views: [back, headingTitle, tabs, NSView(), reload, settings]); heading.spacing = 16; heading.alignment = .centerY
         tabs.selectedSegment = 0; tabs.target = self; tabs.action = #selector(changeTab); tabs.setAccessibilityLabel("需要我列表")
         tabs.font = .systemFont(ofSize: 13); tabs.selectedSegmentBezelColor = AgentWorkbenchTheme.accent
         tabs.widthAnchor.constraint(equalToConstant: 128).isActive = true; tabs.heightAnchor.constraint(equalToConstant: 28).isActive = true
@@ -56,8 +82,9 @@ import AppKit
         filterBar = AgentAttentionFilterBar(kind: kind, source: source, time: time, sender: sender, search: search)
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("attention"))); table.headerView = nil; table.rowHeight = 76
         table.autoresizingMask = [.width]; table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        table.delegate = self; table.dataSource = self; table.target = self; table.doubleAction = #selector(openTask); table.setAccessibilityLabel("需要我事项列表")
-        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
+        table.delegate = self; table.dataSource = self; table.target = self; table.doubleAction = #selector(openRowTask); table.setAccessibilityLabel("需要我事项列表")
+        table.onActivate = { [weak self] in self?.activateItem() == true }
+        list.documentView = table; list.hasVerticalScroller = true
         table.style = .fullWidth; table.backgroundColor = .clear; table.intercellSpacing = .zero
         detailTitle.font = .systemFont(ofSize: 16, weight: .semibold); detailTitle.maximumNumberOfLines = 3
         metadata.font = .systemFont(ofSize: 11); metadata.textColor = AgentWorkbenchTheme.secondaryText; metadata.lineBreakMode = .byTruncatingTail
@@ -67,7 +94,7 @@ import AppKit
         }
         body.isEditable = false; body.setAccessibilityLabel("需要我事项详情")
         body.textContainerInset = NSSize(width: 0, height: 4); body.textContainer?.lineFragmentPadding = 0
-        let document = NSScrollView(); document.documentView = body; document.hasVerticalScroller = true
+        bodyScroll.documentView = body; bodyScroll.hasVerticalScroller = true
         reply.delegate = self; reply.allowsUndo = true; reply.setAccessibilityLabel("答复此问题"); replyScroll.documentView = reply; replyScroll.hasVerticalScroller = true; replyScroll.borderType = .bezelBorder
         replyField.addSubview(replyScroll); replyScroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([replyScroll.leadingAnchor.constraint(equalTo: replyField.leadingAnchor, constant: 1), replyScroll.trailingAnchor.constraint(equalTo: replyField.trailingAnchor, constant: -1), replyScroll.topAnchor.constraint(equalTo: replyField.topAnchor, constant: 1), replyScroll.bottomAnchor.constraint(equalTo: replyField.bottomAnchor, constant: -1), replyField.heightAnchor.constraint(equalToConstant: 88)])
@@ -80,29 +107,38 @@ import AppKit
         detailTitle.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let detailHeading = NSStackView(views: [detailTitle, NSView(), open]); detailHeading.spacing = 12; detailHeading.alignment = .top
         let actions = NSStackView(views: [NSView(), mark, deny, allow, execute, answer]); actions.spacing = 8
-        let details = NSStackView(views: [detailHeading, metadata, document, replyCaption, replyField, actions]); details.orientation = .vertical; details.alignment = .leading; details.spacing = 12
+        for view in [detailHeading, metadata, bodyScroll, replyCaption, replyField, actions] { details.addArrangedSubview(view) }
+        details.orientation = .vertical; details.alignment = .leading; details.spacing = 12
         for child in details.arrangedSubviews { child.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true }
         for view in [list, details, empty] { panes.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        let divider = NSBox(); divider.boxType = .separator; divider.identifier = .init("attention-pane-divider"); panes.addSubview(divider); divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.boxType = .separator; divider.identifier = .init("attention-pane-divider"); panes.addSubview(divider); divider.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([divider.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 15), divider.widthAnchor.constraint(equalToConstant: 1), divider.topAnchor.constraint(equalTo: panes.topAnchor), divider.bottomAnchor.constraint(equalTo: panes.bottomAnchor)])
         let listWidth = list.widthAnchor.constraint(equalToConstant: 260); listWidth.priority = .init(499)
         empty.font = .systemFont(ofSize: 14); empty.textColor = AgentWorkbenchTheme.secondaryText
-        NSLayoutConstraint.activate([list.leadingAnchor.constraint(equalTo: panes.leadingAnchor), list.topAnchor.constraint(equalTo: panes.topAnchor), list.bottomAnchor.constraint(equalTo: panes.bottomAnchor), list.widthAnchor.constraint(greaterThanOrEqualToConstant: 180), list.widthAnchor.constraint(lessThanOrEqualTo: panes.widthAnchor, multiplier: 0.4), listWidth, details.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 32), details.trailingAnchor.constraint(equalTo: panes.trailingAnchor), details.topAnchor.constraint(equalTo: panes.topAnchor, constant: 10), details.bottomAnchor.constraint(equalTo: panes.bottomAnchor), empty.centerXAnchor.constraint(equalTo: panes.centerXAnchor), empty.centerYAnchor.constraint(equalTo: panes.centerYAnchor)])
-        for scroll in [list, document, replyScroll] { scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder; scroll.drawsBackground = false }
+        NSLayoutConstraint.activate([list.leadingAnchor.constraint(equalTo: panes.leadingAnchor), list.topAnchor.constraint(equalTo: panes.topAnchor),
+            list.bottomAnchor.constraint(equalTo: panes.bottomAnchor), details.trailingAnchor.constraint(equalTo: panes.trailingAnchor),
+            details.topAnchor.constraint(equalTo: panes.topAnchor, constant: 10), details.bottomAnchor.constraint(equalTo: panes.bottomAnchor),
+            empty.centerXAnchor.constraint(equalTo: panes.centerXAnchor), empty.centerYAnchor.constraint(equalTo: panes.centerYAnchor)])
+        splitConstraints = [list.widthAnchor.constraint(greaterThanOrEqualToConstant: 180), list.widthAnchor.constraint(lessThanOrEqualTo: panes.widthAnchor, multiplier: 0.4),
+                            listWidth, details.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 32)]
+        compactConstraints = [list.trailingAnchor.constraint(equalTo: panes.trailingAnchor), details.leadingAnchor.constraint(equalTo: panes.leadingAnchor)]
+        NSLayoutConstraint.activate(splitConstraints)
+        for scroll in [list, bodyScroll, replyScroll] { scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder; scroll.drawsBackground = false }
         replyField.layer?.cornerRadius = 8; replyField.layer?.masksToBounds = true; replyField.layer?.borderWidth = 1
         status.font = .systemFont(ofSize: 12); status.lineBreakMode = .byWordWrapping; status.maximumNumberOfLines = 0; status.isSelectable = true; status.setAccessibilityLabel("需要我状态")
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         more.target = self; more.action = #selector(loadMore); AgentDialogStyle.action(more)
-        let footer = NSStackView(views: [status, NSView(), more]); footer.spacing = 8
+        for view in [status, NSView(), more] { footer.addArrangedSubview(view) }; footer.spacing = 8
         let rule = NSBox(); rule.boxType = .separator
         let content = NSStackView(views: [heading, filterBar, rule, panes, footer]); content.orientation = .vertical; content.alignment = .leading; content.spacing = 16
-        let root = AgentThemeView(fill: AgentWorkbenchTheme.surface); root.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false; window.contentView = root
+        let root = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface); root.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false; window.contentView = root
+        root.onResize = { [weak self, weak root] in if let width = root?.bounds.width { self?.adjustLayout(width) } }
         root.setAccessibilityLabel("需要我主页面")
         contentTop = content.topAnchor.constraint(equalTo: root.topAnchor, constant: 18)
         let width = content.widthAnchor.constraint(equalToConstant: 824); width.priority = .init(499)
         NSLayoutConstraint.activate([content.centerXAnchor.constraint(equalTo: root.centerXAnchor), content.widthAnchor.constraint(lessThanOrEqualToConstant: 824), content.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: 28), content.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -28), width, contentTop, content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -24)])
         for child in content.arrangedSubviews { child.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
-        panes.setContentHuggingPriority(.defaultLow, for: .vertical); document.setContentHuggingPriority(.defaultLow, for: .vertical)
+        panes.setContentHuggingPriority(.defaultLow, for: .vertical); bodyScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         attention.refresh(); refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -114,6 +150,68 @@ import AppKit
     }
     func refreshAppearance() {
         replyField.updateLayer()
+    }
+    private func adjustLayout(_ width: CGFloat) {
+        let next = width < 760
+        guard width > 0, compact != next else { return }
+        let responder = presentingWindow?.firstResponder as? NSView
+        if next, responder?.isDescendant(of: details) == true {
+            detailRequested = true
+        }
+        if next, detailRequested, !list.isHidden { savedListPosition = list.contentView.bounds.minY }
+        NSLayoutConstraint.deactivate(compact ? compactConstraints : splitConstraints)
+        compact = next
+        NSLayoutConstraint.activate(compact ? compactConstraints : splitConstraints)
+        updateVisibility()
+        if showingCompactDetail, responder?.isDescendant(of: list) == true {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, isVisible, showingCompactDetail else { return }
+                presentingWindow?.makeFirstResponder(body)
+            }
+        } else if !compact {
+            DispatchQueue.main.async { [weak self] in self?.restoreListPosition() }
+        }
+    }
+    private func updateVisibility() {
+        let reading = showingCompactDetail, hasItems = !rows.isEmpty
+        list.isHidden = !hasItems || reading
+        details.isHidden = !hasItems || compact && !reading
+        divider.isHidden = !hasItems || compact
+        empty.isHidden = hasItems
+        back.isHidden = !reading; headingTitle.isHidden = reading; tabs.isHidden = reading; filterBar.isHidden = reading
+        more.isHidden = !canLoadMore || reading
+        status.isHidden = reading && operationIssue == nil && attention.issue == nil && attention.settings.enabled && !attention.loading
+        footer.isHidden = (status.isHidden || status.stringValue.isEmpty) && more.isHidden
+    }
+    @discardableResult private func activateItem() -> Bool {
+        guard selected != nil else { return false }
+        guard persistReply() else { return compact }
+        if compact, !showingCompactDetail { savedListPosition = list.contentView.bounds.minY }
+        detailRequested = true
+        if compact {
+            updateVisibility()
+            hostedContent?.layoutSubtreeIfNeeded()
+            presentingWindow?.recalculateKeyViewLoop()
+            presentingWindow?.makeFirstResponder(body)
+        }
+        return compact
+    }
+    @objc private func backToList() {
+        guard showingCompactDetail, persistReply() else { return }
+        detailRequested = false; updateVisibility()
+        hostedContent?.layoutSubtreeIfNeeded(); presentingWindow?.recalculateKeyViewLoop()
+        restoreListPosition()
+        presentingWindow?.makeFirstResponder(table)
+    }
+    private func restoreListPosition() {
+        guard !list.isHidden, let savedListPosition else { return }
+        self.savedListPosition = nil
+        let clip = list.contentView
+        var destination = clip.bounds; destination.origin.y = savedListPosition
+        clip.scroll(to: clip.constrainBoundsRect(destination).origin); list.reflectScrolledClipView(clip)
+    }
+    @objc private func openRowTask() {
+        if compact { activateItem() } else { openTask() }
     }
     func focusSearch() { presentingWindow?.recalculateKeyViewLoop(); presentingWindow?.makeFirstResponder(search) }
     private func select(_ menu: NSPopUpButton, value: String?) { menu.selectItem(at: menu.itemArray.firstIndex { $0.representedObject as? String == value } ?? 0) }
@@ -149,16 +247,21 @@ import AppKit
         let loaded = Array(matching.prefix(state.limit)), query = state.query.trimmingCharacters(in: .whitespacesAndNewlines)
         let next = loaded.filter { query.isEmpty || $0.searchable.localizedCaseInsensitiveContains(query) }
         guard persistReply() else { return }
-        let previous = selected?.id; rows = next; renderFilters(); suppressSelection = true; table.reloadData()
+        let previous = selected?.id, wasReading = showingCompactDetail
+        rows = next; renderFilters(); suppressSelection = true; table.reloadData()
         if let row = rows.firstIndex(where: { $0.id == previous }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
         else if !rows.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
         else { table.deselectAll(nil) }
-        suppressSelection = false; showSelection()
-        for view in panes.subviews where view !== empty { view.isHidden = rows.isEmpty }
-        empty.isHidden = !rows.isEmpty; empty.stringValue = query.isEmpty ? activeTab == 0 ? "暂无待关注的事项" : "暂无历史" : "没有匹配的事项"
-        more.isHidden = loaded.count >= matching.count; more.isEnabled = !attention.loading
+        suppressSelection = false
+        if !rows.indices.contains(table.selectedRow) || previous != rows[table.selectedRow].id { detailRequested = false }
+        empty.stringValue = query.isEmpty ? activeTab == 0 ? "暂无待关注的事项" : "暂无历史" : "没有匹配的事项"
+        canLoadMore = loaded.count < matching.count; more.isEnabled = !attention.loading
         status.textColor = operationIssue != nil || attention.issue != nil ? .systemRed : AgentWorkbenchTheme.secondaryText
         status.stringValue = operationIssue ?? attention.issue ?? (!attention.settings.enabled ? "需要我已关闭" : attention.loading ? "正在载入…" : matching.isEmpty ? "" : "\(rows.count) 项 · 已加载 \(loaded.count)／\(matching.count)")
+        showSelection()
+        if wasReading, !showingCompactDetail {
+            restoreListPosition(); if !rows.isEmpty { presentingWindow?.makeFirstResponder(table) }
+        }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
@@ -191,7 +294,7 @@ import AppKit
         return ["allow": "已允许", "deny": "已拒绝", "skip": "已静默跳过，未收到答复", "ended": "请求已结束"][decision] ?? "已处理"
     }
     private func showSelection() {
-        defer { hostedContent?.layoutSubtreeIfNeeded(); presentingWindow?.recalculateKeyViewLoop() }
+        defer { updateVisibility(); hostedContent?.layoutSubtreeIfNeeded(); presentingWindow?.recalculateKeyViewLoop() }
         let item = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow] : nil, changed = item?.id != selected?.id
         selected = item; detailTitle.stringValue = item?.title ?? ""
         guard let item else {
@@ -236,13 +339,15 @@ import AppKit
     }
     @discardableResult private func persistReply() -> Bool {
         draftSave?.cancel(); draftSave = nil
-        guard let item = selected, item.kind == .question, item.mcpInputID == nil, reply.string != replySavedText else { return true }
+        guard let item = selected, item.kind == .question, item.mcpInputID == nil else { return true }
         do {
-            try attention.saveReply(item, text: reply.string); replySavedText = reply.string
-            if operationIssue?.hasPrefix("答复草稿未保存：") == true { operationIssue = nil; status.stringValue = "答复草稿已保存"; status.textColor = AgentWorkbenchTheme.secondaryText }
+            if reply.string != replySavedText {
+                try attention.saveReply(item, text: reply.string); replySavedText = reply.string
+            }
+            if operationIssue?.hasPrefix("答复草稿未保存：") == true { operationIssue = nil; status.stringValue = "答复草稿已保存"; status.textColor = AgentWorkbenchTheme.secondaryText; updateVisibility() }
             return true
         }
-        catch { operationIssue = "答复草稿未保存：" + error.localizedDescription; status.stringValue = operationIssue!; status.textColor = .systemRed; return false }
+        catch { operationIssue = "答复草稿未保存：" + error.localizedDescription; status.stringValue = operationIssue!; status.textColor = .systemRed; updateVisibility(); return false }
     }
     @objc private func openTask() { if persistReply(), let item = selected { onOpenTask?(item.taskID) } }
     @objc private func markHandled() { perform { guard let item = self.selected else { return nil }; try self.attention.mark(item, handled: !item.handled); return nil } }
@@ -295,19 +400,35 @@ import AppKit
         search.stringValue = item.title; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         guard selected?.id == item.id else { return false }
         if let decision {
-            if decision == "allow" { allowRequest() }
-            else if decision == "deny" { denyRequest() }
-            else { checkSetReply(decision); answerQuestion() }
+            if compact, !checkOpenReading() { return false }
+            if decision == "allow" { allow.performClick(nil) }
+            else if decision == "deny" { deny.performClick(nil) }
+            else { checkSetReply(decision); answer.performClick(nil) }
         }
         return true
     }
     func checkPageGeometry() -> [String: Any] {
-        guard CommandLine.arguments.contains("--attention-page-check"), let root = hostedContent, let list = panes.subviews.first, panes.subviews.count >= 2 else { return [:] }
+        guard CommandLine.arguments.contains("--attention-page-check"), let root = hostedContent else { return [:] }
         root.layoutSubtreeIfNeeded()
-        let detail = panes.subviews[1], bounds = root.bounds, panel = panes.convert(panes.bounds, to: root)
-        let actionView = (detail as? NSStackView)?.arrangedSubviews.last
-        let checks = ["contentIsHostedByOwner": root.window === hostWindow && window?.isVisible == false, "bothPanesFitPage": panel.minX >= 27.5 && panel.maxX <= bounds.maxX - 27.5 && list.bounds.width >= 179.5 && detail.bounds.width >= 259, "detailFillsAvailableWidth": abs(detail.frame.maxX - panes.bounds.maxX) < 0.5 && abs(detail.frame.minX - list.frame.maxX - 32) < 0.5, "textUsesDetailWidth": body.bounds.width >= detail.bounds.width - 24, "replyFieldFitsAndHasVisibleBorder": replyField.isHidden || bounds.contains(replyField.convert(replyField.bounds, to: root)) && replyField.layer?.borderWidth == 1 && replyScroll.frame.minX >= 1, "actionsFitHeight": actionView.map { bounds.contains($0.convert($0.bounds, to: root)) } ?? false, "filterControlsFitWithoutOverlap": filterBar.controlsFit]
-        return ["checks": checks, "pageWidth": bounds.width, "listWidth": list.bounds.width, "detailWidth": detail.bounds.width, "bodyWidth": body.bounds.width]
+        let bounds = root.bounds, panel = panes.convert(panes.bounds, to: root)
+        var checks = ["contentIsHostedByOwner": root.window === hostWindow && window?.isVisible == false,
+                      "panesFitPage": panel.minX >= 27.5 && panel.maxX <= bounds.maxX - 27.5,
+                      "filterControlsFitWithoutOverlap": filterBar.isHidden || filterBar.controlsFit]
+        if !list.isHidden {
+            checks["visibleListUsesAvailableWidth"] = compact ? abs(list.bounds.width - panes.bounds.width) < 0.5 : list.bounds.width >= 179.5
+        }
+        if !details.isHidden {
+            let leading = compact ? 0 : list.frame.maxX + 32
+            checks["detailFillsAvailableWidth"] = abs(details.frame.maxX - panes.bounds.maxX) < 0.5 && abs(details.frame.minX - leading) < 0.5
+            checks["textUsesDetailWidth"] = body.bounds.width >= details.bounds.width - 24
+            checks["replyFieldFitsAndHasVisibleBorder"] = replyField.isHidden ||
+                bounds.contains(replyField.convert(replyField.bounds, to: root)) && replyField.layer?.borderWidth == 1 && replyScroll.frame.minX >= 1
+            checks["actionsFitHeight"] = details.arrangedSubviews.last.map { bounds.contains($0.convert($0.bounds, to: root)) } ?? false
+        }
+        return ["checks": checks, "mode": compact ? showingCompactDetail ? "detail" : "list" : "split",
+                "pageWidth": bounds.width, "listWidth": list.isHidden ? 0 : list.bounds.width,
+                "detailWidth": details.isHidden ? 0 : details.bounds.width, "bodyWidth": details.isHidden ? 0 : body.bounds.width,
+                "bodyHeight": details.isHidden ? 0 : bodyScroll.contentSize.height]
     }
     func checkHistoryFilterGeometry() -> Bool {
         guard CommandLine.arguments.contains("--attention-page-check") else { return false }
@@ -317,9 +438,53 @@ import AppKit
         tabs.selectedSegment = previous; changeTab(); hostedContent?.layoutSubtreeIfNeeded()
         return fits
     }
+    func checkOpenReading() -> Bool {
+        guard CommandLine.arguments.contains("--attention-page-check"), compact, let owner = presentingWindow,
+              let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                           windowNumber: owner.windowNumber, context: nil, characters: "\r",
+                                           charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) else { return false }
+        if !showingCompactDetail { owner.makeFirstResponder(table); table.keyDown(with: event) }
+        return showingCompactDetail
+    }
+    func checkCompactReading(capture: (String) throws -> Void) throws -> [String: Bool] {
+        guard CommandLine.arguments.contains("--attention-page-check"), compact, let selected, reply.isEditable,
+              let owner = presentingWindow else { throw PetError("需要一条可编辑的窄窗问题") }
+        let draft = reply.string, itemID = selected.id, query = search.stringValue, previousKind = kind.selectedItem?.representedObject as? String
+        if showingCompactDetail { back.performClick(nil) }
+        var checks = ["startsInListWithFilters": !showingCompactDetail && !list.isHidden && details.isHidden && !filterBar.isHidden]
+        try capture("narrow-list")
+        checks["returnOpensSelectedItemAndFocusesBody"] = checkOpenReading() && owner.firstResponder === body &&
+            self.selected?.id == itemID && list.isHidden && filterBar.isHidden && !back.isHidden && reply.string == draft
+        let geometry = checkPageGeometry()
+        checks["detailUsesFullWidthAndKeepsReplyAndActionsVisible"] = (geometry["bodyWidth"] as? CGFloat ?? 0) >= 490 &&
+            (geometry["bodyHeight"] as? CGFloat ?? 0) >= 120 && (geometry["checks"] as? [String: Bool])?.values.allSatisfy { $0 } == true
+        owner.makeFirstResponder(reply); reply.setSelectedRange(NSRange(location: 1, length: 4))
+        try capture("narrow-detail")
+        let oversized = String(repeating: "a", count: 65_537)
+        checkSetReply(oversized); back.performClick(nil)
+        checks["failedDraftSaveKeepsDetailAndShowsError"] = showingCompactDetail && !footer.isHidden && !status.isHidden &&
+            status.stringValue.hasPrefix("答复草稿未保存") && reply.string == oversized && owner.firstResponder === reply
+        checkSetReply(draft); back.performClick(nil)
+        checks["backRestoresOriginalListFilterAndKeyboardFocus"] = !showingCompactDetail && self.selected?.id == itemID &&
+            search.stringValue == query && kind.selectedItem?.representedObject as? String == previousKind && owner.firstResponder === table
+        checks["sameRowReopensWithItsOwnDraft"] = checkOpenReading() && self.selected?.id == itemID && reply.string == draft
+        back.performClick(nil)
+        select(kind, value: nil); changeFilters()
+        search.stringValue = ""; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        hostedContent?.layoutSubtreeIfNeeded()
+        if !rows.isEmpty { table.scrollRowToVisible(rows.count - 1) }
+        let offset = list.contentView.bounds.minY
+        let selectedBefore = table.selectedRow
+        _ = checkOpenReading(); back.performClick(nil)
+        checks["returnRestoresActualScrolledList"] = offset > 0 && abs(list.contentView.bounds.minY - offset) < 1 &&
+            table.selectedRow == selectedBefore
+        select(kind, value: previousKind); changeFilters()
+        search.stringValue = query; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        return checks
+    }
     func checkState() -> [String: Any] {
         guard CommandLine.arguments.contains("--manual-ui") || CommandLine.arguments.contains("--attention-live-ui") || CommandLine.arguments.contains("--attention-page-check") else { return [:] }
         let state = states[activeTab]
-        return ["visible": isVisible, "embedded": hostWindow != nil, "tab": activeTab, "query": state.query, "kind": state.kind as Any? ?? NSNull(), "source": state.source as Any? ?? NSNull(), "sender": state.sender as Any? ?? NSNull(), "days": state.days, "limit": state.limit, "rows": rows.map { ["id": $0.id, "taskID": $0.taskID, "kind": $0.kind.rawValue, "handled": $0.handled] as [String: Any] }, "selected": selected?.id as Any? ?? NSNull(), "reply": reply.string, "status": status.stringValue, "pendingCount": attention.pendingCount, "enabled": attention.settings.enabled, "loading": attention.loading, "settingsVisible": false]
+        return ["visible": isVisible, "embedded": hostWindow != nil, "tab": activeTab, "query": state.query, "kind": state.kind as Any? ?? NSNull(), "source": state.source as Any? ?? NSNull(), "sender": state.sender as Any? ?? NSNull(), "days": state.days, "limit": state.limit, "rows": rows.map { ["id": $0.id, "taskID": $0.taskID, "kind": $0.kind.rawValue, "handled": $0.handled] as [String: Any] }, "selected": selected?.id as Any? ?? NSNull(), "reply": reply.string, "status": status.stringValue, "pendingCount": attention.pendingCount, "enabled": attention.settings.enabled, "loading": attention.loading, "settingsVisible": false, "reading": showingCompactDetail]
     }
 }
