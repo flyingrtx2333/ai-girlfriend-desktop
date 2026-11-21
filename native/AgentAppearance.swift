@@ -12,6 +12,7 @@ enum AgentTheme: String, Codable, CaseIterable {
     static private(set) var messageSize: CGFloat = 14
     static let textSizes = [12, 14, 16, 18]
     let directory: URL
+    lazy var terminalDefaults = AgentTerminalAppearanceDefaults(directory: directory)
     private(set) var settings = Settings(), error: String?
     private var revision: String?
     var onChange: (() -> Void)?
@@ -71,7 +72,7 @@ enum AgentTheme: String, Codable, CaseIterable {
 @MainActor final class AgentAppearanceSettingsView: NSStackView {
     private let service: AgentAppearance, theme = NSPopUpButton(), size = NSPopUpButton()
     private let status = AgentSettingsStatusField("外观保存状态"), reload = AgentDialogButton(title: "重新载入", target: nil, action: nil)
-    init(service: AgentAppearance, styles: AgentThemeStyles? = nil, content: AgentContentAppearance? = nil, fileIcons: AgentFileIcons? = nil, sidebarMenu: NSButton? = nil, mode: @escaping () -> AgentWorkMode = { .coding }) {
+    init(service: AgentAppearance, styles: AgentThemeStyles? = nil, content: AgentContentAppearance? = nil, fileIcons: AgentFileIcons? = nil, sidebarMenu: NSButton? = nil, terminalDefaults: AgentTerminalAppearanceDefaults? = nil, mode: @escaping () -> AgentWorkMode = { .coding }) {
         self.service = service; super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 20
         theme.addItems(withTitles: AgentTheme.allCases.map(\.title)); theme.setAccessibilityLabel("界面主题")
@@ -83,6 +84,7 @@ enum AgentTheme: String, Codable, CaseIterable {
 
         var themeRows: [NSView] = [AgentSettingsStyle.formRow("明暗模式", theme, trailing: true)]
         if let styles { themeRows.append(AgentThemeStyleSelectionView(service: styles, gallery: true, mode: mode)) }
+        if let terminalDefaults { themeRows += [AgentSettingsStyle.divider(), AgentTerminalAppearanceRow(service: terminalDefaults)] }
         addArrangedSubview(AgentSettingsStyle.section("主题", id: "appearance-theme", rows: themeRows, separatesRows: false))
 
         var conversationRows: [NSView] = [AgentSettingsStyle.formRow("对话字号", size, trailing: true)]
@@ -117,4 +119,46 @@ enum AgentTheme: String, Codable, CaseIterable {
         refresh()
     }
     @objc private func reloadSettings() { service.reload(); service.apply(); status.stringValue = service.error ?? "已重新载入"; refresh() }
+}
+
+@MainActor private final class AgentTerminalAppearanceRow: NSStackView {
+    private let service: AgentTerminalAppearanceDefaults
+    private let picker = NSPopUpButton()
+    private let status = AgentSettingsStatusField("终端外观状态")
+    private let reload = AgentDialogButton(title: "重新载入", target: nil, action: nil)
+
+    init(service: AgentTerminalAppearanceDefaults) {
+        self.service = service
+        super.init(frame: .zero)
+        orientation = .vertical; alignment = .leading; spacing = 8
+        picker.addItems(withTitles: AgentTerminalAppearance.allCases.map(\.title))
+        picker.setAccessibilityLabel("默认终端外观")
+        picker.toolTip = "新窗口和使用默认设置的终端"
+        picker.target = self; picker.action = #selector(change)
+        reload.target = self; reload.action = #selector(reloadPreference)
+        AgentDialogStyle.action(reload)
+        let row = AgentSettingsStyle.formRow("终端外观", picker, trailing: true)
+        let feedback = NSStackView(views: [status, NSView(), reload]); feedback.alignment = .centerY; feedback.spacing = 8
+        for view in [row, feedback] { addArrangedSubview(view); view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+        status.onChange = { [weak feedback] message in feedback?.isHidden = message.isEmpty }
+        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AgentTerminalAppearanceDefaults.changed, object: service)
+        refresh()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    @objc private func refresh() {
+        picker.selectItem(withTitle: service.appearance.title)
+        picker.isEnabled = service.error == nil
+        (picker.superview as? AgentSettingsPopupFrame)?.refreshEnabledState()
+        status.stringValue = service.error ?? ""
+    }
+
+    @objc private func change() {
+        guard AgentTerminalAppearance.allCases.indices.contains(picker.indexOfSelectedItem) else { return }
+        do { try service.save(AgentTerminalAppearance.allCases[picker.indexOfSelectedItem]) }
+        catch { refresh(); status.showSaveFailure(error) }
+    }
+
+    @objc private func reloadPreference() { service.reload() }
 }

@@ -211,6 +211,7 @@ import BlueFatFishTerminal
 
     private weak var store: AgentStore?
     private let checkHome: URL?
+    private let appearanceDefaults: AgentTerminalAppearanceDefaults
     private var states: [String: TaskTerminals] = [:]
     private var currentID: String?
     private var mounted: NSView?
@@ -218,7 +219,8 @@ import BlueFatFishTerminal
     private(set) var appearancePreference: AgentTerminalAppearance = .application
     private var appliedDark: Bool?
     private var usesDarkAppearance: Bool {
-        appearancePreference.fixedDark ?? (effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+        appearancePreference.fixedDark ?? appearanceDefaults.appearance.fixedDark ??
+            (effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
     }
     private let maximumPanes = AgentTerminalLayout.maximumPanes
     private let tabs = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -243,9 +245,10 @@ import BlueFatFishTerminal
         state.index = index; state.tabs[index].active = pane; state.shown = true; render(); focus(); onLayoutChange?()
     }
 
-    init(store: AgentStore, checkHome: URL?) {
+    init(store: AgentStore, checkHome: URL?, appearanceDefaults: AgentTerminalAppearanceDefaults) {
         self.store = store
         self.checkHome = checkHome
+        self.appearanceDefaults = appearanceDefaults
         super.init(frame: .zero)
         setAccessibilityLabel("任务终端")
         fill = AgentWorkbenchTheme.surface
@@ -287,6 +290,8 @@ import BlueFatFishTerminal
             body.topAnchor.constraint(equalTo: rule.bottomAnchor), body.bottomAnchor.constraint(equalTo: bottomAnchor),
             body.leadingAnchor.constraint(equalTo: leadingAnchor), body.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
+        NotificationCenter.default.addObserver(self, selector: #selector(defaultAppearanceChanged),
+            name: AgentTerminalAppearanceDefaults.changed, object: appearanceDefaults)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -498,10 +503,16 @@ import BlueFatFishTerminal
         refreshTheme()
     }
 
+    @objc private func defaultAppearanceChanged() {
+        guard appearancePreference == .application else { return }
+        refreshTheme()
+        onLayoutChange?()
+    }
+
     @objc private func showTheme(_ sender: NSButton) {
         let menu = NSMenu()
         for option in AgentTerminalAppearance.allCases {
-            let item = NSMenuItem(title: option.title, action: #selector(chooseTheme(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: appearanceTitle(option), action: #selector(chooseTheme(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = option.rawValue
             item.state = option == appearancePreference ? .on : .off
@@ -520,6 +531,10 @@ import BlueFatFishTerminal
         focus()
     }
 
+    private func appearanceTitle(_ choice: AgentTerminalAppearance) -> String {
+        choice == .application ? "使用默认设置（\(appearanceDefaults.appearance.title)）" : choice.title
+    }
+
     private func refreshTheme() {
         let symbol: String
         switch appearancePreference {
@@ -529,8 +544,9 @@ import BlueFatFishTerminal
         }
         theme.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         theme.image?.size = NSSize(width: 16, height: 16)
-        theme.setAccessibilityValue(appearancePreference.title)
-        theme.toolTip = "终端外观 · " + appearancePreference.title
+        let title = appearanceTitle(appearancePreference)
+        theme.setAccessibilityValue(title)
+        theme.toolTip = "终端外观 · " + title
         let dark = usesDarkAppearance
         guard appliedDark != dark else { return }
         appliedDark = dark

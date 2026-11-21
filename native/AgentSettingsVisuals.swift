@@ -73,6 +73,7 @@ import AppKit
         case "计划": symbol = "checklist"
         case "子智能体", "子任务": symbol = "person.2"
         case "本机会话": symbol = "bubble.left.and.bubble.right"
+        case "终端外观": symbol = "terminal"
         case "自动化": symbol = "clock.arrow.circlepath"
         case "结果": symbol = "checkmark.circle"
         case "可恢复侧任务": symbol = "arrow.uturn.backward"

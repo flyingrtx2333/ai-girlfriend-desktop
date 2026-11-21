@@ -23,6 +23,72 @@ enum AgentTerminalAppearance: String, Codable, CaseIterable, Sendable {
     }
 }
 
+@MainActor final class AgentTerminalAppearanceDefaults {
+    private struct Settings: Codable {
+        var version = 1
+        let appearance: AgentTerminalAppearance
+    }
+
+    static let changed = Notification.Name("BlueFatFishTerminalAppearanceDefaultsChanged")
+    static let filename = "terminal-default-appearance.json"
+    private let directory: URL
+    private var revision: String?
+    private(set) var appearance = AgentTerminalAppearance.application
+    private(set) var error: String?
+
+    init(directory: URL) {
+        self.directory = directory
+        reload()
+    }
+
+    func reload() {
+        defer { publish() }
+        do {
+            let files = try AgentFiles(workspace: directory.path), file = try files.literalURL(Self.filename)
+            let metadata = try files.entryMetadata(file)
+            guard try files.resolve(Self.filename) == file, ["missing", "file"].contains(metadata.kind) else {
+                throw PetError("终端外观配置必须是普通文件")
+            }
+            if metadata.kind == "missing" {
+                appearance = .application
+                revision = nil
+            } else {
+                let data = try files.readData(file, maximum: 4096)
+                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(object.keys) == ["version", "appearance"],
+                      let value = try? JSONDecoder().decode(Settings.self, from: data), value.version == 1 else {
+                    throw PetError("终端外观配置版本或选项无效")
+                }
+                appearance = value.appearance
+                revision = AgentFiles.hash(data)
+            }
+            error = nil
+        } catch {
+            self.error = "终端外观未载入：" + error.localizedDescription
+        }
+    }
+
+    func save(_ value: AgentTerminalAppearance) throws {
+        if let error { throw PetError(error) }
+        guard value != appearance else { return }
+        let files = try AgentFiles(workspace: directory.path), file = try files.literalURL(Self.filename)
+        let metadata = try files.entryMetadata(file)
+        guard metadata.kind == "missing" || metadata.kind == "file" && (metadata.permissions ?? 0) & 0o222 != 0 else {
+            throw PetError("终端外观配置只读或不可写，未保存")
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(Settings(appearance: value))
+        let write = try AgentKnowledgeFileWrite(files: files, path: Self.filename, data: data, expectedHash: revision,
+            missing: revision == nil, permissions: 0o600, label: "终端外观配置")
+        try write.requireCurrent()
+        try files.writeData(data, to: write.url, permissions: 0o600, expectedTarget: write.signature)
+        appearance = value
+        revision = AgentFiles.hash(data)
+        publish()
+    }
+
+    private func publish() { NotificationCenter.default.post(name: Self.changed, object: self) }
+}
+
 struct AgentTerminalAppearanceRecord: Codable, Equatable, Sendable {
     var version = 1
     var windowID: String

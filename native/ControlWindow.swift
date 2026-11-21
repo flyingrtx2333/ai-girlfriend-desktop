@@ -2459,7 +2459,7 @@ final class FormDocumentView: NSView {
                 let panel = AgentTaskMonitorSettingsView(service: companion.taskMonitor, models: { [weak self] in guard let self, let id = agentTaskID else { return [] }; return companion.agentRuntime?.modelChoices(id) ?? [] })
                 row("", panel)
             }
-            group("appearance", "外观", "外观 主题 配色 森林 薄荷 蜜蜂 羊皮纸 深色 浅色 系统 字号 字体风格 无衬线 衬线 内容宽度 标准 宽 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Width Sidebar 文件图标 Material File Icons 小鲸")
+            group("appearance", "外观", "外观 主题 配色 森林 薄荷 蜜蜂 羊皮纸 深色 浅色 系统 终端外观 Terminal 字号 字体风格 无衬线 衬线 内容宽度 标准 宽 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Width Sidebar 文件图标 Material File Icons 小鲸")
             if companion.usesAgent {
                 sidebarMenuSettings = AgentSidebarLayoutSettingsView(service: companion.sidebarLayout)
                 AgentDialogStyle.action(sidebarMenuButton)
@@ -2468,7 +2468,9 @@ final class FormDocumentView: NSView {
             }
             let panel = AgentAppearanceSettingsView(service: companion.appearance, styles: companion.usesAgent ? companion.themeStyles : nil,
                 content: companion.usesAgent ? companion.contentAppearance : nil, fileIcons: companion.usesAgent ? companion.fileIcons : nil,
-                sidebarMenu: sidebarMenuSettings == nil ? nil : sidebarMenuButton, mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
+                sidebarMenu: sidebarMenuSettings == nil ? nil : sidebarMenuButton,
+                terminalDefaults: companion.usesAgent ? companion.appearance.terminalDefaults : nil,
+                mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
             row("", panel)
         }
         group("persona", "人设", "角色 人设 性格 提示词 persona")
@@ -4120,14 +4122,14 @@ final class FormDocumentView: NSView {
     }
     private func openTaskTerminal() {
         guard selectedTab == "chat", let companion, let store = companion.agentStore, let task = currentAgentTask else { return }
-        let panel = taskTerminalPanel(store: store, checkHome: companion.checkDirectory)
+        let panel = taskTerminalPanel(store: store, companion: companion)
         panel.selectTask(task)
         do { try panel.open(); showTerminalDock() }
         catch { setStatus(error.localizedDescription, error: true) }
     }
-    private func taskTerminalPanel(store: AgentStore, checkHome: URL?) -> AgentTerminalPanel {
+    private func taskTerminalPanel(store: AgentStore, companion: AppDelegate) -> AgentTerminalPanel {
         if let terminalPanel { return terminalPanel }
-        let panel = AgentTerminalPanel(store: store, checkHome: checkHome)
+        let panel = AgentTerminalPanel(store: store, checkHome: companion.checkDirectory, appearanceDefaults: companion.appearance.terminalDefaults)
         terminalPanel = panel
         panel.onMonitorChange = { [weak self] in self?.scheduleRender() }
         panel.onLayoutChange = { [weak self] in self?.workspaceSession?.changed() }
@@ -4149,7 +4151,7 @@ final class FormDocumentView: NSView {
     internal var terminalAppearancePreference: AgentTerminalAppearance? { terminalPanel?.appearancePreference }
     internal func restoreTerminalLayout(_ layout: AgentTerminalLayout, appearance: AgentTerminalAppearance) {
         guard let companion, let store = companion.agentStore else { return }
-        let panel = taskTerminalPanel(store: store, checkHome: companion.checkDirectory)
+        let panel = taskTerminalPanel(store: store, companion: companion)
         terminalSplit.restoreHeight(layout.height)
         panel.restore(layout, appearance: appearance); panel.selectTask(selectedTab == "chat" ? currentAgentTask : nil)
         updateTerminalDock()

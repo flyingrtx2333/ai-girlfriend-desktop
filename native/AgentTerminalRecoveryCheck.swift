@@ -55,6 +55,30 @@ import Darwin
             _ = try journal.saveTerminalAppearance(explicit, expected: savedAppearance.hash)
             checks["explicitPreferenceCanReplaceFollowAtTheSameColor"] = try journal.loadTerminalAppearance(windowID: windowID)?.value == explicit
                 && Data(contentsOf: file) == original
+
+            let defaults = AgentTerminalAppearanceDefaults(directory: store.directory)
+            let stale = AgentTerminalAppearanceDefaults(directory: store.directory)
+            let defaultsFile = try files.literalURL(AgentTerminalAppearanceDefaults.filename)
+            checks["noDefaultConfigurationStillFollowsApplication"] = defaults.appearance == .application && defaults.error == nil
+                && !FileManager.default.fileExists(atPath: defaultsFile.path)
+            try defaults.save(.dark)
+            let defaultBytes = try Data(contentsOf: defaultsFile)
+            checks["defaultAppearanceRoundTripsPrivately"] = try AgentTerminalAppearanceDefaults(directory: store.directory).appearance == .dark
+                && files.entryMetadata(defaultsFile).permissions == 0o600
+            checks["changingDefaultLeavesExistingWindowRecordsIntact"] = try Data(contentsOf: file) == original
+                && journal.loadTerminalAppearance(windowID: windowID)?.value == explicit
+            rejected("staleDefaultCannotOverwriteAnotherWindow") { try stale.save(.light) }
+            checks["staleDefaultWriteKeepsSavedSetting"] = try stale.appearance == .application && Data(contentsOf: defaultsFile) == defaultBytes
+            try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: defaultsFile.path)
+            rejected("readOnlyDefaultCannotBeOverwritten") { try defaults.save(.light) }
+            checks["readOnlyDefaultKeepsLastChoiceAndBytes"] = try defaults.appearance == .dark && Data(contentsOf: defaultsFile) == defaultBytes
+            let invalidDefault = Data(#"{"version":2,"appearance":"light"}"#.utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: defaultsFile.path)
+            try files.writeData(invalidDefault, to: defaultsFile, permissions: 0o600)
+            defaults.reload()
+            checks["unsupportedDefaultKeepsLastGoodChoice"] = try defaults.error != nil && defaults.appearance == .dark
+                && Data(contentsOf: defaultsFile) == invalidDefault
+
             var invalid = layout; invalid.tasks[0].tabs[0].active = UUID()
             rejected("unknownActivePaneIsRejected") { _ = try journal.saveTerminalLayout(invalid, expected: saved.hash) }
             invalid = layout; invalid.tasks[0].tabs[0].root = .branch(vertical: false, fraction: 0.5, first: .pane(first), second: .pane(first))
@@ -74,7 +98,7 @@ import Darwin
             let cwd = try AgentFiles(workspace: FileManager.default.currentDirectoryPath).root.path
             checks["kernelReadsActualWorkingDirectory"] = AgentTerminalLayout.directory(of: getpid()) == cwd
         } catch { failure = error.localizedDescription }
-        var report: [String: Any] = ["checks": checks, "success": failure == nil && checks.count == 23 && checks.values.allSatisfy { $0 },
+        var report: [String: Any] = ["checks": checks, "success": failure == nil && checks.count == 31 && checks.values.allSatisfy { $0 },
                                      "modelRequests": 0, "pid": getpid()]
         report["error"] = failure
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
