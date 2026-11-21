@@ -84,6 +84,7 @@ import UniformTypeIdentifiers
     private var attachmentWindow: AgentAttachmentWindow?
     private var markdownFile: URL?, sourceWindow: AgentMarkdownSourceWindow?
     private var conflictWindow: AgentFileConflictWindow?
+    private var pendingConflict: AgentFileConflictWindow.RecoveryState?
     private var videoWindow: AgentVideoWindow?
     private var pendingWikiVideoPage = false
     private var restoringVideo: (file: String, state: AgentVideoPlayback)?
@@ -411,17 +412,19 @@ import UniformTypeIdentifiers
         var wikiPlan: AgentWikiPlanWindow.RecoveryState? = nil
         var wikiDirectory: AgentWikiTree.RecoveryState? = nil
         var versionReview: AgentKnowledgeVersionPosition? = nil
+        var conflict: AgentFileConflictWindow.RecoveryState? = nil
     }
     static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
         guard page.kind == "record", page.asset == nil,
               let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(object.keys).isSubset(of: ["version", "taskID", "documentOnly", "section", "selection", "file", "memoryWorkspace", "openedHash", "text", "encoding", "bom", "mode", "dirty", "video", "memoryExists", "videoWindow", "textViewport", "markdownViewport", "sourceWindow", "wikiPlan", "wikiDirectory", "versionReview"]) else { throw PetError("文本恢复记录格式不受支持，原草稿已保留") }
+              Set(object.keys).isSubset(of: ["version", "taskID", "documentOnly", "section", "selection", "file", "memoryWorkspace", "openedHash", "text", "encoding", "bom", "mode", "dirty", "video", "memoryExists", "videoWindow", "textViewport", "markdownViewport", "sourceWindow", "wikiPlan", "wikiDirectory", "versionReview", "conflict"]) else { throw PetError("文本恢复记录格式不受支持，原草稿已保留") }
         if let raw = object["textViewport"], !(raw is NSNull) { try AgentTextViewport.validateObject(raw) }
         if let raw = object["markdownViewport"], !(raw is NSNull) { try AgentMarkdownReader.ViewRecovery.validateObject(raw) }
         if let raw = object["sourceWindow"], !(raw is NSNull) { try AgentMarkdownSourceWindow.RecoveryState.validateObject(raw) }
         if let raw = object["wikiPlan"], !(raw is NSNull) { try AgentWikiPlanWindow.RecoveryState.validateObject(raw) }
         if let raw = object["wikiDirectory"], !(raw is NSNull) { try AgentWikiTree.RecoveryState.validateObject(raw) }
         if let raw = object["versionReview"], !(raw is NSNull) { try AgentKnowledgeVersionPosition.validateObject(raw) }
+        if let raw = object["conflict"], !(raw is NSNull) { try AgentFileConflictWindow.RecoveryState.validateObject(raw) }
         if let video = object["video"] {
             guard let video = video as? [String: Any], Set(video.keys).isSubset(of: ["version", "hash", "time", "duration", "rate", "volume", "muted"]) else { throw PetError("视频播放记录格式不受支持，原记录已保留") }
         }
@@ -435,6 +438,11 @@ import UniformTypeIdentifiers
               value.file.map({ $0.hasPrefix("/") && !$0.contains("\0") }) ?? true,
               value.videoWindow?.valid != false, value.textViewport?.valid != false, value.markdownViewport?.valid != false, value.sourceWindow?.valid != false,
               value.wikiPlan?.valid != false, value.wikiPlan.map({ $0.taskID == value.taskID }) ?? true else { throw PetError("文本恢复版本或所属文件无效，原草稿已保留") }
+        if let conflict = value.conflict {
+            guard conflict.valid, [1, 6].contains(value.section), value.file == conflict.file, value.openedHash != nil, value.video == nil else {
+                throw PetError("文件比较与原文档不符，原草稿已保留")
+            }
+        }
         if let directory = value.wikiDirectory {
             guard value.section == 6, directory.valid,
                   directory.document == nil || directory.document == value.selection || directory.document.map({ directory.workspace + "/" + $0 }) == value.file else {
@@ -479,7 +487,7 @@ import UniformTypeIdentifiers
             text: dirty ? text.string : nil, encoding: fileFormat.encoding.rawValue, bom: fileFormat.bom, mode: displayMode.selectedSegment, dirty: dirty, video: playback,
             memoryExists: selection.flatMap(AgentMemoryDocument.init(selection:))?.topic == nil ? nil : openedMemoryExists,
             videoWindow: child, textViewport: viewport, markdownViewport: markdownViewport, sourceWindow: source, wikiPlan: plan, wikiDirectory: directory,
-            versionReview: try wikiReviewWindow?.captureVersionPosition())
+            versionReview: try wikiReviewWindow?.captureVersionPosition(), conflict: try conflictWindow?.captureRecovery() ?? pendingConflict)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "record", state: try encoder.encode(value), dirty: dirty || plan?.dirty == true, asset: nil)
         _ = try Self.recoveryState(page); return page
@@ -508,7 +516,7 @@ import UniformTypeIdentifiers
             if value.video != nil, openedFile?.path != value.file || video.isHidden { throw PetError("原视频暂不可访问，播放记录已保留") }
             if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }
             try restoreTextViewports(value); try restoreSourceWindow(value.sourceWindow); restoreVideoWindow(value.videoWindow); try restoreWikiPlan(value.wikiPlan)
-            try restoreVersionReview(value.versionReview); return
+            try restoreVersionReview(value.versionReview); pendingConflict = value.conflict; return
         }
         guard let draft = value.text, let hash = value.openedHash else { throw PetError("恢复草稿缺少原始版本") }
         var issue: String?, currentHash: String?
@@ -540,7 +548,7 @@ import UniformTypeIdentifiers
         if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }
         text.undoManager?.removeAllActions(); updateTaskItemPicker(); onWorkspaceChange?()
         try restoreTextViewports(value); try restoreSourceWindow(value.sourceWindow); restoreVideoWindow(value.videoWindow); try restoreWikiPlan(value.wikiPlan)
-        try restoreVersionReview(value.versionReview)
+        try restoreVersionReview(value.versionReview); pendingConflict = value.conflict
     }
     private func captureTextViewport() throws -> AgentTextViewport? {
         guard openedHash != nil, !hasInlineVideoPlayback else { return nil }
@@ -618,6 +626,11 @@ import UniformTypeIdentifiers
         if value.presentation == "window" { next.presentRecoveredWindow() }
     }
     private func presentPendingSourcePage() {
+        if let pendingConflict, isPageVisible, presentingWindow?.hasBlockingDialog != true, openedFile?.path == pendingConflict.file {
+            self.pendingConflict = nil
+            openConflictComparison(restoring: pendingConflict)
+            return
+        }
         wikiReviewWindow?.presentRecoveredVersion(from: self)
         guard onSettingsPush != nil else { return }
         if let sourceWindow, sourceWindow.needsHostedPresentation { presentSettingsChild(sourceWindow) }
@@ -1254,19 +1267,23 @@ import UniformTypeIdentifiers
     }
     private func conflictSnapshot() throws -> AgentFileConflictSnapshot {
         let ownComparisonVisible = settingsHostWindow != nil && conflictWindow?.isPageVisible == true && conflictWindow?.presentingWindow === presentingWindow
-        guard !saving, isPageVisible || ownComparisonVisible, [1, 6].contains(sections.selectedSegment), let task = store.task(taskID), let workspace = task.workspace, let file = openedFile, let path = selection, try AgentFiles(workspace: workspace).resolve(path) == file else { throw PetError("文档或任务已变化，草稿已保留") }
+        guard !saving, isPageVisible || ownComparisonVisible, [1, 6].contains(sections.selectedSegment), let task = store.task(taskID),
+              let file = openedFile, let path = selection else { throw PetError("文档或任务已变化，草稿已保留") }
+        let (files, current) = try AgentWorkspaceScope.location(task, path: path)
+        guard current == file else { throw PetError("原文件位置已变化，草稿已保留") }
         try markdown.finishEditing()
-        return try AgentFileConflictSnapshot.read(file: file, workspace: workspace, draft: text.string, allowsOverwrite: fileIsEditable(task, file: file), format: fileFormat)
+        return try AgentFileConflictSnapshot.read(file: file, workspace: files.root.path, draft: text.string, allowsOverwrite: fileIsEditable(task, file: file), format: fileFormat)
     }
-    @objc private func presentConflict() {
+    @objc private func presentConflict() { openConflictComparison(restoring: nil) }
+    private func openConflictComparison(restoring recovery: AgentFileConflictWindow.RecoveryState?) {
         guard !saving, let file = openedFile else { return }
         conflictWindow?.close()
-        let next = AgentFileConflictWindow(file: file, protectedData: store.directory.deletingLastPathComponent(), read: { [weak self] in
+        let next = AgentFileConflictWindow(file: file, protectedData: store.directory.deletingLastPathComponent(), recovery: recovery, read: { [weak self] in
             guard let self else { throw PetError("文档已关闭") }; return try self.conflictSnapshot()
         }, resolve: { [weak self] reviewed, resolution in
             guard let self else { throw PetError("文档已关闭") }
             let current = try self.conflictSnapshot(); try reviewed.requireUnchanged(current)
-            guard let path = self.selection, let task = self.store.task(self.taskID), let workspace = task.workspace else { throw PetError("任务已变化") }
+            guard let path = self.selection, let task = self.store.task(self.taskID) else { throw PetError("任务已变化") }
             if resolution == .draft {
                 guard current.allowsOverwrite else { throw PetError("当前文件只读，草稿已保留") }
                 let document = try reviewed.draftDocument()
@@ -1278,7 +1295,12 @@ import UniformTypeIdentifiers
             }
             self.presentingWindow?.makeKeyAndOrderFront(nil)
         })
-        conflictWindow = next; presentSettingsChild(next)
+        next.onPositionChange = { [weak self] in self?.onWorkspaceChange?() }
+        next.onClose = { [weak self, weak next] in
+            guard let self, conflictWindow === next else { return }
+            conflictWindow = nil; onWorkspaceChange?()
+        }
+        conflictWindow = next; presentSettingsChild(next); onWorkspaceChange?()
     }
     @objc private func restoreFile() {
         guard let task = store.task(taskID), let change = task.changes.first(where: { $0.id == selection }) else { return }

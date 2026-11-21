@@ -101,11 +101,19 @@ import AppKit
             guard let comparison = host.currentController as? AgentFileConflictWindow else { throw PetError("文件比较未进入原标签页") }
             for _ in 0..<100 { if comparison.checkState["loading"] as? Bool == false { break }; await wait(0.05) }
             checks["conflictComparisonUsesActualDiskAndUnsavedDraft"] = comparison.checkState["diskHash"] as? String == AgentFiles.hash(external) && comparison.checkState["draftHash"] as? String == AgentFiles.hash(Data([0xEF, 0xBB, 0xBF]) + Data(conflictDraft.utf8)) && comparison.checkState["overwriteEnabled"] as? Bool == true
+            let page = try await guide.captureWorkspaceRecovery(), review = try AgentRecordWindow.recoveryState(page)
+            checks["comparisonStoresOnlyPositionsAndReviewedVersionsAlongsideDraft"] = page.dirty && review.text == conflictDraft &&
+                review.conflict?.file == fixture.guide.path && review.conflict?.diskHash == AgentFiles.hash(external) &&
+                review.conflict?.draftHash == comparison.checkState["draftHash"] as? String && review.conflict?.mode == 0
+            var invalid = review; invalid.conflict = .init(file: fixture.duplicate.path, mode: 0)
+            var invalidPage = page; invalidPage.state = try JSONEncoder().encode(invalid)
+            checks["comparisonRecoveryRejectsSameNameFromOtherFolder"] = (try? AgentRecordWindow.recoveryState(invalidPage)) == nil
             await inspect("file-comparison")
             host.checkSelect(.context); host.checkSelect(.document(fixture.guide.path))
             checks["switchingTabsRetainsComparisonChild"] = host.currentController === comparison
             host.checkBack(); let compared = await guide.workspaceReadback()
             checks["comparisonBackKeepsDraftWithoutWriting"] = try host.currentController === guide && compared["dirty"] as? Bool == true && files.readData(fixture.guide) == external
+            checks["explicitlyReturningRetiresOnlyComparisonState"] = try AgentRecordWindow.recoveryState(await guide.captureWorkspaceRecovery()).conflict == nil
             report["retainedConflictDraft"] = await guide.workspaceReadback()
             // Reset only this test's simulated external write after recording the preserved conflict. Confirmation clicks are covered separately in real UI acceptance.
             try files.writeData(expected, to: fixture.guide); await guide.checkTaskDocument(action: "save")

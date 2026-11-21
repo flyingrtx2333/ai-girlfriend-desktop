@@ -156,6 +156,10 @@ enum AgentGitDiffRows {
 }
 
 @MainActor final class AgentGitDiffView: AgentThemeView, NSTableViewDataSource, NSTableViewDelegate {
+    struct SplitPosition: Codable, Sendable {
+        let row: Int, fraction: Double
+        var valid: Bool { row >= 0 && fraction.isFinite && (0...1).contains(fraction) }
+    }
     let text = AgentGitDiffTextView()
     private let unified = NSScrollView(), unifiedHost = NSView(), oldScroll = NSScrollView(), newScroll = NSScrollView(), split = NSView()
     private lazy var gutter = AgentGitDiffGutter(text: text)
@@ -167,6 +171,7 @@ enum AgentGitDiffRows {
     var splitMode = false { didSet { unifiedHost.isHidden = splitMode; split.isHidden = !splitMode; needsLayout = true } }
     var wraps = true { didSet { widths = .zero; heights.removeAll(); configureUnified(); needsLayout = true } }
     var patch: String { text.string }
+    var onSplitScroll: (() -> Void)?
     override init(frame: NSRect) {
         super.init(frame: frame)
         fill = AgentWorkbenchTheme.line
@@ -262,6 +267,26 @@ enum AgentGitDiffRows {
         }
         return false
     }
+    func captureSplitPosition() -> SplitPosition? {
+        guard splitMode else { return nil }
+        let y = oldScroll.contentView.bounds.minY
+        let row = oldTable.row(at: NSPoint(x: 1, y: y))
+        guard rows.indices.contains(row) else { return nil }
+        let bounds = oldTable.rect(ofRow: row)
+        return SplitPosition(row: row, fraction: min(1, max(0, (y - bounds.minY) / max(1, bounds.height))))
+    }
+    @discardableResult func restoreSplitPosition(_ position: SplitPosition) -> Bool {
+        guard splitMode, position.valid, rows.indices.contains(position.row), oldScroll.contentSize.height > 0 else { return false }
+        layoutSubtreeIfNeeded()
+        let row = oldTable.rect(ofRow: position.row), maximum = max(0, oldTable.bounds.height - oldScroll.contentSize.height)
+        let y = min(maximum, row.minY + row.height * position.fraction)
+        synchronizing = true
+        defer { synchronizing = false }
+        for scroll in [oldScroll, newScroll] {
+            scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.minX, y: y)); scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        return true
+    }
     private func configureUnified() {
         text.isHorizontallyResizable = !wraps; text.autoresizingMask = wraps ? [.width] : []
         text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -333,6 +358,7 @@ enum AgentGitDiffRows {
         guard splitMode, !synchronizing, let clip = notification.object as? NSClipView else { return }
         let other = clip === oldScroll.contentView ? newScroll : oldScroll
         synchronizing = true; other.contentView.scroll(to: NSPoint(x: other.contentView.bounds.origin.x, y: clip.bounds.origin.y)); other.reflectScrolledClipView(other.contentView); synchronizing = false
+        onSplitScroll?()
     }
     func readingReadback() -> [String: Any] {
         ["split": splitMode, "wraps": wraps, "gutterVisible": !gutter.isHidden, "gutterWidth": gutterWidth.constant, "splitNumberWidth": numberWidth, "horizontalScroller": unified.hasHorizontalScroller,

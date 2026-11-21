@@ -40,6 +40,28 @@ struct AgentFileConflictSnapshot {
 
 @MainActor final class AgentFileConflictWindow: AgentSettingsPageController, NSWindowDelegate {
     enum Resolution { case disk, draft }
+    struct RecoveryState: Codable, Sendable {
+        var version = 1
+        let file: String
+        var mode: Int
+        var diskHash: String? = nil, draftHash: String? = nil
+        var disk: AgentTextViewport? = nil, draft: AgentTextViewport? = nil
+        var split: AgentGitDiffView.SplitPosition? = nil
+
+        var valid: Bool {
+            version == 1 && file.hasPrefix("/") && file.utf8.count < 8192 && !file.contains("\0") && (0...1).contains(mode) &&
+                (diskHash == nil) == (draftHash == nil) && AgentSettingsRecovery.validHash(diskHash) && AgentSettingsRecovery.validHash(draftHash) &&
+                (diskHash != nil || disk == nil && draft == nil && split == nil) && disk?.valid != false && draft?.valid != false &&
+                split?.valid != false && !(disk?.focused == true && draft?.focused == true)
+        }
+        static func validateObject(_ raw: Any) throws {
+            let value = try AgentSettingsRecovery.object(raw, keys: ["version", "file", "mode", "diskHash", "draftHash", "disk", "draft", "split"])
+            for key in ["disk", "draft"] { if let viewport = value[key], !(viewport is NSNull) { try AgentTextViewport.validateObject(viewport) } }
+            if let split = value["split"], !(split is NSNull) { _ = try AgentSettingsRecovery.object(split, keys: ["row", "fraction"]) }
+        }
+    }
+
+    private let file: URL
     private let readSnapshot: () throws -> AgentFileConflictSnapshot
     private let resolve: (AgentFileConflictSnapshot, Resolution) async throws -> Void
     private let protectedData: URL
@@ -49,16 +71,19 @@ struct AgentFileConflictSnapshot {
     private let refresh = NSButton(title: "刷新比较", target: nil, action: nil), keep = NSButton(title: "继续编辑", target: nil, action: nil)
     private let adopt = NSButton(title: "采用磁盘版本…", target: nil, action: nil), overwrite = NSButton(title: "覆盖文件…", target: nil, action: nil)
     private var review: AgentFileConflictSnapshot?, job: Task<Void, Never>?, loading = false, resolving = false
-    init(file: URL, protectedData: URL, read: @escaping () throws -> AgentFileConflictSnapshot, resolve: @escaping (AgentFileConflictSnapshot, Resolution) async throws -> Void) {
-        self.readSnapshot = read; self.resolve = resolve; self.protectedData = protectedData
+    private var recovery: RecoveryState?, applyingPosition = false
+    var onPositionChange: (() -> Void)?, onClose: (() -> Void)?
+    init(file: URL, protectedData: URL, recovery: RecoveryState? = nil, read: @escaping () throws -> AgentFileConflictSnapshot, resolve: @escaping (AgentFileConflictSnapshot, Resolution) async throws -> Void) {
+        self.file = file; self.readSnapshot = read; self.resolve = resolve; self.protectedData = protectedData; self.recovery = recovery
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "文件比较 · " + file.lastPathComponent; window.minSize = NSSize(width: 720, height: 440); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         let path = NSTextField(labelWithString: file.lastPathComponent); path.toolTip = file.path; path.setAccessibilityHelp(file.path); path.lineBreakMode = .byTruncatingMiddle
-        mode.target = self; mode.action = #selector(switchComparisonView); mode.selectedSegment = 0; mode.setAccessibilityLabel("文件比较显示方式")
+        mode.target = self; mode.action = #selector(switchComparisonView); mode.selectedSegment = recovery?.mode ?? 0; mode.setAccessibilityLabel("文件比较显示方式")
         let top = NSStackView(views: [path, NSView(), mode]); top.spacing = 12
         diff.splitMode = true; diff.wraps = true
+        diff.onSplitScroll = { [weak self] in self?.positionChanged() }
         full.distribution = .fillEqually; full.spacing = 16
         for (field, title, format) in [(diskText, "磁盘文件", diskFormat), (draftText, "我的草稿", draftFormat)] {
             field.isEditable = false; field.isSelectable = true; field.isRichText = false; field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -66,6 +91,9 @@ struct AgentFileConflictSnapshot {
             field.setAccessibilityLabel(title + "全文")
             format.font = .systemFont(ofSize: 11); format.textColor = AgentWorkbenchTheme.secondaryText
             let header = NSStackView(views: [NSTextField(labelWithString: title), NSView(), format]), scroll = NSScrollView(); scroll.documentView = field; scroll.hasVerticalScroller = true
+            scroll.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+            NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: field)
             let column = NSStackView(views: [header, scroll]); column.orientation = .vertical; column.spacing = 6
             for view in [header, scroll] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
             full.addArrangedSubview(column)
@@ -82,19 +110,65 @@ struct AgentFileConflictSnapshot {
         for row in [state, buttons, decisions] { row.widthAnchor.constraint(equalTo: actions.widthAnchor).isActive = true }
         for view in [top, versions, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), view.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16)]) }
         NSLayoutConstraint.activate([top.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), versions.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 12), versions.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
-        refreshComparison()
+        loadComparison(restoring: recovery)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    @objc private func switchComparisonView() { diff.isHidden = mode.selectedSegment != 0; full.isHidden = !diff.isHidden }
+    deinit { NotificationCenter.default.removeObserver(self) }
+    @objc private func viewportChanged(_ notification: Notification) { positionChanged() }
+    private func positionChanged() { if !applyingPosition, !loading, isPageVisible { onPositionChange?() } }
+    @objc private func switchComparisonView() {
+        diff.isHidden = mode.selectedSegment != 0; full.isHidden = !diff.isHidden
+        restorePositionWhenVisible(); positionChanged()
+    }
+    private func restorePositionWhenVisible() {
+        guard isPageVisible, review != nil, !loading, recovery != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, isPageVisible, !loading, review != nil, var pending = recovery else { return }
+            applyingPosition = true
+            defer { applyingPosition = false }
+            pageContentView?.layoutSubtreeIfNeeded()
+            if mode.selectedSegment == 0 {
+                if let split = pending.split, diff.restoreSplitPosition(split) { pending.split = nil }
+            } else {
+                if let disk = pending.disk, disk.apply(to: diskText) { pending.disk = nil }
+                if let draft = pending.draft, draft.apply(to: draftText) { pending.draft = nil }
+            }
+            recovery = pending
+        }
+    }
+    override func settingsDidAppear() { super.settingsDidAppear(); restorePositionWhenVisible() }
+    func windowDidBecomeKey(_ notification: Notification) { restorePositionWhenVisible() }
+
+    func captureRecovery() throws -> RecoveryState {
+        guard !resolving else { throw PetError("请先完成文件比较中的操作") }
+        var saved = recovery ?? RecoveryState(file: file.path, mode: mode.selectedSegment)
+        saved.mode = mode.selectedSegment
+        if let review {
+            saved.diskHash = review.diskHash; saved.draftHash = review.draftHash
+            if !loading {
+                if saved.disk == nil { saved.disk = try AgentTextViewport(diskText) }
+                if saved.draft == nil { saved.draft = try AgentTextViewport(draftText) }
+                if saved.split == nil { saved.split = diff.captureSplitPosition() }
+            }
+        }
+        guard saved.valid else { throw PetError("文件比较的位置无法保存，原草稿已保留") }
+        return saved
+    }
     private func updateActions() {
         refresh.isEnabled = !loading && !resolving; keep.isEnabled = !resolving
         adopt.isEnabled = !loading && !resolving && review != nil && review?.disk != review?.draft
         overwrite.isEnabled = adopt.isEnabled && review?.allowsOverwrite == true
     }
-    @objc private func refreshComparison() {
+    @objc private func refreshComparison() { recovery = nil; loadComparison(restoring: nil) }
+    private func loadComparison(restoring expected: RecoveryState?) {
         guard !resolving else { return }; job?.cancel(); review = nil; loading = true; state.stringValue = "正在比较…"; mode.isEnabled = false; updateActions()
         do {
-            let value = try readSnapshot(); diskText.string = try value.diskDocument().text; draftText.string = try value.draftDocument().text
+            let value = try readSnapshot()
+            if let expected, expected.file != value.file.path || expected.diskHash != value.diskHash || expected.draftHash != value.draftHash {
+                throw PetError("文件或草稿已变化，请刷新比较")
+            }
+            diskText.string = try value.diskDocument().text; draftText.string = try value.draftDocument().text
+            review = value
             diskFormat.stringValue = AgentTextFile.formatDescription(value.disk, encoding: value.diskEncoding); draftFormat.stringValue = AgentTextFile.formatDescription(value.draft, encoding: value.draftEncoding)
             diff.show("", oldTitle: "磁盘文件", newTitle: "我的草稿", accessibilityContext: "文件"); switchComparisonView()
             job = Task { [weak self] in
@@ -106,9 +180,12 @@ struct AgentFileConflictSnapshot {
                 } catch {
                     guard !Task.isCancelled else { return }; mode.selectedSegment = 1; switchComparisonView(); state.stringValue = "无法显示差异，请对照全文"
                 }
-                review = value; loading = false; updateActions()
+                loading = false; updateActions(); restorePositionWhenVisible(); positionChanged()
             }
-        } catch { diskText.string = ""; draftText.string = ""; diff.show("", oldTitle: "磁盘文件", newTitle: "我的草稿", accessibilityContext: "文件"); state.stringValue = error.localizedDescription; loading = false; updateActions() }
+        } catch {
+            diskText.string = ""; draftText.string = ""; diff.show("", oldTitle: "磁盘文件", newTitle: "我的草稿", accessibilityContext: "文件")
+            switchComparisonView(); state.stringValue = error.localizedDescription; loading = false; updateActions(); positionChanged()
+        }
     }
     @objc private func continueEditing() { close() }
     @objc private func adoptDisk() { confirm(.disk) }
@@ -123,12 +200,12 @@ struct AgentFileConflictSnapshot {
         job = Task { [weak self] in
             guard let self else { return }
             do { try await resolve(review, resolution); resolving = false; close() }
-            catch { resolving = false; self.review = nil; state.stringValue = error.localizedDescription; updateActions() }
+            catch { resolving = false; self.review = nil; state.stringValue = error.localizedDescription; updateActions(); positionChanged() }
         }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { !resolving }
     var canNavigateWorkspace: Bool { !resolving }
-    func windowWillClose(_ notification: Notification) { job?.cancel() }
+    func windowWillClose(_ notification: Notification) { job?.cancel(); onClose?(); onClose = nil }
     var checkState: [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled || ["--file-conflict-check", "--text-encoding-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
         return ["visible": isPageVisible, "diskHash": review?.diskHash ?? "", "draftHash": review?.draftHash ?? "", "loading": loading, "resolving": resolving, "overwriteEnabled": overwrite.isEnabled, "adoptEnabled": adopt.isEnabled, "mode": mode.selectedSegment, "patch": diff.patch, "state": state.stringValue]
