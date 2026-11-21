@@ -4,6 +4,7 @@ import AppKit
     struct RecoveryState: Codable {
         var version = 1
         var taskID: String, root: String, query: String
+        var submittedQuery: String? = nil
         var hits: [AgentIndexHit], selected: Int, hash: String?, viewport: AgentTextViewport?
         var querySelection: AgentTextViewport.Selection?, active: String, summary: String
         var source: AgentKnowledgeSourcePage.RecoveryState?, sourceOwner: AgentIndexHit?
@@ -11,7 +12,7 @@ import AppKit
     static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
         guard page.kind == "knowledge-index", !page.dirty, page.asset == nil,
               let raw = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(raw.keys).isSubset(of: ["version", "taskID", "root", "query", "hits", "selected", "hash", "viewport", "querySelection", "active", "summary", "source", "sourceOwner"]) else { throw PetError("项目检索恢复格式不受支持，原记录已保留") }
+              Set(raw.keys).isSubset(of: ["version", "taskID", "root", "query", "submittedQuery", "hits", "selected", "hash", "viewport", "querySelection", "active", "summary", "source", "sourceOwner"]) else { throw PetError("项目检索恢复格式不受支持，原记录已保留") }
         func hit(_ raw: Any) throws { guard let value = raw as? [String: Any], Set(value.keys).isSubset(of: ["path", "line", "text", "sha256", "source"]) else { throw PetError("检索结果恢复格式不受支持") } }
         try (raw["hits"] as? [Any] ?? []).forEach(hit)
         if let raw = raw["sourceOwner"], !(raw is NSNull) { try hit(raw) }
@@ -25,7 +26,8 @@ import AppKit
         }
         guard value.version == 1, value.taskID == page.taskID, UUID(uuidString: value.taskID) != nil,
               value.root.hasPrefix("/"), !value.root.contains("\0"), value.root.utf8.count <= 8192, URL(fileURLWithPath: value.root).standardizedFileURL.path == value.root,
-              value.query.utf8.count <= 100_000, value.summary.utf8.count <= 100_000, value.hits.count <= 500, value.hits.allSatisfy(validHit),
+              value.query.utf8.count <= 100_000, value.submittedQuery.map({ !$0.isEmpty && $0.count <= 500 && !$0.contains("\0") }) != false,
+              value.summary.utf8.count <= 100_000, value.hits.count <= 500, value.hits.allSatisfy(validHit),
               value.selected == -1 || value.hits.indices.contains(value.selected), ["query", "preview"].contains(value.active),
               value.hash.map({ $0.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil }) ?? true,
               value.viewport?.valid != false, value.viewport == nil || value.hash != nil && value.selected >= 0,
@@ -47,18 +49,26 @@ import AppKit
     }
     func loadSelectedPreview(expected: String? = nil) {
         let wasApplying = applyingRecovery; applyingRecovery = true; defer { applyingRecovery = wasApplying; scheduleIndexViewport() }
-        guard hits.indices.contains(table.selectedRow) else { preview.string = ""; open.isEnabled = false; selectedHash = nil; return }
+        refreshResultHeading()
+        guard hits.indices.contains(table.selectedRow) else {
+            if previewBlocked && !busy { state.stringValue = indexSummary }
+            preview.string = ""; open.isEnabled = false; selectedHash = nil; previewBlocked = false
+            return
+        }
         do {
             let files = try requireOriginalIndexScope(), hit = hits[table.selectedRow], file = try files.resolve(hit.path)
             guard !AgentFiles.sensitive(files.relative(file)), try AgentProjectIndex(workspace: files.root.path, storage: store.directory).contains(hit.path) else { throw PetError("来源不在当前项目索引中，原结果已保留") }
             let hash = try files.fileHash(file, maximum: 2_000_000)
-            guard expected == nil || hash == expected else { throw PetError("原来源已变化，阅读位置已保留；请重新选择结果核对") }
+            guard expected == nil || hash == expected else { throw PetError("原来源已变化，请更新索引后核对") }
+            guard hash == hit.sha256 else { throw PetError("检索结果所用文件已变化，请更新索引") }
             let body = try files.read(file.path, offset: max(1, hit.line - 4), limit: 100)
             guard hash == (try files.fileHash(file, maximum: 2_000_000)) else { throw PetError("读取期间来源已变化，请重试") }
             preview.string = body
             if let pendingIndexViewport { guard pendingIndexViewport.matches(preview) else { throw PetError("来源显示内容已变化，原位置已保留") } }
-            selectedHash = hash; previewBlocked = false; open.isEnabled = true
-        } catch { preview.string = ""; previewBlocked = true; open.isEnabled = false; state.stringValue = error.localizedDescription }
+            else { preview.setSelectedRange(NSRange(location: 0, length: 0)); preview.scroll(.zero) }
+            if previewBlocked && !busy { state.stringValue = indexSummary }
+            selectedHash = hash; previewBlocked = false; open.isEnabled = !busy
+        } catch { preview.string = ""; previewBlocked = true; open.isEnabled = false; showIndexFailure(error) }
     }
     func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page? {
         guard prepareWorkspaceNavigation() else { throw PetError("请先完成当前项目检索操作") }
@@ -66,7 +76,8 @@ import AppKit
         rememberQuerySelection()
         var viewport = pendingIndexViewport
         if !previewBlocked, selectedHash != nil, viewport == nil { viewport = try AgentTextViewport(preview); viewport?.focused = lastContentFocus == "preview" }
-        let value = RecoveryState(taskID: taskID, root: root, query: search.stringValue, hits: hits, selected: table.selectedRow, hash: selectedHash, viewport: viewport,
+        let value = RecoveryState(taskID: taskID, root: root, query: search.stringValue, submittedQuery: submittedQuery,
+            hits: hits, selected: table.selectedRow, hash: selectedHash, viewport: viewport,
             querySelection: querySelection, active: lastContentFocus, summary: state.stringValue, source: try sourceWindow?.captureWorkspaceRecovery(), sourceOwner: sourceOwner)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "knowledge-index", state: try encoder.encode(value), dirty: false, asset: nil)
@@ -76,7 +87,8 @@ import AppKit
         let value = try Self.recoveryState(page)
         guard value.taskID == taskID, store.task(taskID) != nil else { throw PetError("检索所属任务不存在") }
         applyingRecovery = true; defer { applyingRecovery = false; onWorkspaceChange?() }
-        openedRoot = value.root; search.stringValue = value.query; hits = value.hits; selectedHash = value.hash; pendingIndexViewport = value.viewport; querySelection = value.querySelection; lastContentFocus = value.active
+        openedRoot = value.root; search.stringValue = value.query; submittedQuery = value.submittedQuery; hits = value.hits
+        selectedHash = value.hash; pendingIndexViewport = value.viewport; querySelection = value.querySelection; lastContentFocus = value.active
         table.delegate = nil; table.reloadData(); table.deselectAll(nil)
         if value.hits.indices.contains(value.selected) { table.selectRowIndexes(IndexSet(integer: value.selected), byExtendingSelection: false) }; table.delegate = self
         state.stringValue = value.summary; loadSelectedPreview(expected: value.hash); indexFocusRequested = true
@@ -103,7 +115,10 @@ import AppKit
         }
     }
     func rememberQuerySelection() { if let editor = search.currentEditor() as? NSTextView { let range = editor.selectedRange(); querySelection = .init(location: range.location, length: range.length) } }
-    func controlTextDidChange(_ notification: Notification) { guard !applyingRecovery else { return }; lastContentFocus = "query"; rememberQuerySelection(); onWorkspaceChange?() }
+    func controlTextDidChange(_ notification: Notification) {
+        guard !applyingRecovery else { return }
+        lastContentFocus = "query"; rememberQuerySelection(); refreshResultHeading(); onWorkspaceChange?()
+    }
     func controlTextDidBeginEditing(_ notification: Notification) { if !applyingRecovery, !indexFocusRequested { lastContentFocus = "query"; rememberQuerySelection() } }
     @objc func indexViewChanged(_ notification: Notification) {
         guard !applyingRecovery, !indexFocusRequested else { return }

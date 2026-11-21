@@ -106,7 +106,9 @@ import AppKit
             try catalog.checkOpen(workspace: fixture.workspace.path, action: "search")
             guard let search = host.currentController as? AgentKnowledgeWindow else { throw PetError("项目检索未进入主页面") }
             checks["indexSearchReadsActualFilesAndOpensInlineSource"] = await search.checkSearchAndOpen("BlueFatFish") && host.currentController is AgentKnowledgeSourcePage
-            host.checkBack(); inspect("project-search"); host.checkBack()
+            host.checkBack(); inspect("project-search")
+            try await checkProjectSearchPage(search, workspace: fixture.workspace, output: output, checks: &checks)
+            host.checkBack()
             control.showKnowledgeLibrary()
             checks["rootSwitchRetainsLibraryControllerAndDocument"] = host.currentController === library && library.checkState()["sourceID"] as? String == fixture.sourceID
             control.show(tab: "settings"); control.showKnowledgeLibrary()
@@ -125,5 +127,114 @@ import AppKit
         report["checks"] = checks; report["blockedModelAttempts"] = attempts; report["modelTransmissions"] = 0; report["appPID"] = getpid()
         if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("knowledge-page-report.json"))
+    }
+
+    private func checkProjectSearchPage(_ page: AgentKnowledgeWindow, workspace: URL, output: URL, checks: inout [String: Bool]) async throws {
+        let host = control.knowledgePageHost
+        guard let window = control.window, let content = page.pageContentView else { throw PetError("项目检索页面不可用") }
+        let files = try AgentFiles(workspace: workspace.path)
+        let path = "docs/技术指南/公共参考资料与测试流程/设备/verify-release-procedure.md"
+        let source = try files.literalURL(path)
+        let original = "# BlueFatFish release\n" + (1...54).map { "Public fixture line \($0)" }.joined(separator: "\n") + "\n"
+        try files.writeData(Data(original.utf8), to: source)
+        page.update.performClick(nil); await page.job?.value
+        guard let row = page.hits.firstIndex(where: { $0.path == path }) else { throw PetError("更新索引后找不到新文件") }
+        page.table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        page.table.scrollRowToVisible(row)
+        let expected = try files.read(path, offset: max(1, page.hits[row].line - 4), limit: 100)
+        checks["searchResultsShowNewIndexedFileWithoutResubmitting"] = page.submittedQuery == "BlueFatFish" && page.open.isEnabled &&
+            page.preview.string == expected && page.find.prominent
+        let oldAppearance = window.appearance, oldSize = window.frame
+        defer { window.appearance = oldAppearance; window.setFrame(oldSize, display: true) }
+        func capture(_ name: String) throws {
+            guard let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw PetError("项目检索页面无法渲染") }
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            guard let data = bitmap.representation(using: .png, properties: [:]) else { throw PetError("项目检索图像无法导出") }
+            try data.write(to: output.appendingPathComponent(name + ".png"))
+        }
+        for (name, appearance, size) in [("narrow-dark", NSAppearance.Name.darkAqua, NSSize(width: 780, height: 540)),
+                                         ("wide-light", NSAppearance.Name.aqua, NSSize(width: 1320, height: 800))] {
+            window.appearance = NSAppearance(named: appearance)
+            window.setFrame(NSRect(origin: window.frame.origin, size: size), display: true)
+            window.contentView?.layoutSubtreeIfNeeded()
+            func visible(_ button: NSButton) -> Bool {
+                button.visibleRect.width >= button.bounds.width - 1 && button.visibleRect.height >= button.bounds.height - 1
+            }
+            checks["projectSearchControlsVisible-" + name] = [page.find, page.update, page.open].allSatisfy(visible) &&
+                page.search.visibleRect.width >= 210 && (page.table.enclosingScrollView?.bounds.width ?? 0) >= 140 &&
+                (page.preview.enclosingScrollView?.bounds.width ?? 0) >= 200 && !page.search.hasAmbiguousLayout
+            let cell = page.table.view(atColumn: 0, row: row, makeIfNecessary: true)
+            checks["projectSearchShowsLongPathInResult-" + name] = cell?.toolTip?.hasPrefix(path + ":") == true &&
+                cell?.accessibilityLabel()?.contains(path) == true
+            let actionFrame = content.convert(page.open.bounds, from: page.open)
+            let readingFrame = page.preview.enclosingScrollView.map { content.convert($0.bounds, from: $0) } ?? .zero
+            checks["projectSearchOpenActionStaysTrailing-" + name] = (0...18).contains(readingFrame.maxX - actionFrame.maxX)
+            try capture("project-search-" + name)
+        }
+        page.search.stringValue = "这是还未提交的查询"
+        page.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: page.search))
+        let selection = NSRange(location: 22, length: 10)
+        page.preview.setSelectedRange(selection)
+        page.update.performClick(nil); await page.job?.value
+        await wait(0.08)
+        checks["refreshKeepsSubmittedQuerySelectionAndUnsentInput"] = page.submittedQuery == "BlueFatFish" &&
+            page.search.stringValue == "这是还未提交的查询" && page.hits.indices.contains(page.table.selectedRow) &&
+            page.hits[page.table.selectedRow].path == path &&
+            page.preview.selectedRange() == selection
+        let checkpoint = try page.captureWorkspaceRecovery()
+        let savedQuery = try checkpoint.map(AgentKnowledgeWindow.recoveryState)
+        checks["workspaceCheckpointKeepsBothQueriesAndSelectedFile"] = savedQuery?.submittedQuery == "BlueFatFish" &&
+            savedQuery?.query == "这是还未提交的查询" &&
+            savedQuery.map { $0.hits.indices.contains($0.selected) && $0.hits[$0.selected].path == path } == true
+        if let checkpoint, var state = try JSONSerialization.jsonObject(with: checkpoint.state) as? [String: Any] {
+            state.removeValue(forKey: "submittedQuery")
+            let legacy = AgentWorkspaceRecovery.Page(taskID: checkpoint.taskID, kind: checkpoint.kind, state: try JSONSerialization.data(withJSONObject: state),
+                                                       dirty: checkpoint.dirty, asset: checkpoint.asset)
+            let restored = AgentKnowledgeWindow(store: page.store, taskID: page.taskID)
+            defer { restored.close() }
+            try restored.restoreWorkspaceRecovery(legacy)
+            checks["legacyWorkspaceCheckpointRetainsOriginalResults"] = restored.search.stringValue == page.search.stringValue &&
+                restored.hits.count == page.hits.count && restored.preview.string == page.preview.string
+        }
+        let revised = original.replacingOccurrences(of: "Public fixture line 2\n", with: "Source changed after search\n")
+        try files.writeData(Data(revised.utf8), to: source)
+        page.table.deselectAll(nil)
+        if let row = page.hits.firstIndex(where: { $0.path == path }) { page.table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+        checks["staleSourceBlocksReadingUntilIndexRefresh"] = page.previewBlocked && !page.open.isEnabled && page.preview.string.isEmpty &&
+            page.state.stringValue.contains("更新索引") && !page.state.isHidden
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        try capture("project-search-stale-dark")
+        page.update.performClick(nil); await page.job?.value
+        checks["refreshedSourceUsesExactUpdatedBytes"] = page.open.isEnabled && page.preview.string.contains("Source changed after search") &&
+            page.selectedHash == AgentFiles.hash(Data(revised.utf8)) && page.search.stringValue == "这是还未提交的查询"
+        page.open.performClick(nil)
+        checks["updatedFileOpensInSameRightContent"] = host.currentController is AgentKnowledgeSourcePage &&
+            host.currentController?.presentingWindow === window
+        host.checkBack()
+        checks["sourceBackKeepsOriginalQueryAndSelection"] = host.currentController === page && page.search.stringValue == "这是还未提交的查询" &&
+            page.hits.indices.contains(page.table.selectedRow) && page.hits[page.table.selectedRow].path == path
+        let profiles = page.store.agents
+        let originalRole = page.store.task(page.taskID)?.agent
+        let searchOnly = AgentProfile(name: "检索样例", description: "只检索测试文档", instructions: "读取公开样例。", tools: ["search_project"], enabled: true)
+        let indexOnly = AgentProfile(name: "索引样例", description: "只更新测试索引", instructions: "读取公开样例。", tools: ["index_project"], enabled: true)
+        let prior = try profiles.document()
+        try profiles.save(profiles.encode(try profiles.decode(prior.0) + [searchOnly, indexOnly]), expectedHash: prior.1)
+        page.store.update(page.taskID) { $0.agent = .init(profile: searchOnly, workspace: workspace.path) }
+        let pending = try files.literalURL("permission-fixture.md")
+        try files.writeData(Data("BlueFatFish approval fixture\n".utf8), to: pending)
+        let index = try AgentProjectIndex(workspace: workspace.path, storage: page.store.directory)
+        page.update.performClick(nil); await page.job?.value
+        let indexedWithSearchRole = try index.contains("permission-fixture.md")
+        checks["refreshStillRequiresIndexPermission"] = page.state.stringValue.contains("index_project") && !indexedWithSearchRole
+        page.store.update(page.taskID) { $0.agent = .init(profile: indexOnly, workspace: workspace.path) }
+        page.update.performClick(nil); await page.job?.value
+        checks["refreshWithOnlyIndexPermissionKeepsCurrentResults"] = try index.contains("permission-fixture.md") &&
+            page.hits.allSatisfy { $0.path != "permission-fixture.md" } && page.submittedQuery == "BlueFatFish"
+        page.store.update(page.taskID) { $0.agent = originalRole }
+        page.search.stringValue = "NO_MATCH_FIXTURE_2814"; page.find.performClick(nil); await page.job?.value
+        checks["noMatchesDisablesSourceWithoutInventingPreview"] = page.hits.isEmpty && page.preview.string.isEmpty &&
+            !page.open.isEnabled && page.submittedQuery == "NO_MATCH_FIXTURE_2814"
     }
 }

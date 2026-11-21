@@ -91,7 +91,10 @@ import AppKit
                     checks["completeInvalidCardBodyAndTitleSurviveProcesses"] = current.body == originalCard.body && current.title == originalCard.title && current.dirty && current.book?.cards.first?.hash == originalCard.book?.cards.first?.hash
                     checks["originalBookScopeLanguageAndFieldPositionSurvive"] = current.scope.root == originalCard.scope.root && current.scope.branch == originalCard.scope.branch && current.language == originalCard.language && current.revision == originalCard.revision && current.fields == originalCard.fields && current.active == originalCard.active
                     checks["cardBodySelectionAndScrollSurvive"] = current.views == originalCard.views
-                    checks["searchResultsQuerySelectionAndScopeSurvive"] = currentIndex.query == originalIndex.query && currentIndex.root == originalIndex.root && currentIndex.selected == originalIndex.selected && currentIndex.hits.map(\.path) == originalIndex.hits.map(\.path) && currentIndex.querySelection == originalIndex.querySelection
+                    checks["searchResultsQuerySelectionAndScopeSurvive"] = currentIndex.query == originalIndex.query &&
+                        currentIndex.submittedQuery == originalIndex.submittedQuery && currentIndex.root == originalIndex.root &&
+                        currentIndex.selected == originalIndex.selected && currentIndex.hits.map(\.path) == originalIndex.hits.map(\.path) &&
+                        currentIndex.querySelection == originalIndex.querySelection
                     checks["otherSourceRetainsExactOriginalState"] = try state(indexSource) == originalIndex.source && indexSource.checkState["loaded"] as? Bool == true
                     checks["bothTaskOwnersStayInTheirOriginalWindows"] = try control.agentTaskID == fixture.first && (child().agentTaskID) == fixture.second
                     if stage == "missing" {
