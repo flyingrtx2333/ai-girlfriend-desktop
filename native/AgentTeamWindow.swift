@@ -13,6 +13,8 @@ import AppKit
     private let save = AgentDialogButton(title: "保存", target: nil, action: nil), use = AgentDialogButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("团队保存状态")
     private let more = AgentDialogButton(title: "更多", target: nil, action: nil), restore = AgentDialogButton(title: "恢复团队", target: nil, action: nil)
     private let roster = AgentSettingsStatusField("已选团队成员")
+    private let archivedLeader = NSTextField(wrappingLabelWithString: ""), archivedMembers = NSTextField(wrappingLabelWithString: "")
+    private var memberEditor: NSView?, memberReader: NSView?
     private lazy var detailActions = AgentSettingsDetailActions([more, use, save, restore])
     private var archivedIDs: Set<String> = []
     private var archiveHash: String?
@@ -69,9 +71,21 @@ import AppKit
         for row in [chooser, roster] { row.widthAnchor.constraint(equalTo: memberSelection.widthAnchor).isActive = true }
         let memberActions = NSStackView(views: [enabled, NSView(), manage])
         memberActions.alignment = .centerY; memberActions.spacing = 8
+        for label in [archivedLeader, archivedMembers] {
+            label.font = .systemFont(ofSize: 13); label.textColor = .labelColor; label.isSelectable = true
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        archivedLeader.setAccessibilityLabel("归档团队负责人"); archivedMembers.setAccessibilityLabel("归档团队成员")
+        let memberEditor = AgentSettingsStyle.section("成员", id: "team-members",
+            rows: [AgentSettingsStyle.formRow("负责人", leader, trailing: true), memberSelection, memberActions])
+        let memberReader = AgentSettingsStyle.section("成员", id: "team-members-read",
+            rows: [AgentSettingsStyle.formRow("负责人", archivedLeader, trailing: false),
+                   AgentSettingsStyle.formRow("成员", archivedMembers, trailing: false)])
+        memberReader.isHidden = true
+        self.memberEditor = memberEditor; self.memberReader = memberReader
         let form = AgentSettingsStyle.form([
             AgentSettingsStyle.section("团队信息", id: "team-basic", rows: [AgentSettingsStyle.formRow("名称", name, trailing: false), AgentSettingsStyle.formRow("职责", purpose, trailing: false)]),
-            AgentSettingsStyle.section("成员", id: "team-members", rows: [AgentSettingsStyle.formRow("负责人", leader, trailing: true), memberSelection, memberActions]),
+            memberEditor, memberReader,
             AgentSettingsStyle.section("协作指令", id: "team-instructions", rows: [editor])
         ], label: "团队配置")
         draftViewport.trackForm(form)
@@ -200,6 +214,8 @@ import AppKit
         var names = roles.filter { selectedMembers.contains($0.id) }.map(roleTitle)
         if !unavailable.isEmpty { names.append("\(unavailable.count) 名成员不可用") }
         roster.stringValue = names.joined(separator: "、")
+        archivedLeader.stringValue = leader.selectedItem?.title ?? ""
+        archivedMembers.stringValue = names.joined(separator: "\n")
     }
     @objc private func leaderChanged() { if let id = leader.selectedItem?.representedObject as? String { selectedMembers.remove(id) }; refreshMembers(); changed() }
     @objc private func toggleMember(_ sender: NSMenuItem) {
@@ -209,7 +225,9 @@ import AppKit
     private func updateControls() {
         AgentSettingsStyle.listState(table, text: showsArchive ? "暂无已归档团队" : "暂无团队")
         let selected = selectedID != nil, archived = selectedArchived
-        for item in [name, purpose, leader, members, enabled] as [NSControl] { item.isEnabled = selected && !archived }
+        for field in [name, purpose] { field.isEnabled = selected; field.isEditable = selected && !archived; field.isSelectable = selected }
+        for item in [leader, members, enabled] as [NSControl] { item.isEnabled = selected && !archived }
+        memberEditor?.isHidden = archived; memberReader?.isHidden = !archived
         instructions.isEditable = selected && !archived
         save.isHidden = archived; save.isEnabled = dirty && !archived
         more.isHidden = !selected || archived; more.isEnabled = selected && !dirty && !archived
