@@ -17,10 +17,11 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
     let directory: URL
     var onChange: ((String) -> Void)?
     private struct Document: Codable { var teams: [AgentTeam] }
+    private struct Archive: Codable { var ids: [String] }
     private let encoder: JSONEncoder = { let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]; return e }()
     init(profile: URL) { directory = profile }
-    private func file() throws -> URL {
-        let files = try AgentFiles(workspace: directory.path), requested = files.root.appendingPathComponent("extensions/teams.json")
+    private func file(_ name: String = "teams.json") throws -> URL {
+        let files = try AgentFiles(workspace: directory.path), requested = files.root.appendingPathComponent("extensions").appendingPathComponent(name)
         guard try files.literalURL(requested.path) == requested else { throw PetError("团队配置目录不能是链接") }; return requested
     }
     func document() throws -> (String, String?) {
@@ -61,6 +62,53 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
     }
     func encode(_ values: [AgentTeam]) throws -> String { String(decoding: try encoder.encode(Document(teams: values)), as: UTF8.self) }
     func list() throws -> [AgentTeam] { try decode(document().0) }
+    func archiveState() throws -> (ids: Set<String>, hash: String?) {
+        let url = try file("team-archive.json"), files = try AgentFiles(workspace: directory.path)
+        let entry = try files.entryMetadata(url)
+        guard entry.kind != "missing" else { return ([], nil) }
+        guard entry.kind == "file", try files.resolve(url.path) == url else { throw PetError("团队归档记录不能是链接或特殊文件") }
+        let data = try files.readData(url, maximum: 4096)
+        let value = try JSONDecoder().decode(Archive.self, from: data)
+        let ids = Set(value.ids)
+        guard ids.count == value.ids.count, ids.count <= 32, ids.allSatisfy({ UUID(uuidString: $0) != nil }) else { throw PetError("团队归档记录无效") }
+        return (ids, AgentFiles.hash(data))
+    }
+    func setArchived(_ id: String, archived: Bool, expectedHash: String?, expectedArchiveHash: String?, store: AgentStore,
+                     workspace: String? = nil, task: AgentTaskRecord? = nil) throws {
+        let current = try document(), archive = try archiveState()
+        guard current.1 == expectedHash, archive.hash == expectedArchiveHash else { throw PetError("团队配置或归档记录已改变，请重新读取") }
+        var teams = try decode(current.0)
+        guard let index = teams.firstIndex(where: { $0.id == id }), archive.ids.contains(id) != archived else {
+            throw PetError("团队或归档状态已变化，请重新读取")
+        }
+        let team = teams[index]
+        try requireSources(team, workspace: workspace, task: task)
+        if archived, store.tasks.contains(where: { record in
+            guard record.status == .running || record.status == .waiting || record.queuedRun != nil else { return false }
+            return (try? binding(record, store: store))?.id == id
+        }) { throw PetError("请先停止此团队正在执行、等待或排队的任务") }
+        var ids = archive.ids
+        if archived { ids.insert(id) } else { ids.remove(id) }
+        guard ids.count <= 32 else { throw PetError("团队归档记录超过 32 项") }
+        let files = try AgentFiles(workspace: directory.path)
+        let data = try encoder.encode(Archive(ids: ids.sorted()))
+        let marker = try AgentKnowledgeFileWrite(files: files, path: try file("team-archive.json").path, data: data,
+            expectedHash: archive.hash, missing: archive.hash == nil, permissions: archive.hash == nil ? 0o600 : nil, label: "团队归档")
+        if team.enabled {
+            // Disable first so older versions cannot start work on an archived team.
+            teams[index].enabled = false
+            let disable = try AgentKnowledgeFileWrite(files: files, path: try file().path, data: Data(try encode(teams).utf8),
+                expectedHash: current.1, label: "团队配置")
+            let backupPath = "extensions/team-archive-history/" + UUID().uuidString
+            let backup = try files.literalURL(backupPath)
+            guard backup == files.root.appendingPathComponent(backupPath) else { throw PetError("团队归档备份目录不能是链接") }
+            try AgentKnowledgeFileBatch.commit([disable, marker], backup: backup, label: "团队归档") {}
+        } else {
+            guard try document().1 == current.1 else { throw PetError("团队配置已改变，请重新读取") }
+            try marker.requireCurrent()
+            try files.writeData(data, to: marker.url, permissions: marker.permissions, expectedTarget: marker.signature)
+        }
+    }
     func sourceWorkspaces(_ team: AgentTeam) throws -> Set<String> {
         var projects = try Set((team.roleSources ?? [:]).values.compactMap { try AgentPlugins.scope($0.name).workspace })
         if let workspace = team.workspace { projects.insert(workspace) }; return projects
@@ -85,6 +133,7 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
         return values
     }
     func team(_ id: String, store: AgentStore, workspace: String? = nil, task: AgentTaskRecord? = nil) throws -> AgentTeam {
+        guard try !archiveState().ids.contains(id) else { throw PetError("团队已归档，请先恢复并启用") }
         guard var value = try list().first(where: { $0.id == id && $0.enabled }) else { throw PetError("团队未启用或已不存在") }
         let profiles = try roles(value, store: store, enabled: true, workspace: workspace, task: task)
         if value.roleSources == nil { value.roleSources = sources(profiles) }; return value
@@ -96,6 +145,11 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
         var values = try decode(text, draft: true); let previous = try document()
         guard previous.1 == expectedHash else { throw PetError("团队配置已改变，请重新读取后保存") }
         let previousTeams = try decode(previous.0)
+        let archive = try archiveState()
+        guard activating.map({ !archive.ids.contains($0) }) != false,
+              previousTeams.filter({ archive.ids.contains($0.id) }) == values.filter({ archive.ids.contains($0.id) }) else {
+            throw PetError("团队已归档，请先恢复再编辑")
+        }
         for i in values.indices {
             let old = previousTeams.first { $0.id == values[i].id }
             if old == values[i] && values[i].id != activating { continue }
@@ -117,6 +171,7 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
         let nextAgents = try store.agents.encode(agents), agentChanges = try nextAgents != store.agents.encode(store.agents.decode(agentsBefore.0))
         if agentChanges { try store.agents.save(nextAgents, expectedHash: agentsBefore.1) }
         do {
+            guard try archiveState().hash == archive.hash else { throw PetError("团队归档记录已改变，请重新读取后保存") }
             try write.requireCurrent(); try write.files.writeData(data, to: write.url, permissions: write.permissions, expectedTarget: write.signature)
         } catch {
             if agentChanges { try? store.agents.save(agentsBefore.0, expectedHash: AgentFiles.hash(Data(nextAgents.utf8))) }; throw error

@@ -311,6 +311,11 @@ import Darwin
                 let actual = [Int32(value["pid"]!), Int32(value["child"]!)]; guard actual.allSatisfy({ kill($0, 0) == 0 }) else { throw PetError("实际父子进程已提前结束") }; pids += actual; processGroups[key] = actual
             }
             checks["bothCrossSourceAndLegacyTeamsRunActualParentAndChildProcesses"] = processGroups.count == 2 && jobs.allSatisfy { runtime.isRunning($0.1) }
+            let liveTeamDocument = try tasks.teams.document()
+            checks["archivingAnExecutingTeamPreservesItsActualProcessAndConfiguration"] = try refused {
+                try tasks.teams.setArchived(mixedTeam.id, archived: true, expectedHash: liveTeamDocument.1, expectedArchiveHash: nil,
+                                            store: tasks, workspace: beta, task: original)
+            } && jobs.allSatisfy { runtime.isRunning($0.1) } && tasks.teams.document().1 == liveTeamDocument.1
             try tasks.extensions.plugins.setEnabled(tasks.extensions.plugins.installation(ids["alphaRolePlugin"]!), false)
             let alphaConnection = connectorTasks.first { $0.0 == "alpha" }!, betaConnection = connectorTasks.first { $0.0 == "beta" }!, mixedJob = jobs.first { $0.0 == "mixed" }!, betaJob = jobs.first { $0.0 == "beta" }!
             for _ in 0..<250 {
@@ -325,6 +330,32 @@ import Darwin
             runtime.cancel(betaJob.1); tasks.mcp.disconnect()
             for _ in 0..<250 { if pids.allSatisfy({ kill($0, 0) != 0 }) { break }; await wait(0.04) }
             checks["allEightActualServiceAndCommandProcessesExit"] = pids.count == 8 && pids.allSatisfy { kill($0, 0) != 0 }
+            let beforeArchive = try tasks.teams.list(), roleHash = try tasks.agents.document().1
+            let originalTeamFile = tasks.directory.appendingPathComponent(teamTask + ".json")
+            let boundTask = try Data(contentsOf: originalTeamFile)
+            checks["oneSourceCannotArchiveACrossSourceTeam"] = refused {
+                try tasks.teams.setArchived(mixedTeam.id, archived: true, expectedHash: liveTeamDocument.1, expectedArchiveHash: nil,
+                                            store: tasks, workspace: beta)
+            }
+            try tasks.teams.setArchived(mixedTeam.id, archived: true, expectedHash: liveTeamDocument.1, expectedArchiveHash: nil,
+                                        store: tasks, workspace: beta, task: original)
+            let archived = try tasks.teams.archiveState(), archivedTeamDocument = try tasks.teams.document()
+            var expectedTeams = beforeArchive
+            expectedTeams[expectedTeams.firstIndex(where: { $0.id == mixedTeam.id })!].enabled = false
+            checks["archiveChangesOnlyTeamEnabledAndArchiveMembership"] = try archived.ids == Set([mixedTeam.id]) &&
+                tasks.teams.list() == expectedTeams && tasks.agents.document().1 == roleHash && Data(contentsOf: originalTeamFile) == boundTask
+            checks["archiveBlocksExistingBindingNewTasksAndDirectEdits"] = refused { try tasks.teams.check(tasks.task(teamTask)!, store: tasks) } &&
+                refused { _ = try tasks.teams.createTask(mixedTeam.id, store: tasks, workspace: beta, context: original) } &&
+                refused { try tasks.teams.save(liveTeamDocument.0, expectedHash: archivedTeamDocument.1, store: tasks, workspace: beta, task: original) }
+            checks["staleArchiveVersionCannotRestore"] = refused {
+                try tasks.teams.setArchived(mixedTeam.id, archived: false, expectedHash: archivedTeamDocument.1, expectedArchiveHash: nil,
+                                            store: tasks, workspace: beta, task: original)
+            }
+            try tasks.teams.setArchived(mixedTeam.id, archived: false, expectedHash: archivedTeamDocument.1, expectedArchiveHash: archived.hash,
+                                        store: tasks, workspace: beta, task: original)
+            checks["restoringOnlyMovesTeamBackAndKeepsItDisabled"] = try tasks.teams.archiveState().ids.isEmpty &&
+                tasks.teams.document().1 == archivedTeamDocument.1 && tasks.agents.document().1 == roleHash &&
+                Data(contentsOf: originalTeamFile) == boundTask && refused { _ = try tasks.teams.team(mixedTeam.id, store: tasks, task: original) }
             checks["noModelRequestsOrRecordedUsage"] = attempts == 0 && tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { $0.inputTokens == 0 && $0.outputTokens == 0 && ($0.modelReceipts ?? []).isEmpty }
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["success"] = !checks.isEmpty && checks.values.allSatisfy { $0 } && report["error"] == nil

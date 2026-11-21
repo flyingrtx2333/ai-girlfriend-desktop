@@ -4011,7 +4011,8 @@ final class FormDocumentView: NSView {
         }
         item("小鲸", "default", selected: task.agent == nil)
         do {
-            let profiles = try store.agents.list(enabledOnly: true, task: task), teams = try store.teams.list().filter(\.enabled)
+            let profiles = try store.agents.list(enabledOnly: true, task: task), archived = try store.teams.archiveState().ids
+            let teams = try store.teams.list().filter { $0.enabled && !archived.contains($0.id) }
             if !profiles.isEmpty { menu.addItem(.separator()); menu.addItem(NSMenuItem.sectionHeader(title: "自定义 Agent")) }
             for value in profiles { item(AgentProfiles.title(value, task: task), "agent:" + value.id, selected: task.team == nil && task.agent?.profile.id == value.id) }
             if !teams.isEmpty { menu.addItem(.separator()); menu.addItem(NSMenuItem.sectionHeader(title: "Agent 团队")) }
