@@ -1292,7 +1292,6 @@ import UniformTypeIdentifiers
         let task = store.task(taskID)
         if let task, [.running, .waiting].contains(task.status) || task.archived { state.stringValue = "任务当前只读，草稿已保留"; return }
         do {
-            try markdown.finishEditing()
             if sections.selectedSegment == 5, let document = AgentMemoryDocument(selection: path), let hash = openedHash {
                 if document.scope.isProjectFile { try memorySettingsTarget?.context.requireCurrent(store) }
                 let saved = try AgentMemory.save(document.scope, content: text.string, expectedHash: hash, store: store, taskID: memoryTaskID,
@@ -1307,6 +1306,7 @@ import UniformTypeIdentifiers
             guard file == openedFile, fileIsEditable(task, file: file) else { throw PetError("文件位置已变化或当前只读，草稿已保留") }
             guard let hash = openedHash else { throw PetError("打开的文件版本不可用，草稿已保留") }
             guard AgentFiles.hash(current) == hash else { state.stringValue = "文件已更改，草稿已保留"; presentConflict(); return }
+            try markdown.finishEditing()
             let content = text.string, format = fileFormat
             load = Task { [weak self] in
                 guard let self else { return }
@@ -1335,7 +1335,7 @@ import UniformTypeIdentifiers
         try requireWikiFile(file, task: task)
         let (files, current) = try AgentWorkspaceScope.location(task, path: path)
         guard current == file else { throw PetError("原文件位置已变化，草稿已保留") }
-        try markdown.finishEditing()
+        try markdown.prepareWorkspaceNavigation()
         return try AgentFileConflictSnapshot.read(file: file, workspace: files.root.path, draft: text.string, allowsOverwrite: fileIsEditable(task, file: file), format: fileFormat)
     }
     @objc private func presentConflict() { openConflictComparison(restoring: nil) }
@@ -1353,6 +1353,7 @@ import UniformTypeIdentifiers
             if resolution == .draft {
                 guard current.allowsOverwrite else { throw PetError("当前文件只读，草稿已保留") }
                 let document = try reviewed.draftDocument()
+                try self.markdown.finishEditing()
                 try await self.persistFile(path: path, content: document.text, format: document.format, expectedHash: reviewed.diskHash)
             } else {
                 let document = try current.diskDocument(); self.requestedEncoding = document.format.encoding; self.encodings[current.file.path] = document.format.encoding

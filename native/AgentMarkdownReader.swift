@@ -320,10 +320,23 @@ import AppKit
             try beginEditing(region, base: saved.base, restoring: true)
             inlineEditor?.restoreValue(saved.value); inlineEditor?.setEditable(canEdit?() == true)
         }
-        guard value.viewport.matches(text) else { throw PetError("Markdown 预览已变化，原阅读位置已保留") }
+        var restored = value
+        if !value.viewport.matches(text) {
+            guard value.editor != nil, let region = inlineEditor?.region else {
+                throw PetError("Markdown 预览已变化，原阅读位置已保留")
+            }
+            // Missing images can change the preview text while the original edit still matches.
+            var viewport = try AgentTextViewport(text)
+            viewport.anchor = region.display.location
+            viewport.offset = -16
+            viewport.x = 0
+            viewport.selections = [.init(location: viewport.anchor, length: 0)]
+            viewport.focused = value.viewport.focused && value.editor?.viewport.focused != true
+            restored.viewport = viewport
+        }
         if let heading = value.heading { guard heading < outline.numberOfItems else { throw PetError("Markdown 章节已变化，原阅读位置已保留") }; outline.selectItem(at: heading) }
         rememberedPreviewFocus = value.viewport.focused; rememberedEditorFocus = value.editor?.viewport.focused ?? false
-        isEditing = value.editing; updateEditingState(); pendingViewRecovery = value
+        isEditing = value.editing; updateEditingState(); pendingViewRecovery = restored
     }
     func rememberViewportFocus() {
         guard window?.isVisible == true, !isHiddenOrHasHiddenAncestor, pendingViewRecovery == nil, !viewActivationScheduled else { return }

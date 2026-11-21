@@ -37,6 +37,29 @@ import AppKit
             let fixture: TextViewportFixture
             if stage == "seed" {
                 let workspace = output.appendingPathComponent("workspace"), files = try AgentFiles(workspace: workspace.path), plainFile = try files.resolve("plain.txt"), guide = try files.resolve("guide.md")
+                do {
+                    let file = try files.resolve("preview-recovery.md"), image = try files.resolve("preview-recovery.png")
+                    let original = "![预览图](preview-recovery.png)\n\n原段落。\n"
+                    let replacement = "在原位续写这段文字"
+                    let preview = AgentMarkdownReader(), restored = AgentMarkdownReader()
+                    var draft = original
+                    preview.canEdit = { true }; preview.onSourceChanged = { draft = $0 }
+                    preview.show(original, file: file, workspace: workspace.path)
+                    try preview.checkViewRecovery(action: "begin", target: "原段落。", input: replacement,
+                        selection: (replacement as NSString).range(of: "续写"), y: nil, cell: false)
+                    guard let saved = try preview.captureViewRecovery(source: draft), saved.editor != nil,
+                          let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
+                                                       samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                                       bytesPerRow: 0, bitsPerPixel: 0) else { throw PetError("预览续编样例不完整") }
+                    bitmap.setColor(.blue, atX: 0, y: 0)
+                    guard let png = bitmap.representation(using: .png, properties: [:]) else { throw PetError("验收图片不可用") }
+                    try files.writeData(png, to: image)
+                    restored.canEdit = { true }; restored.show(draft, file: file, workspace: workspace.path)
+                    try restored.restoreViewRecovery(saved)
+                    let position = try restored.captureViewRecovery(source: draft)
+                    checks["changedImagePreviewKeepsVerifiedInlineEdit"] = position?.editor == saved.editor && position?.sourceHash == saved.sourceHash &&
+                        position?.viewport.hash != saved.viewport.hash && position?.viewport.valid == true
+                }
                 let first = tasks.create(title: "文本位置主任务", workspace: workspace.path), second = tasks.create(title: "文本位置另一任务", workspace: workspace.path)
                 for id in [first, second] { tasks.update(id) { $0.draft = "保留输入 PUBLIC_VIEWPORT_DRAFT_417" } }
                 control.window?.setFrame(NSRect(x: 100, y: 100, width: 1200, height: 774), display: true)
