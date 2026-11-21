@@ -12,6 +12,7 @@ body { display: flex; }
   --note-selection: #e3efea;
   --note-text: #202b26;
   --note-secondary: #516259;
+  --note-link: #245e4a;
   flex: 0 0 clamp(188px, 36%, 288px);
   min-width: 0;
   display: flex;
@@ -65,6 +66,28 @@ body { display: flex; }
   border-radius: 6px; background: var(--note-input); color: inherit; font: inherit; }
 .spreadsheet-thread-composer textarea::placeholder { color: var(--note-secondary); }
 .spreadsheet-thread-reply:not(:disabled) { background: var(--note-selection); }
+.spreadsheet-message-mention { color: var(--note-link); font-weight: 600; }
+.spreadsheet-mention-picker { width: 100%; max-height: 132px; overflow: auto; padding: 3px; border: 1px solid var(--note-stroke);
+  border-radius: 7px; background: var(--note-input); }
+.spreadsheet-mention-picker button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
+  padding: 4px 6px; border: 0; text-align: left; overflow-wrap: anywhere; }
+.spreadsheet-mention-picker button[aria-selected='true'], .spreadsheet-mention-picker button:hover { background: var(--note-selection); }
+.spreadsheet-mention-picker small, .spreadsheet-mention-picker p { color: var(--note-secondary); font-size: 11px; }
+.spreadsheet-mention-picker p { margin: 2px 4px; }
+@media (max-height: 450px) {
+  .spreadsheet-threads { gap: 8px; padding-block: 10px; }
+  .spreadsheet-thread-list { max-height: min(70px, 22%); }
+  .spreadsheet-thread-detail { gap: 6px; }
+  .spreadsheet-thread-composer { position: relative; }
+  .spreadsheet-mention-picker { max-height: 96px; }
+  .spreadsheet-thread-messages:not([hidden]) + .spreadsheet-thread-composer .spreadsheet-mention-picker {
+    position: absolute;
+    inset-inline: 0;
+    bottom: calc(100% + 5px);
+    z-index: 1;
+    box-shadow: 0 3px 10px #0002;
+  }
+}
 @media (prefers-color-scheme: dark) {
   .spreadsheet-annotation {
     --note-surface: #202824;
@@ -73,6 +96,7 @@ body { display: flex; }
     --note-selection: #30493e;
     --note-text: #e1ebe5;
     --note-secondary: #a1b5aa;
+    --note-link: #9bd6b7;
   }
   .spreadsheet-note-body span[data-note-source] { color: color-mix(in srgb, var(--note-run-color, var(--note-text)), var(--note-text) 55%); }
 }

@@ -1,18 +1,20 @@
 import { spreadsheetCell, type Cell } from './spreadsheet-notes';
+import { commentGUID, createMentionPicker, moveMentions, validCommentText, validDraftMentions,
+  type CommentInputRange, type MentionRecipient, type ThreadMention } from './spreadsheet-mentions';
 
-type Message = { id: string; parent?: string; author: string; time?: string; text: string };
+type Message = { id: string; parent?: string; author: string; time?: string; text: string; mentions?: ThreadMention[] };
 type Thread = Cell & { id: string; version: string | null; resolved: boolean; editable: boolean; messages: Message[] };
-type Catalog = { threads: Thread[]; incomplete: boolean; author: string; creation: Record<string, string[]> };
-type Reply = { id: string; time: string; text: string };
+type Catalog = { threads: Thread[]; incomplete: boolean; author: string; creation: Record<string, string[]>; recipients: MentionRecipient[] };
+type Reply = { id: string; time: string; text: string; mentions?: ThreadMention[] };
 type Edit = Pick<Thread, 'id' | 'sheet' | 'cell' | 'version' | 'resolved'> & { opening: Reply | null; replies: Reply[] };
-type Draft = { id: string; text: string; start: number; end: number; target?: Cell };
+type Draft = { id: string; text: string; start: number; end: number; target?: Cell; mentions?: ThreadMention[] };
 export type SpreadsheetThreadsLocation = {
   open: boolean; selected: string | null; listY: number; bodyY: number; replyFocused: boolean; drafts: Draft[];
 };
 
 const maxReply = 32_767, maxDraftsLength = 128_000;
-const threadID = /^\{[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}\}$/;
-const validText = (value: string) => !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF\uFFFE\uFFFF]/u.test(value);
+const maxDraftBytes = 1_000_000;
+const utf8 = new TextEncoder();
 const keys = (value: any, fields: string[]) => value && typeof value === 'object' && !Array.isArray(value) &&
   Object.keys(value).length === fields.length && Object.keys(value).every(key => fields.includes(key));
 const offset = (n: any, max: number) => Number.isSafeInteger(n) && n >= 0 && n <= max;
@@ -26,20 +28,23 @@ function validCell(value: any): value is Cell {
 export function validSpreadsheetThreadsLocation(value: any): value is SpreadsheetThreadsLocation {
   if (!keys(value, ['open', 'selected', 'listY', 'bodyY', 'replyFocused', 'drafts']) ||
       typeof value.open !== 'boolean' || typeof value.replyFocused !== 'boolean' ||
-      !(value.selected === null || typeof value.selected === 'string' && threadID.test(value.selected)) ||
+      !(value.selected === null || typeof value.selected === 'string' && commentGUID.test(value.selected)) ||
       ![value.listY, value.bodyY].every(n => Number.isFinite(n) && n >= 0 && n <= 1e9) ||
       !Array.isArray(value.drafts) || value.drafts.length > 5_000) return false;
   const ids = new Set<string>();
   let length = 0;
   for (const draft of value.drafts) {
     const required = ['id', 'text', 'start', 'end'];
-    if (!(keys(draft, required) || keys(draft, [...required, 'target']) && validCell(draft.target)) ||
-        typeof draft.id !== 'string' || !threadID.test(draft.id) || ids.has(draft.id) ||
-        typeof draft.text !== 'string' || !draft.text.length || draft.text.length > maxReply || !validText(draft.text) ||
+    if (draft?.target !== undefined) required.push('target');
+    if (draft?.mentions !== undefined) required.push('mentions');
+    if (!keys(draft, required) || draft.target !== undefined && !validCell(draft.target) ||
+        typeof draft.id !== 'string' || !commentGUID.test(draft.id) || ids.has(draft.id) ||
+        typeof draft.text !== 'string' || !draft.text.length || draft.text.length > maxReply || !validCommentText(draft.text) ||
+        draft.mentions !== undefined && !validDraftMentions(draft.mentions, draft.text) ||
         !offset(draft.start, draft.text.length) || !offset(draft.end, draft.text.length) || draft.end < draft.start) return false;
     ids.add(draft.id); length += draft.text.length;
   }
-  return length <= maxDraftsLength;
+  return length <= maxDraftsLength && utf8.encode(JSON.stringify(value.drafts)).length <= maxDraftBytes;
 }
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' });
@@ -82,11 +87,46 @@ export function createSpreadsheetThreads(root: HTMLElement, locate: (cell: Cell)
   const edits = new Map<string, Edit>();
   const rows = new Map<string, HTMLButtonElement>();
   let creation = new Map<string, Set<string>>();
+  let workbookRecipients: MentionRecipient[] = [];
+  let beforeInput: CommentInputRange | undefined;
 
   const newID = () => '{' + crypto.randomUUID().toUpperCase() + '}';
   const atCell = (cell: Cell) => threadList.find(thread => thread.sheet === cell.sheet && thread.cell === cell.cell);
   const composing = (thread: Thread) => thread.version === null && !edits.get(thread.id)?.opening;
   const resolved = (thread: Thread) => edits.get(thread.id)?.resolved ?? thread.resolved;
+  const boundMentions = () => selected ? drafts.get(selected.id)?.mentions ?? [] : [];
+  function recipientChoices() {
+    const staged = new Map<string, MentionRecipient>();
+    const remember = (mentions: ThreadMention[] | undefined) => {
+      for (const mention of mentions ?? []) {
+        const key = mention.recipient.email?.toLowerCase() ?? mention.recipient.id;
+        if (key && !staged.has(key)) staged.set(key, mention.recipient);
+      }
+    };
+    for (const draft of drafts.values()) remember(draft.mentions);
+    for (const edit of edits.values()) {
+      remember(edit.opening?.mentions);
+      for (const message of edit.replies) remember(message.mentions);
+    }
+    const chosen = new Set<string>();
+    const fromWorkbook = workbookRecipients.map(recipient => {
+      const key = recipient.email?.toLowerCase() ?? recipient.id;
+      if (key) chosen.add(key);
+      return !recipient.id && key ? staged.get(key) ?? recipient : recipient;
+    });
+    return [...fromWorkbook, ...Array.from(staged).filter(([key]) => !chosen.has(key)).map(([, person]) => person)];
+  }
+  const mentionPicker = createMentionPicker(reply, recipientChoices, boundMentions, (query, selected) => {
+    const recipient = { ...selected, id: selected.id ?? newID() };
+    const previous = reply.value, span = '@' + recipient.name, token = span + ' ';
+    const next = previous.slice(0, query.start) + token + previous.slice(query.end);
+    if (next.length > maxReply) { status.textContent = '评论过长，无法添加提及'; return; }
+    const mentions = moveMentions(previous, next, boundMentions(), { start: query.start, end: query.end, inputType: 'insertText' });
+    mentions.push({ id: newID(), recipient, start: query.start, length: span.length });
+    reply.setRangeText(token, query.start, query.end, 'end');
+    saveDraft(mentions.sort((a, b) => a.start - b.start)); reply.focus();
+  });
+  composer.insertBefore(mentionPicker.pane, send);
   function editThread(thread: Thread) {
     let edit = edits.get(thread.id);
     if (!edit) {
@@ -113,6 +153,7 @@ export function createSpreadsheetThreads(root: HTMLElement, locate: (cell: Cell)
     send.textContent = newThread ? '添加评论' : '添加回复';
     composer.hidden = !thread || !!resolvedThread && !drafts.has(thread.id);
     reply.readOnly = !canWrite || !!resolvedThread;
+    if (reply.readOnly) mentionPicker.hide();
     send.disabled = reply.readOnly || !reply.value.trim();
   }
   function renderRow(thread: Thread) {
@@ -131,11 +172,24 @@ export function createSpreadsheetThreads(root: HTMLElement, locate: (cell: Cell)
     name.textContent = value.author; time.textContent = replyDate(value.time);
     if (value.time) time.dateTime = value.time;
     heading.append(name, time);
-    const text = document.createElement('p'); text.textContent = value.text.replace(/\r\n?/g, '\n');
+    const text = document.createElement('p');
+    const lineBreaks = (part: string) => part.replace(/\r\n?/g, '\n');
+    let offset = 0;
+    for (const mention of value.mentions ?? []) {
+      text.append(lineBreaks(value.text.slice(offset, mention.start)));
+      offset = mention.start + mention.length;
+      const span = document.createElement('span'); span.className = 'spreadsheet-message-mention';
+      span.textContent = lineBreaks(value.text.slice(mention.start, offset));
+      span.title = mention.recipient.email ?? mention.recipient.name;
+      if (mention.recipient.id) span.dataset.person = mention.recipient.id;
+      text.append(span);
+    }
+    text.append(lineBreaks(value.text.slice(offset)));
     card.append(heading, text);
     return card;
   }
   function renderThread() {
+    mentionPicker.hide(); beforeInput = undefined;
     const thread = selected;
     threadView.hidden = !thread;
     for (const item of threadList) renderRow(item);
@@ -163,16 +217,22 @@ export function createSpreadsheetThreads(root: HTMLElement, locate: (cell: Cell)
       if (token === navigation) status.textContent = '无法定位原单元格，请核对工作表';
     });
   }
-  function saveDraft() {
+  function saveDraft(explicitMentions?: ThreadMention[]) {
     if (!selected || reply.readOnly) return;
-    const id = selected.id, previous = drafts.get(id)?.text ?? '';
+    const id = selected.id, oldDraft = drafts.get(id), previous = oldDraft?.text ?? '';
     const total = Array.from(drafts.values()).reduce((sum, item) => sum + item.text.length, 0) - previous.length + reply.value.length;
-    if (!validText(reply.value) || reply.value.length > maxReply || total > maxDraftsLength) {
-      reply.value = previous; status.textContent = '回复过长或含不支持的字符'; updateControls(); return;
-    }
+    const mentions = explicitMentions ?? moveMentions(previous, reply.value, oldDraft?.mentions ?? [], beforeInput);
     const { sheet, cell } = selected;
-    if (reply.value) drafts.set(id, { id, text: reply.value, start: reply.selectionStart, end: reply.selectionEnd,
-      ...(composing(selected) ? { target: { sheet, cell } } : {}) });
+    const candidate: Draft = { id, text: reply.value, start: reply.selectionStart, end: reply.selectionEnd,
+      ...(composing(selected) ? { target: { sheet, cell } } : {}), ...(mentions.length ? { mentions } : {}) };
+    const tooLarge = mentions.length > 0 || Array.from(drafts.values()).some(item => item.mentions?.length)
+      ? utf8.encode(JSON.stringify([...Array.from(drafts.values()).filter(item => item.id !== id), candidate])).length > maxDraftBytes : false;
+    if (!validCommentText(reply.value) || reply.value.length > maxReply || total > maxDraftsLength || tooLarge) {
+      reply.value = previous;
+      if (oldDraft) reply.setSelectionRange(oldDraft.start, oldDraft.end);
+      status.textContent = '评论过长或含不支持的字符'; updateControls(); return;
+    }
+    if (reply.value) drafts.set(id, candidate);
     else drafts.delete(id);
     status.textContent = '';
     updateControls(); draftChanged(drafts.size > 0);
@@ -181,7 +241,14 @@ export function createSpreadsheetThreads(root: HTMLElement, locate: (cell: Cell)
     const active = selected && drafts.get(selected.id);
     if (active) { active.start = reply.selectionStart; active.end = reply.selectionEnd; }
   }
-  reply.addEventListener('input', saveDraft);
+  reply.addEventListener('beforeinput', event => {
+    beforeInput = { start: reply.selectionStart, end: reply.selectionEnd, inputType: event.inputType };
+  });
+  reply.addEventListener('input', event => {
+    saveDraft(); beforeInput = undefined;
+    if (!(event as InputEvent).isComposing) mentionPicker.refresh();
+  });
+  reply.addEventListener('compositionend', () => mentionPicker.refresh());
   for (const event of ['focus', 'blur', 'select']) reply.addEventListener(event, () => { bookmarkReply(); viewed(); });
   list.addEventListener('scroll', viewed);
   messages.addEventListener('scroll', viewed);
@@ -236,11 +303,12 @@ export function createSpreadsheetThreads(root: HTMLElement, locate: (cell: Cell)
   });
   send.addEventListener('click', () => {
     if (!selected || send.disabled) return;
-    const text = drafts.get(selected.id)?.text;
+    const draft = drafts.get(selected.id), text = draft?.text;
     if (!text?.trim()) return;
     const edit = editThread(selected);
     const first = composing(selected);
-    const message = { id: first ? selected.id : newID(), time: new Date().toISOString(), text };
+    const message = { id: first ? selected.id : newID(), time: new Date().toISOString(), text,
+      ...(draft?.mentions?.length ? { mentions: draft.mentions } : {}) };
     if (first) edit.opening = message;
     else edit.replies.push(message);
     drafts.delete(selected.id);
@@ -249,17 +317,18 @@ export function createSpreadsheetThreads(root: HTMLElement, locate: (cell: Cell)
   });
   function hide() {
     if (panel.hidden) return;
-    panel.hidden = true; navigation += 1; viewed();
+    panel.hidden = true; mentionPicker.hide(); navigation += 1; viewed();
   }
   close.addEventListener('click', hide);
   panel.addEventListener('keydown', event => {
     if (event.key === 'Escape') { event.stopPropagation(); hide(); }
-    if (event.target === reply && event.key === 'Enter' && event.metaKey) { event.preventDefault(); send.click(); }
+    if (event.target === reply && event.key === 'Enter' && event.metaKey && !event.isComposing) { event.preventDefault(); send.click(); }
   });
 
   return {
     configure(catalog: Catalog) {
       loaded = true; threadList = catalog.threads; incomplete = catalog.incomplete; author = catalog.author;
+      workbookRecipients = catalog.recipients;
       creation = new Map(Object.entries(catalog.creation).map(([sheet, cells]) => [sheet, new Set(cells)]));
       rows.clear(); list.replaceChildren();
       for (const thread of threadList) addRow(thread);
@@ -296,7 +365,7 @@ export function createSpreadsheetThreads(root: HTMLElement, locate: (cell: Cell)
     },
     reset() {
       navigation += 1; panel.hidden = true; loaded = false; selected = null; threadList = []; incomplete = false; author = '';
-      drafts.clear(); edits.clear(); rows.clear(); creation.clear(); list.replaceChildren(); renderThread();
+      drafts.clear(); edits.clear(); rows.clear(); creation.clear(); workbookRecipients = []; list.replaceChildren(); renderThread();
     },
     hasThread(cell: Cell) { return !!atCell(cell); },
     selectedCell() { return panel.hidden ? null : selected; },

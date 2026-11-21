@@ -400,9 +400,36 @@ enum AgentSpreadsheetNotes {
             case .note(let edit): try writeBody(edit, to: content)
             case .thread(_, let id, let text):
                 set("guid", id, on: note); set("shapeId", "0", on: note)
+                try setCommentRevisionUID(id, on: note, in: root)
                 writeText(text, to: append("t", to: content))
             }
         }
+    }
+
+    private static func setCommentRevisionUID(_ id: String, on note: XMLElement, in root: XMLElement) throws {
+        func prefix(_ uri: String, preferred: String) throws -> String {
+            let namespaces = root.namespaces ?? []
+            if let name = namespaces.first(where: { $0.stringValue == uri && $0.name?.isEmpty == false })?.name { return name }
+            let names = Set(namespaces.compactMap(\.name))
+            var name = preferred, index = 1
+            while names.contains(name) { name = preferred + String(index); index += 1 }
+            guard let namespace = XMLNode.namespace(withName: name, stringValue: uri) as? XMLNode else {
+                throw PetError("评论兼容标识无效，草稿已保留")
+            }
+            root.addNamespace(namespace)
+            return name
+        }
+        let compatibility = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+        let revision = try prefix("http://schemas.microsoft.com/office/spreadsheetml/2014/revision", preferred: "xr")
+        let mc = try prefix(compatibility, preferred: "mc")
+        let attr = root.attribute(forLocalName: "Ignorable", uri: compatibility)
+        let ignored = (attr?.stringValue ?? "").split(whereSeparator: \.isWhitespace).map(String.init)
+        if !ignored.contains(revision) {
+            let value = (ignored + [revision]).joined(separator: " ")
+            if let attr { attr.stringValue = value }
+            else { set(mc + ":Ignorable", value, on: root) }
+        }
+        set(revision + ":uid", id, on: note)
     }
 
     private static func validEdit(_ edit: AgentSpreadsheetNoteEdit) -> Bool {

@@ -414,7 +414,7 @@ import Darwin
         do { catalog = try await AgentSpreadsheetNotes.threadCatalog(pinned.file) }
         catch is CancellationError { throw CancellationError() }
         catch {
-            catalog = .init(threads: [], incomplete: true, author: "", creation: [:])
+            catalog = .init(threads: [], incomplete: true, author: "", creation: [:], recipients: [])
             spreadsheetThreads.toolTip = error.localizedDescription
         }
         let payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(catalog))
@@ -720,6 +720,49 @@ import Darwin
               showingNotes: !document.querySelector('.spreadsheet-notes').hidden,
               grid: grid.width, left: frame.left, right: frame.right, width: innerWidth };
             """, args: args) as? [String: Any] else { throw PetError("无法读取当前评论栏") }
+        return value
+    }
+    func checkSpreadsheetMentions(insert: String? = nil, range: Range<Int>? = nil, choose: String? = nil,
+                                  key: String? = nil) async throws -> [String: Any] {
+        guard spreadsheetReadback, CommandLine.arguments.contains("--spreadsheet-threads-mentions"),
+              file.pathExtension.lowercased() == "xlsx" else { throw PetError("仅限评论提及验收") }
+        let args: [String: Any] = ["insert": insert as Any? ?? NSNull(), "range": range.map { [$0.lowerBound, $0.upperBound] } as Any? ?? NSNull(),
+                                   "choose": choose as Any? ?? NSNull(), "key": key as Any? ?? NSNull()]
+        guard let value = try await evaluate("""
+            const panel = document.querySelector('.spreadsheet-threads');
+            if (!panel || panel.hidden) throw new Error('评论栏没有显示');
+            const input = panel.querySelector('textarea'), picker = panel.querySelector('.spreadsheet-mention-picker');
+            const options = () => [...picker.querySelectorAll('[role=option]')];
+            const email = button => button.querySelector('small')?.textContent ?? button.querySelector('span').textContent;
+            if (range !== null || insert !== null) {
+              if (input.readOnly || input.closest('[hidden]')) throw new Error('当前评论无法编辑');
+              input.focus();
+              if (range !== null) input.setSelectionRange(...range);
+              if (insert !== null) {
+                if (range === null) input.setSelectionRange(input.value.length, input.value.length);
+                if (!document.execCommand('insertText', false, insert)) throw new Error('未能插入评论文字');
+              }
+            }
+            if (choose !== null) {
+              const choice = options().find(button => email(button) === choose);
+              if (!choice || picker.hidden) throw new Error('联系人未在候选列表中');
+              choice.click();
+            }
+            if (key !== null) {
+              input.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles: true, cancelable: true}));
+            }
+            return { value: input.value, pickerOpen: !picker.hidden, focused: document.activeElement === input,
+              selection: [input.selectionStart, input.selectionEnd],
+              bodyHeight: panel.querySelector('.spreadsheet-thread-messages').clientHeight,
+              pickerTop: picker.getBoundingClientRect().top, pickerBottom: picker.getBoundingClientRect().bottom,
+              inputTop: input.getBoundingClientRect().top,
+              options: options().map(button => ({ name: button.querySelector('span').textContent, email: email(button),
+                selected: button.getAttribute('aria-selected') === 'true' })),
+              marks: [...panel.querySelectorAll('.spreadsheet-message-mention')].map(span => ({
+                text: span.textContent, person: span.dataset.person, recipient: span.title, message: span.closest('article').dataset.id
+              }))
+            };
+            """, args: args) as? [String: Any] else { throw PetError("无法读取评论提及") }
         return value
     }
     func checkSpreadsheetNoteVisible(sheet: String, cell: String) async throws -> Bool {
