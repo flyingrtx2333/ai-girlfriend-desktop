@@ -175,6 +175,7 @@ struct AgentImportBatch: Codable {
             else { records = try await Task.detached(priority: .utility) { try AgentAutomationDataImport.discover(source, root: root, workspace: workspace) }.value }
             return try AgentAutomationDataImport.plan(records, workspace: workspace, store: store)
         case .plugins:
+            if route.sshHost != nil { return try await AgentPluginDataImport.discoverRemote(route, transport: ssh, store: store) }
             return try await AgentPluginDataImport.discover(source, root: root, workspace: workspace, store: store)
         case .configuration:
             return try await AgentStandaloneDataImport.discover(source, root: root, workspace: workspace, store: store)
@@ -307,14 +308,18 @@ struct AgentImportBatch: Codable {
                     } else {
                         try await AgentMCPDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                     }
+                } else if candidate.plugin != nil {
+                    if route.sshHost != nil || candidate.sshHost != nil {
+                        try await AgentPluginDataImport.installRemote(candidate, store: store) { try await ssh.readPlugin(candidate, route: route) }
+                    } else {
+                        try await AgentPluginDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
+                    }
                 } else if route.sshHost != nil || candidate.sshHost != nil {
                     let document = try await ssh.read(candidate, route: route)
                     guard batch?.state == "running" else { return }
                     guard document.candidate.id == candidate.id, document.candidate.sourceHash == candidate.sourceHash,
                           document.candidate.rawHash == candidate.rawHash else { throw PetError("远端来源已更新，请重新检测；本次未替换任务") }
                     try install(document, candidate: candidate)
-                } else if candidate.plugin != nil {
-                    try await AgentPluginDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                 } else if candidate.configuration != nil {
                     try await AgentStandaloneDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                 } else {

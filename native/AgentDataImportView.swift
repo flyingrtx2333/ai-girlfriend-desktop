@@ -564,13 +564,14 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         }
         if let plan = record.plugin {
             let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局插件"
-            var lines = [record.title, "来源 · " + record.file, destination]
+            var lines = [record.title, "来源 · " + source, destination]
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             else { lines.append("导入后为停用状态") }
             lines.append(contentsOf: record.warnings)
             setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             open.isEnabled = AgentPluginDataImport.installedID(record, store: store) != nil
-            original.isEnabled = (try? AgentPluginDataImport.reveal(record, root: root)) != nil
+            original.isHidden = record.sshHost != nil
+            original.isEnabled = record.sshHost == nil && (try? AgentPluginDataImport.reveal(record, root: root)) != nil
             return
         }
         if let plan = record.configuration {

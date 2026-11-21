@@ -60,6 +60,144 @@ import AppKit
         let importer = tasks.dataImport
         let root = output.appendingPathComponent("Codex '公开样例'")
         let route = AgentImportRoute(source: .codex, category: .tasks, root: root.path, workspace: nil, sshHost: "whale-import")
+        if CommandLine.arguments.contains("--ssh-plugin-import-check") {
+            let phase = output.appendingPathComponent("ssh-plugin-paused.json")
+            let original = AgentImportRoute(source: .codex, category: .plugins, root: route.root, workspace: nil, sshHost: route.sshHost)
+            let service = tasks.extensions.plugins, files = FileManager.default
+            let primary = root.appendingPathComponent("plugins/alpha-source")
+            let changed = root.appendingPathComponent("plugins/beta-source/skills/source/resources/note.txt")
+            func write(_ value: [String: Any], to url: URL) throws {
+                try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: url, options: .atomic)
+            }
+            func choose(_ records: [AgentImportCandidate], titles: Set<String>, table: NSTableView) throws {
+                try button("全选").performClick(nil)
+                for (index, record) in records.enumerated() where titles.contains(record.title) {
+                    table.scrollRowToVisible(index)
+                    guard let checkbox = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? NSButton else {
+                        throw PetError("缺少插件勾选入口")
+                    }
+                    checkbox.performClick(nil)
+                }
+            }
+            if !files.fileExists(atPath: phase.path) {
+                try chooseSSH(route)
+                try button("检测可导入内容").performClick(nil)
+                try await settle { importer.scanning || importer.preview(for: original) == nil }
+                let records = importer.preview(for: original)?.records ?? []
+                checks["codexCacheSelectsSemverAndLocalOverride"] = importer.preview(for: original)?.available.count == 4 && records.count == 6 &&
+                    records.contains { $0.title == "缓存正式版" && $0.file.hasSuffix("/1.10.0") } &&
+                    records.contains { $0.title == "本机覆盖版" && $0.file.hasSuffix("/local") }
+                checks["linkedAndProtectedFilesSkipOnlyTheirPackages"] = records.filter {
+                    $0.issue?.contains("受保护文件、链接") == true
+                }.count == 2
+                guard let index = records.firstIndex(where: { $0.title == "远端资料插件" }) else {
+                    throw PetError(importer.preview(for: original)?.issue ?? "缺少远端插件预览")
+                }
+                let selected = records[index]
+                checks["previewListsAllComponentKindsAndSetup"] = ["Skill ·", "命令 ·", "Agent ·", "规则 ·", "MCP ·", "Hook ·"]
+                    .allSatisfy { selected.preview.contains($0) } && selected.warnings.contains { $0.contains("凭据") } &&
+                    !selected.preview.contains("PLUGIN_FIXTURE_SECRET")
+                try openCategory(.plugins)
+                guard let table = find(content, NSTableView.self, { $0.accessibilityLabel() == "可导入插件" }) else { throw PetError("缺少插件预览列表") }
+                try choose(records, titles: ["远端资料插件", "远端改动插件"], table: table)
+                table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+                content.layoutSubtreeIfNeeded()
+                let detail = find(content, NSTextView.self, { $0.accessibilityLabel() == "导入预览" })
+                let confirm = try button("导入 6 项")
+                checks["narrowPreviewShowsOriginSelectedCountAndDisabledImport"] = detail?.string.contains("whale-import:" + primary.path) == true &&
+                    detail?.string.contains("导入后为停用状态") == true && confirm.visibleRect.width >= confirm.bounds.width - 1 &&
+                    confirm.visibleRect.height >= confirm.bounds.height - 1 && find(content, NSButton.self, { $0.title == "来源文件" }) == nil
+                checks["selectionIsPinnedToReviewedRemoteSource"] = control.captureSettingsNavigation()?.dataImport?.routes
+                    .first(where: { $0.route == original })?.checked?.count == 2
+                try button("返回导入").performClick(nil)
+                let notify = importer.onChange
+                importer.onChange = { [weak importer] in
+                    notify?()
+                    if let importer, importer.batch?.state == "running", importer.batch?.items.filter({ $0.state == "imported" }).count == 4 {
+                        importer.pause()
+                    }
+                }
+                defer { importer.onChange = notify }
+                try button("导入 6 项").performClick(nil)
+                try await settle { importer.active || importer.batch == nil }
+                guard let batch = importer.batch, batch.state == "paused" else { throw PetError("SSH 插件批次没有暂停") }
+                checks["mixedBatchPinsOnlyTwoSelectedPluginPackages"] = batch.items.filter { $0.state == "imported" && $0.record.category != .plugins }.count == 4 &&
+                    batch.items.filter { $0.state == "pending" && batch.route(for: $0) == original }.count == 2
+                try Data("预览后更新的公开插件资料\n".utf8).write(to: changed)
+                try write(["batch": batch.id, "pid": getpid(), "checks": checks, "modelRequests": requests], to: phase)
+                return
+            }
+            let initial = try JSONSerialization.jsonObject(with: Data(contentsOf: phase)) as? [String: Any] ?? [:]
+            checks = initial["checks"] as? [String: Bool] ?? [:]
+            checks["restartRestoresFrozenRemotePluginSelection"] = initial["pid"] as? Int != Int(getpid()) && importer.unfinished &&
+                importer.batch?.id == initial["batch"] as? String && importer.batch?.items.filter {
+                    $0.record.category == .plugins && $0.record.sshHost == route.sshHost && $0.state == "pending"
+                }.count == 2
+            guard control.showSettingsCategory("imports") else { throw PetError("不能恢复 SSH 插件导入页") }
+            try button("继续导入").performClick(nil)
+            try await settle { importer.active }
+            guard let batch = importer.batch, let copied = batch.items.first(where: { $0.record.title == "远端资料插件" }),
+                  let id = AgentPluginDataImport.installedID(copied.record, store: tasks) else { throw PetError("缺少已导入远端插件") }
+            let plugin = try service.installation(id)
+            checks["resourceChangeBlocksOnlyTheAffectedPackage"] = batch.state == "completed" && copied.state == "imported" &&
+                batch.items.filter { $0.state == "imported" }.count == 5 && batch.items.contains {
+                    $0.record.title == "远端改动插件" && $0.state == "failed" && $0.detail.contains("已变化")
+                }
+            let resource = "skills/source/resources/nested/sample.bin"
+            let installedBytes = try service.content(resource, installation: plugin)
+            let expected = try Data(contentsOf: primary.appendingPathComponent(resource))
+            checks["directoryResourcesAndDisabledComponentsArePreserved"] = installedBytes == expected && !plugin.enabled &&
+                plugin.receipt.components.count == 2 && plugin.agents.count == 1 && plugin.rules.count == 1 &&
+                plugin.hooks.count == 1 && plugin.mcpServers.count == 1
+            let mcp = try service.content(".mcp.json", installation: plugin), hooks = try service.content("hooks/hooks.json", installation: plugin)
+            let templates = String(decoding: mcp + hooks, as: UTF8.self)
+            checks["installedTemplatesOnlyKeepCredentialPlaceholders"] = templates.contains(AgentMCP.importPlaceholder) &&
+                templates.contains(AgentHookCredentials.placeholder) && !templates.contains("PLUGIN_FIXTURE_SECRET")
+
+            let qoderRoot = output.appendingPathComponent("Qoder 会话"), project = output.appendingPathComponent("本机插件项目")
+            let zip = qoderRoot.appendingPathComponent(".qoder/plugins/公开 '项目'.zip")
+            let global = AgentImportRoute(source: .qoder, category: .plugins, root: qoderRoot.path, workspace: nil, sshHost: route.sshHost)
+            let scoped = AgentImportRoute(source: .qoder, category: .plugins, root: zip.path, workspace: project.path, sshHost: route.sshHost)
+            try files.createDirectory(at: project, withIntermediateDirectories: true)
+            try tasks.organization.register(project.path, mode: .coding)
+            try detectSSH(global)
+            try await settle { importer.scanning || importer.preview(for: global) == nil }
+            let projectRecords = importer.preview(for: global)?.records ?? []
+            checks["qoderDiscoversZipAndConventionalFolderWithProjectRequirement"] = projectRecords.count == 2 &&
+                projectRecords.contains { $0.file == zip.path } && projectRecords.contains { $0.plugin?.name == "conventional" } &&
+                projectRecords.allSatisfy { $0.issue?.contains("选择目标项目") == true }
+            try button("返回导入").performClick(nil)
+            try chooseSSH(scoped)
+            try openCategory(.plugins)
+            guard let picker = find(content, NSPopUpButton.self, { $0.accessibilityLabel() == "插件目标" }),
+                  let destination = picker.itemArray.first(where: { $0.representedObject as? String == project.path }),
+                  let action = picker.action else { throw PetError("缺少插件项目选择") }
+            picker.select(destination)
+            NSApp.sendAction(action, to: picker.target, from: picker)
+            try button("重新检测").performClick(nil)
+            try await settle { importer.scanning || importer.preview(for: scoped) == nil }
+            guard let selected = importer.preview(for: scoped)?.records.first, selected.issue == nil,
+                  selected.file == zip.path, selected.plugin?.name == "qoder-zip" else {
+                throw PetError(importer.preview(for: scoped)?.issue ?? "缺少指定 ZIP 预览")
+            }
+            try button("导入 1 项").performClick(nil)
+            try await settle { importer.active }
+            guard let projectID = AgentPluginDataImport.installedID(selected, store: tasks) else { throw PetError("缺少本机项目 ZIP 插件") }
+            let scopedPlugin = try service.installation(projectID)
+            let zipHash = AgentFiles.hash(try Data(contentsOf: zip))
+            let globalNames = try service.catalog(workspace: nil, onlyScope: true).map { $0.metadata.name }
+            checks["exactZipIsInstalledOnlyInTheSelectedProject"] = scopedPlugin.workspace == project.path && !scopedPlugin.enabled &&
+                scopedPlugin.receipt.sourceHash == zipHash && importer.batch?.items.count == 1 && globalNames == ["remote-directory"]
+            let profile = tasks.directory.deletingLastPathComponent()
+            checks["noTransferOrArchiveReviewScratchIsLeft"] = try !files.contentsOfDirectory(atPath: profile.path).contains {
+                $0.hasPrefix("ssh-import-transfer-") || $0.hasPrefix(".plugin-review-")
+            }
+            let success = checks.values.allSatisfy { $0 } && requests == 0 && initial["modelRequests"] as? Int == 0
+            try write(["checks": checks, "binaryHash": binaryHash, "appPID": getpid(), "modelRequests": requests, "success": success],
+                      to: output.appendingPathComponent("ssh-plugin-report.json"))
+            guard success else { throw PetError("SSH 插件导入检查失败") }
+            return
+        }
         if CommandLine.arguments.contains("--ssh-connector-import-check") {
             let phase = output.appendingPathComponent("ssh-connector-paused.json")
             let sourceFile = root.appendingPathComponent("config.toml")
@@ -459,7 +597,7 @@ import AppKit
                 let categories = AgentImportCategory.allCases.filter { category in
                     find(content, NSButton.self, { $0.accessibilityIdentifier() == "import-category-" + category.rawValue }) != nil
                 }
-                checks["overviewShowsSupportedSSHCategories"] = Set(categories) == Set([.tasks, .memory, .skills, .connectors, .automations])
+                checks["overviewShowsSupportedSSHCategories"] = Set(categories) == Set([.tasks, .memory, .skills, .connectors, .automations, .plugins])
                 try button("检测可导入内容").performClick(nil)
                 try await settle { importer.scanning || importer.preview(for: memory) == nil }
                 let records = importer.preview(for: memory)?.records ?? [], valid = records.filter { $0.issue == nil }

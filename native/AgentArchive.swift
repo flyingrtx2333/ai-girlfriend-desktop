@@ -2,11 +2,15 @@ import Foundation
 import Darwin
 
 enum AgentArchive {
+    static let maximumMembers = 2000
+    static let maximumMemberBytes = 2_000_000
+    static let maximumBytes = 20_000_000
+
     static func resources(_ archive: URL, scratchParent: URL, definitions: [String], hiddenRoots: Set<String> = [], repositoryPath: String? = nil) async throws -> [String: Data] {
         let scratch = scratchParent.appendingPathComponent(".extension-import-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: scratch) }
-        let parent = try AgentFiles(workspace: archive.deletingLastPathComponent().path), data = try parent.readData(parent.literalURL(archive.lastPathComponent), maximum: 20_000_000)
+        let parent = try AgentFiles(workspace: archive.deletingLastPathComponent().path), data = try parent.readData(parent.literalURL(archive.lastPathComponent), maximum: maximumBytes)
         let pinned = scratch.appendingPathComponent("input.zip"); try data.write(to: pinned)
         func unzip(_ args: [String], maximum: Int) async throws -> Data {
             let result = try await AgentCommand().run(command: "/usr/bin/unzip", workspace: scratch, scratch: scratch, network: false, timeout: 8, readOnly: true, maximumOutput: maximum, arguments: args)
@@ -30,14 +34,14 @@ enum AgentArchive {
         for name in names { guard validPath(name) else { throw PetError("扩展包包含不安全或不支持的路径：" + String(name.prefix(160))) } }
         let prefix = try rootPrefix(in: names, definitions: definitions, repositoryPath: repositoryPath)
         let members = names.filter { $0.hasPrefix(prefix) && !$0.hasSuffix("/") }
-        guard members.count <= 2000 else { throw PetError("插件目录资源超过 2000 项") }
+        guard members.count <= maximumMembers else { throw PetError("插件目录资源超过 2000 项") }
         var result: [String: Data] = [:], total = 0
         for name in members {
             let path = String(name.dropFirst(prefix.count))
             if !included(path, hiddenRoots: hiddenRoots) { continue }
             guard !AgentFiles.sensitive(path), !path.isEmpty else { throw PetError("扩展包包含受保护文件：" + path) }
-            let bytes = try await unzip(["-p", pinned.path, name], maximum: 2_000_000); total += bytes.count
-            guard total <= 20_000_000 else { throw PetError("扩展包展开后超过 20MB") }; result[path] = bytes
+            let bytes = try await unzip(["-p", pinned.path, name], maximum: maximumMemberBytes); total += bytes.count
+            guard total <= maximumBytes else { throw PetError("扩展包展开后超过 20MB") }; result[path] = bytes
         }
         // Read members as bytes only. Archive links never become filesystem links.
         return result
@@ -116,7 +120,7 @@ enum AgentArchive {
         guard roots.count == 1, let prefix = roots.first else { throw PetError("扩展包必须只包含一个完整扩展目录") }
         return prefix
     }
-    private static func included(_ path: String, hiddenRoots: Set<String>) -> Bool {
+    static func included(_ path: String, hiddenRoots: Set<String>) -> Bool {
         let segments = path.split(separator: "/")
         return !segments.contains(where: { ["__MACOSX", "node_modules", "__pycache__"].contains(String($0)) }) && !segments.enumerated().contains(where: { $0.element.hasPrefix(".") && !($0.offset == 0 && hiddenRoots.contains(String($0.element))) })
     }
@@ -144,7 +148,7 @@ enum AgentArchive {
                     continue
                 }
                 guard validPath(path), !AgentFiles.sensitive(path) else { throw PetError("插件文件夹包含受保护或不支持的路径：" + String(path.prefix(160))) }
-                guard names.insert(path.precomposedStringWithCanonicalMapping.lowercased()).inserted, result.count <= 2000 else { throw PetError("插件文件夹路径重复或资源超过2000项") }
+                guard names.insert(path.precomposedStringWithCanonicalMapping.lowercased()).inserted, result.count <= maximumMembers else { throw PetError("插件文件夹路径重复或资源超过2000项") }
                 let metadata = try files.entryMetadata(files.literalURL(path))
                 guard ["directory", "file"].contains(metadata.kind) else { throw PetError("插件文件夹不支持链接或特殊文件：" + path) }
                 result[path] = metadata.kind + ":" + metadata.signature
@@ -157,8 +161,8 @@ enum AgentArchive {
         var result: [String: Data] = [:], total = 0
         for path in before.keys.sorted() where before[path]!.hasPrefix("file:") {
             try Task.checkCancellation()
-            let data = try files.readData(files.literalURL(path), maximum: 2_000_000); total += data.count
-            guard total <= 20_000_000 else { throw PetError("插件文件夹资源超过20MB") }; result[path] = data
+            let data = try files.readData(files.literalURL(path), maximum: maximumMemberBytes); total += data.count
+            guard total <= maximumBytes else { throw PetError("插件文件夹资源超过20MB") }; result[path] = data
         }
         guard try inventory() == before else { throw PetError("插件文件夹在读取期间已变化，请重新选择") }
         return result

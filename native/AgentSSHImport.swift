@@ -7,7 +7,7 @@ import Darwin
 struct AgentSSHImport: Sendable {
     let profile: URL
     let home: URL?
-    static let categories: [AgentImportCategory] = [.tasks, .memory, .skills, .connectors, .automations]
+    static let categories: [AgentImportCategory] = [.tasks, .memory, .skills, .connectors, .automations, .plugins]
 
     static func valid(host: String, root: String) -> Bool {
         guard TerminalSurface.validSSHDestination(host), root.utf8.count <= 4096,
@@ -307,6 +307,102 @@ struct AgentSSHImport: Sendable {
         return try await response(transfer, script: Self.scanConnectors, arguments: arguments, timeout: 60, decode: decode)
     }
 
+    func pluginSources(_ route: AgentImportRoute) async throws -> [AgentSSHPluginSource] {
+        let explicit = Self.explicitPluginFile(route)
+        return try await pluginResponse(route, explicit: explicit, selected: "") { input in
+            let entries: [[AgentSSHPluginSource]] = try Self.scanFrames(input, maximum: 2_000_000,
+                oversized: "远端插件目录清单过大") { path, bytes in
+                guard path == ".source" else { throw FrameError.invalid }
+                return try JSONDecoder().decode([AgentSSHPluginSource].self, from: bytes.get())
+            }
+            guard entries.count == 1, let sources = entries.first, sources.count <= 4096,
+                  Set(sources.map(\.path)).count == sources.count else { throw FrameError.invalid }
+            for item in sources {
+                guard Self.validPluginPath(item.path, explicit: explicit) else { throw FrameError.invalid }
+                if let group = item.versionGroup {
+                    guard route.source == .codex, Self.validRelativePath(group),
+                          item.path.hasPrefix(group + "/"), !item.path.dropFirst(group.count + 1).contains("/") else { throw FrameError.invalid }
+                }
+            }
+            return sources
+        }
+    }
+
+    static func pluginFile(_ path: String, route: AgentImportRoute) -> String {
+        path == "." || explicitPluginFile(route) != nil ? route.root : prefix(route) + path
+    }
+
+    func readPlugin(_ record: AgentImportCandidate, route: AgentImportRoute) async throws -> AgentSSHPluginPayload {
+        let prefix = Self.prefix(route), explicit = Self.explicitPluginFile(route)
+        guard record.sshHost == route.sshHost, record.source == route.source, record.category == .plugins,
+              record.targetWorkspace == route.workspace else { throw PetError("SSH 插件与原来源不符，请重新检测") }
+        if record.file == route.root { return try await readPlugin(explicit ?? ".", route: route) }
+        guard explicit == nil, record.file.hasPrefix(prefix) else { throw PetError("SSH 插件与原来源不符，请重新检测") }
+        return try await readPlugin(String(record.file.dropFirst(prefix.count)), route: route)
+    }
+
+    func readPlugin(_ path: String, route: AgentImportRoute) async throws -> AgentSSHPluginPayload {
+        let explicit = Self.explicitPluginFile(route)
+        guard Self.validPluginPath(path, explicit: explicit) else { throw PetError("SSH 插件来源路径无效") }
+        return try await pluginResponse(route, explicit: explicit, selected: path, decode: Self.decodePlugin)
+    }
+
+    private static func decodePlugin(_ input: FileHandle) throws -> AgentSSHPluginPayload {
+        struct Metadata: Decodable { let archive, project: Bool }
+        var total = 0, names = Set<String>()
+        let members: [(String, Data)] = try scanFrames(input, maximum: AgentArchive.maximumBytes,
+            oversized: "远端插件资源超过大小限制") { path, bytes in
+            let data = try bytes.get()
+            guard names.insert(path.precomposedStringWithCanonicalMapping.lowercased()).inserted else { throw FrameError.invalid }
+            if path == ".source" {
+                guard data.count <= 4096 else { throw FrameError.invalid }
+            } else {
+                total += data.count
+                guard total <= AgentArchive.maximumBytes, names.count <= AgentArchive.maximumMembers + 1 else { throw FrameError.invalid }
+                if path != ".archive" {
+                    guard AgentArchive.validPath(path), !path.hasSuffix("/"), !AgentFiles.sensitive(path),
+                          AgentArchive.included(path, hiddenRoots: AgentImportedPlugin.hiddenRoots),
+                          data.count <= AgentArchive.maximumMemberBytes else { throw FrameError.invalid }
+                }
+            }
+            return (path, data)
+        }
+        var files = Dictionary(uniqueKeysWithValues: members)
+        guard let descriptor = files.removeValue(forKey: ".source") else { throw FrameError.invalid }
+        let info = try JSONDecoder().decode(Metadata.self, from: descriptor)
+        if info.archive {
+            guard files.count == 1, let archive = files[".archive"] else { throw FrameError.invalid }
+            return .init(project: info.project, content: .archive(archive))
+        }
+        guard files[".archive"] == nil else { throw FrameError.invalid }
+        return .init(project: info.project, content: .directory(files))
+    }
+
+    private static func explicitPluginFile(_ route: AgentImportRoute) -> String? {
+        let name = (route.root as NSString).lastPathComponent
+        return !route.root.hasSuffix("/") && (name as NSString).pathExtension.lowercased() == "zip" ? name : nil
+    }
+
+    private static func validPluginPath(_ path: String, explicit: String?) -> Bool {
+        if let explicit { return path == explicit && validRelativePath(path) }
+        return path == "." || validRelativePath(path) && path.utf8.count <= 4096
+    }
+
+    private func pluginResponse<Value>(_ route: AgentImportRoute, explicit: String?, selected: String,
+                                      decode: @escaping @Sendable (FileHandle) throws -> Value) async throws -> Value {
+        guard route.category == .plugins, let host = route.sshHost, Self.valid(host: host, root: route.root) else {
+            throw PetError("缺少有效的 SSH 插件来源")
+        }
+        let directory = explicit.map { String(route.root.dropLast($0.count)) } ?? route.root
+        let transfer = AgentImportRoute(source: route.source, category: route.category, root: directory, workspace: route.workspace, sshHost: host)
+        let options = [AgentImportedPlugin.manifests, AgentImportedPlugin.hiddenRoots.sorted(), AgentImportedPlugin.conventionalRoots,
+                       AgentFiles.sensitiveNames, AgentFiles.sensitiveExtensions]
+        let arguments = [route.source.rawValue, route.source.homeName, explicit ?? "", selected] + (try options.map {
+            String(decoding: try JSONEncoder().encode($0), as: UTF8.self)
+        }) + [String(AgentArchive.maximumMembers), String(AgentArchive.maximumMemberBytes), String(AgentArchive.maximumBytes)]
+        return try await response(transfer, script: AgentSSHPluginSource.script, arguments: arguments, timeout: 60, decode: decode)
+    }
+
     private static func prefix(_ route: AgentImportRoute) -> String {
         route.root.hasSuffix("/") ? route.root : route.root + "/"
     }
@@ -502,11 +598,18 @@ struct AgentSSHImport: Sendable {
             if result.exitCode == 43 { throw PetError("远端来源文件已移动、不可读取或是链接，请重新检测") }
             if result.exitCode == 44 { throw PetError("未找到远程记忆文件夹，请核对 SSH 来源目录") }
             if result.exitCode == 45 {
+                if category == .plugins { throw PetError("插件来源目录过大，请选择较小的目录") }
                 throw PetError((category == .automations ? "定时任务" : "Skill") + "来源项目过多，请选择较小的目录")
             }
             if result.exitCode == 46 { throw PetError("请为 Qoder 项目记忆选择目标项目") }
             if result.exitCode == 47, category == .connectors {
                 throw PetError("远端缺少连接器解析组件，需要 Python " + (arguments.first == "codex" ? "3.11 或更高版本" : "3.8 或更高版本"))
+            }
+            if category == .plugins {
+                let issues = [47: "远端读取插件需要 Python 3.8 或更高版本", 48: "插件含受保护文件、链接或特殊文件",
+                              49: "插件路径重复或资源超过数量限制", 50: "插件资源或压缩包超过大小限制",
+                              51: "插件资源总量超过 20 MB", 52: "插件来源或资源路径无效", 53: "远端插件在读取期间已变化，请重新检测"]
+                if let code = result.exitCode, let issue = issues[Int(code)] { throw PetError(issue) }
             }
             throw PetError("无法读取 SSH 来源，请检查连接与远端目录后重试")
         }

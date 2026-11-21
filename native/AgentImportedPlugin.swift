@@ -2,8 +2,9 @@ import Foundation
 import CoreFoundation
 
 @MainActor enum AgentImportedPlugin {
-    static let manifests = [".qoder-plugin/plugin.json", ".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "plugin.json"]
-    static let hiddenRoots: Set<String> = [".qoder-plugin", ".claude-plugin", ".codex-plugin", ".mcp.json", ".app.json"]
+    nonisolated static let manifests = [".qoder-plugin/plugin.json", ".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "plugin.json"]
+    nonisolated static let hiddenRoots: Set<String> = [".qoder-plugin", ".claude-plugin", ".codex-plugin", ".mcp.json", ".app.json"]
+    nonisolated static let conventionalRoots = ["skills", "commands", "agents", "rules", "hooks/hooks.json", ".mcp.json"]
     private static let targetManifest = ".qoder-plugin/plugin.json"
 
     static func normalize(_ supplied: [String: Data], inferredName: String?) throws -> [String: Data] {

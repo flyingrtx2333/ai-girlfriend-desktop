@@ -38,7 +38,7 @@ struct AgentPluginImportPlan: Codable {
             if kind == "file" { return url.pathExtension.lowercased() == "zip" }
             guard kind == "directory" else { return false }
             let manifests = AgentImportedPlugin.manifests
-            for path in manifests + (manifestless ? ["skills", "commands", "agents", "rules", "hooks/hooks.json", ".mcp.json"] : []) {
+            for path in manifests + (manifestless ? AgentImportedPlugin.conventionalRoots : []) {
                 let resource = try files.literalURL(url.appendingPathComponent(path).path)
                 if let entry = try? files.entryMetadata(resource), entry.kind != "missing" { return true }
             }
@@ -148,29 +148,73 @@ struct AgentPluginImportPlan: Codable {
         for url in try location.packages(source) {
             try Task.checkCancellation()
             let time = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            let key = "plugin:" + AgentFiles.hash(Data(url.path.utf8))
-            var record = AgentImportCandidate(source: source, sourceID: key, file: url.path, rawHash: "", sourceHash: "",
-                                              title: url.lastPathComponent, created: time, updated: time)
-            record.plugin = AgentPluginImportPlan(workspace: workspace)
-            do {
-                let package = try await service.inspect(location.checked(url.path), importing: true)
-                record.title = package.metadata.title
-                record.sourceHash = package.receipt.sourceHash
-                record.rawHash = record.sourceHash
-                record.plugin?.name = package.metadata.name
-                record.preview = preview(package)
-                if package.mcpServers.contains(where: { String(describing: $0.value).contains(AgentMCP.importPlaceholder) })
-                    || package.hooks.contains(where: { String(decoding: $0.data, as: UTF8.self).contains(AgentHookCredentials.placeholder) }) {
-                    record.warnings.append("使用前请在本机填写连接器或 Hooks 凭据")
-                }
-                if workspace == nil && projectSource(url, source: source) { record.issue = "项目来源，请选择目标项目" }
-                else if let installed = existing.first(where: { $0.metadata.name == package.metadata.name }) {
-                    record.issue = installed.receipt.sourceHash == record.sourceHash ? "已经导入" : "同名插件已存在，保留现有版本"
-                } else if existing.count >= 64 { record.issue = "此范围插件数量已达到64项" }
-            } catch is CancellationError { throw CancellationError() }
-            catch { record.issue = error.localizedDescription }
-            rows.append(record)
+            rows.append(try await candidate(source, file: url.path, workspace: workspace, time: time, existing: existing) {
+                (try await service.inspect(location.checked(url.path), importing: true), projectSource(url, source: source))
+            })
         }
+        return markDuplicates(rows)
+    }
+
+    static func discoverRemote(_ route: AgentImportRoute, transport: AgentSSHImport, store: AgentStore) async throws -> [AgentImportCandidate] {
+        try AgentMCPDataImport.requireDestination(route.workspace, store: store)
+        let service = store.extensions.plugins, existing = try service.catalog(workspace: route.workspace, onlyScope: true)
+        let sources = try await transport.pluginSources(route)
+        let groups = Dictionary(grouping: sources.compactMap { item in item.versionGroup.map { ($0, item) } }, by: { $0.0 })
+        let preferred = groups.values.compactMap { group in
+            let versions = group.map { $0.1 }
+            func name(_ item: AgentSSHPluginSource) -> String { (item.path as NSString).lastPathComponent }
+            return versions.first { name($0) == "local" } ?? versions.max { older(name($0), than: name($1)) }
+        }
+        let selected = sources.filter { $0.versionGroup == nil } + preferred
+        guard selected.count <= 128 else { throw PetError("发现超过128份插件，请分别选择来源目录") }
+        var rows: [AgentImportCandidate] = []
+        for item in selected.sorted(by: { $0.path < $1.path }) {
+            try Task.checkCancellation()
+            let file = AgentSSHImport.pluginFile(item.path, route: route)
+            rows.append(try await candidate(route.source, file: file, workspace: route.workspace, time: .distantPast,
+                                            sshHost: route.sshHost, existing: existing) {
+                let payload = try await transport.readPlugin(item.path, route: route)
+                return (try await inspect(payload, file: file, service: service), payload.project)
+            })
+        }
+        return markDuplicates(rows)
+    }
+
+    private static func inspect(_ payload: AgentSSHPluginPayload, file: String, service: AgentPlugins) async throws -> AgentPluginPackage {
+        let name = (file as NSString).lastPathComponent
+        switch payload.content {
+        case .archive(let data): return try await service.inspectArchive(data, sourceName: name, importing: true)
+        case .directory(let files): return try service.inspectDirectory(files, name: name, importing: true)
+        }
+    }
+
+    private static func candidate(_ source: AgentImportSource, file: String, workspace: String?, time: Date, sshHost: String? = nil,
+                                  existing: [AgentPluginInstallation], load: () async throws -> (AgentPluginPackage, Bool)) async throws -> AgentImportCandidate {
+        let key = "plugin:" + AgentFiles.hash(Data(file.utf8))
+        var record = AgentImportCandidate(source: source, sourceID: key, file: file, rawHash: "", sourceHash: "",
+            title: (file as NSString).lastPathComponent, created: time, updated: time, sshHost: sshHost)
+        record.plugin = AgentPluginImportPlan(workspace: workspace)
+        do {
+            let (package, project) = try await load()
+            record.title = package.metadata.title
+            record.sourceHash = package.receipt.sourceHash
+            record.rawHash = record.sourceHash
+            record.plugin?.name = package.metadata.name
+            record.preview = preview(package)
+            if package.mcpServers.contains(where: { String(describing: $0.value).contains(AgentMCP.importPlaceholder) })
+                || package.hooks.contains(where: { String(decoding: $0.data, as: UTF8.self).contains(AgentHookCredentials.placeholder) }) {
+                record.warnings.append("使用前请在本机填写连接器或 Hooks 凭据")
+            }
+            if workspace == nil && project { record.issue = "项目来源，请选择目标项目" }
+            else if let installed = existing.first(where: { $0.metadata.name == package.metadata.name }) {
+                record.issue = installed.receipt.sourceHash == record.sourceHash ? "已经导入" : "同名插件已存在，保留现有版本"
+            } else if existing.count >= 64 { record.issue = "此范围插件数量已达到64项" }
+        } catch is CancellationError { throw CancellationError() }
+        catch { record.issue = error.localizedDescription }
+        return record
+    }
+
+    private static func markDuplicates(_ rows: [AgentImportCandidate]) -> [AgentImportCandidate] {
         let duplicates = Dictionary(grouping: rows.filter { $0.issue == nil }, by: { $0.plugin?.name })
         return rows.map { entry in
             var record = entry
@@ -182,7 +226,8 @@ struct AgentPluginImportPlan: Codable {
     }
 
     static func reveal(_ record: AgentImportCandidate, root: URL) throws -> URL {
-        try Source(root).checked(record.file)
+        guard record.sshHost == nil else { throw PetError("缺少本机插件来源") }
+        return try Source(root).checked(record.file)
     }
 
     static func installedID(_ record: AgentImportCandidate, store: AgentStore) -> String? {
@@ -194,6 +239,22 @@ struct AgentPluginImportPlan: Codable {
     }
 
     static func install(_ record: AgentImportCandidate, root: URL, store: AgentStore) async throws {
+        try await install(record, store: store) { service in
+            let url = try reveal(record, root: root)
+            guard record.targetWorkspace != nil || !projectSource(url, source: record.source) else { throw PetError("项目来源，请选择目标项目") }
+            return try await service.inspect(url, importing: true)
+        }
+    }
+
+    static func installRemote(_ record: AgentImportCandidate, store: AgentStore, read: () async throws -> AgentSSHPluginPayload) async throws {
+        try await install(record, store: store) { service in
+            let payload = try await read()
+            guard record.targetWorkspace != nil || !payload.project else { throw PetError("项目来源，请选择目标项目") }
+            return try await inspect(payload, file: record.file, service: service)
+        }
+    }
+
+    private static func install(_ record: AgentImportCandidate, store: AgentStore, load: (AgentPlugins) async throws -> AgentPluginPackage) async throws {
         guard let plan = record.plugin, AgentPlugins.validName(plan.name), UUID(uuidString: record.targetID) != nil else {
             throw PetError("插件导入记录无效")
         }
@@ -209,12 +270,11 @@ struct AgentPluginImportPlan: Codable {
             }
             return
         }
-        let url = try reveal(record, root: root)
-        guard plan.workspace != nil || !projectSource(url, source: record.source) else { throw PetError("项目来源，请选择目标项目") }
-        let package = try await service.inspect(url, importing: true)
+        let package = try await load(service)
         guard package.receipt.sourceHash == record.sourceHash, package.metadata.name == plan.name else {
             throw PetError("来源插件已变化，请重新检测")
         }
+        try Task.checkCancellation()
         try AgentMCPDataImport.requireDestination(plan.workspace, store: store)
         try service.install(package, workspace: plan.workspace, importing: record.targetID)
     }

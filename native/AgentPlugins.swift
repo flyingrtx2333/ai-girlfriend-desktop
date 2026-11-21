@@ -156,12 +156,15 @@ struct AgentPluginInstallation: Identifiable {
             let scan = Task.detached(priority: .userInitiated) { try AgentArchive.directoryResources(archive, hiddenRoots: hiddenRoots) }
             let files = try await withTaskCancellationHandler(operation: { try await scan.value }, onCancel: { scan.cancel() })
             try Task.checkCancellation()
-            let payload = importing ? try AgentImportedPlugin.normalize(files, inferredName: archive.lastPathComponent) : files
-            return try Self.package(payload, sourceName: archive.lastPathComponent + "/", sourceHash: AgentExtensions.digest(files), inferredName: archive.lastPathComponent)
+            return try inspectDirectory(files, name: archive.lastPathComponent, importing: importing)
         }
         guard archive.pathExtension.lowercased() == "zip" else { throw PetError("请选择插件文件夹或ZIP") }
         let input = try AgentFiles(workspace: archive.deletingLastPathComponent().path), data = try input.readData(input.literalURL(archive.lastPathComponent), maximum: 20_000_000)
         return try await inspectArchive(data, sourceName: archive.lastPathComponent, importing: importing)
+    }
+    func inspectDirectory(_ files: [String: Data], name: String, importing: Bool) throws -> AgentPluginPackage {
+        let payload = importing ? try AgentImportedPlugin.normalize(files, inferredName: name) : files
+        return try Self.package(payload, sourceName: name + "/", sourceHash: AgentExtensions.digest(files), inferredName: name)
     }
     func inspectArchive(_ data: Data, sourceName: String, importing: Bool, repositoryPath: String? = nil) async throws -> AgentPluginPackage {
         guard data.count <= 20_000_000 else { throw PetError("插件压缩包超过 20 MB") }
