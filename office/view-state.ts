@@ -1,5 +1,5 @@
 import { createDocxReviewDrafts, type DocxReviewDraft } from './docx-review-drafts';
-import { spreadsheetCell, validSpreadsheetNotesLocation, type SpreadsheetNotesLocation } from './spreadsheet-notes';
+import { spreadsheetAddress, spreadsheetCell, validSpreadsheetNotesLocation, type SpreadsheetNotesLocation } from './spreadsheet-notes';
 
 // View coordinates belong to the exact document bytes stored by the native
 // journal. Session IDs are resolved again after opening those bytes.
@@ -162,6 +162,17 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
     if (!sheet) throw issue();
     return { sheetId: sheet.sheetId, ...cell };
   }
+  async function activeSpreadsheetNoteCell() {
+    const selection = context?.snapshot.selection, cells = selection?.cells;
+    if (!cells || cells.anchor.row !== cells.focus.row || cells.anchor.col !== cells.focus.col) return null;
+    const catalog = await editor().readCells({ ranges: [] });
+    const sheet = catalog.ok && catalog.sheets.find((item: any) => item.sheetId === selection.sheetId);
+    const current = context?.snapshot.selection;
+    if (!sheet || current?.sheetId !== selection.sheetId ||
+        current.cells?.anchor.row !== cells.anchor.row || current.cells.anchor.col !== cells.anchor.col ||
+        current.cells.focus.row !== cells.focus.row || current.cells.focus.col !== cells.focus.col) return null;
+    return { sheet: sheet.name as string, cell: spreadsheetAddress(cells.anchor.row, cells.anchor.col) };
+  }
   async function isSpreadsheetNoteVisible(sheet: string, address: string) {
     const target = await spreadsheetNoteTarget(sheet, address);
     const rect = context?.geometry?.getCellRect(target);
@@ -231,7 +242,7 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
     if (!reviewDrafts?.focusDraft()) editor().focus();
     await applyScroll({ scroll });
   }
-  return { plugin, capture, restore, applyScroll, focus, locateSpreadsheetNote, isSpreadsheetNoteVisible,
+  return { plugin, capture, restore, applyScroll, focus, activeSpreadsheetNoteCell, locateSpreadsheetNote, isSpreadsheetNoteVisible,
     hasReviewDraft: () => reviewDrafts?.pending() === true, saved() { savedParagraphs = true; }, ready() {
     const zoom = () => format === 'docx' ? editor().getZoom() : editor().commands.getState('zoom').value;
     let previous = zoom();

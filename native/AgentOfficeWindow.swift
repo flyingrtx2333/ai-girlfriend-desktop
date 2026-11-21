@@ -309,7 +309,7 @@ import Darwin
         try handle.synchronize()
         try handle.close()
         if file.pathExtension.lowercased() == "xlsx", let edits = result["noteEdits"] {
-            guard let changes = edits as? [[String: String]], changes.count <= 5_000,
+            guard let changes = edits as? [[String: Any]], changes.count <= 5_000,
                   changes.allSatisfy({ Set($0.keys) == ["sheet", "cell", "original", "text"] }) else {
                 throw PetError("备注编辑记录无法读取，原草稿已保留")
             }
@@ -367,12 +367,15 @@ import Darwin
     }
     private func loadSpreadsheetNotes(_ pinned: AgentOfficeSnapshot) async throws {
         guard !spreadsheetNotesLoaded else { return }
-        let notes: [AgentSpreadsheetNote], warning: String
-        do { notes = try await AgentSpreadsheetNotes.read(pinned.file); warning = "" }
+        let catalog: AgentSpreadsheetNoteCatalog, warning: String
+        do { catalog = try await AgentSpreadsheetNotes.catalog(pinned.file); warning = "" }
         catch is CancellationError { throw CancellationError() }
-        catch { notes = []; warning = "无法读取单元格备注"; spreadsheetNotes.toolTip = error.localizedDescription }
-        let payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(notes))
-        _ = try await evaluate("BlueFatFishOffice.setSpreadsheetNotes(items,warning); return true", args: ["items": payload, "warning": warning])
+        catch {
+            catalog = .init(notes: [], creationUnavailable: [], author: "")
+            warning = "无法读取单元格备注"; spreadsheetNotes.toolTip = error.localizedDescription
+        }
+        let payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(catalog))
+        _ = try await evaluate("BlueFatFishOffice.setSpreadsheetNotes(catalog,warning); return true", args: ["catalog": payload, "warning": warning])
         spreadsheetNotesLoaded = true
     }
     @objc private func toggleSpreadsheetNotes() {
@@ -513,14 +516,14 @@ import Darwin
         guard let captured = try await evaluate("return await BlueFatFishOffice.captureView()") as? [String: Any], let view = captured["view"] as? [String: Any] else { throw PetError("办公位置没有实际回读") }
         return view
     }
-    func checkSpreadsheetNotes(show: Bool = false, address: String? = nil, edit: String? = nil) async throws -> [String: Any] {
+    func checkSpreadsheetNotes(show: Bool = false, address: String? = nil, newAddress: String? = nil, edit: String? = nil) async throws -> [String: Any] {
         guard CommandLine.arguments.contains("--spreadsheet-notes-check"), AgentTaskWorkspace.readbackEnabled,
               file.pathExtension.lowercased() == "xlsx" else { throw PetError("仅限备注验收") }
         if show {
             spreadsheetNotes.performClick(nil)
             await uiTask?.value
         }
-        let args: [String: Any] = ["address": address as Any? ?? NSNull(), "edit": edit as Any? ?? NSNull()]
+        let args: [String: Any] = ["address": address as Any? ?? NSNull(), "newAddress": newAddress as Any? ?? NSNull(), "edit": edit as Any? ?? NSNull()]
         guard let value = try await evaluate("""
             const panel = document.querySelector('.spreadsheet-notes');
             if (!panel || panel.hidden) throw new Error('备注栏没有显示');
@@ -531,6 +534,18 @@ import Darwin
               if (!row) throw new Error('目标备注没有显示');
               row.click();
             }
+            if (newAddress !== null) {
+              const button = panel.querySelector('.spreadsheet-note-add');
+              if (!button || button.disabled) throw new Error('新建备注按钮不可用');
+              button.click();
+              const deadline = Date.now() + 5000;
+              while (Date.now() < deadline && (list.querySelector('[aria-pressed="true"]')?.title !== newAddress || document.activeElement !== text)) {
+                await new Promise(resolve => setTimeout(resolve, 25));
+              }
+              if (list.querySelector('[aria-pressed="true"]')?.title !== newAddress || document.activeElement !== text) {
+                throw new Error(panel.querySelector('[role="status"]').textContent || '新备注未绑定原单元格');
+              }
+            }
             if (edit !== null) {
               if (text.hidden || text.readOnly) throw new Error('备注不可编辑');
               text.value = edit;
@@ -540,6 +555,7 @@ import Darwin
             }
             const frame = panel.getBoundingClientRect(), grid = document.getElementById('office-root').getBoundingClientRect();
             return {entries: Array.from(list.querySelectorAll('button')).map(b => b.title), value: text.value,
+                    author: panel.querySelector('.spreadsheet-note-author').textContent,
                     focused: document.activeElement === text, readOnly: text.readOnly,
                     grid: grid.width, left: frame.left, right: frame.right, width: innerWidth};
             """, args: args) as? [String: Any] else { throw PetError("无法读取当前备注栏") }

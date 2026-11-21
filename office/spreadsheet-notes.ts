@@ -1,5 +1,6 @@
 type Cell = { sheet: string; cell: string };
-type Note = Cell & { author: string; text: string; editable: boolean };
+type Note = Cell & { author: string; text: string; editable: boolean; created?: true };
+type NoteCatalog = { notes: Note[]; author: string; creationUnavailable: string[] };
 type NoteSelection = Cell & { start: number; end: number; focused: boolean };
 export type SpreadsheetNotesLocation = { selected: NoteSelection | null; listY: number };
 
@@ -10,6 +11,17 @@ export function spreadsheetCell(address: string) {
   const col = [...match[1]].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
   if (row >= 1_048_576 || col >= 16_384) throw new Error('单元格备注的位置无效');
   return { row, col };
+}
+
+export function spreadsheetAddress(row: number, column: number) {
+  if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column) || row < 0 || row >= 1_048_576 || column < 0 || column >= 16_384) {
+    throw new Error('单元格备注的位置无效');
+  }
+  let letters = '';
+  for (let index = column + 1; index > 0; index = Math.floor((index - 1) / 26)) {
+    letters = String.fromCharCode(65 + (index - 1) % 26) + letters;
+  }
+  return letters + (row + 1);
 }
 
 export function validSpreadsheetNotesLocation(value: any): value is SpreadsheetNotesLocation {
@@ -23,33 +35,83 @@ export function validSpreadsheetNotesLocation(value: any): value is SpreadsheetN
   try { spreadsheetCell(selected.cell); return true; } catch { return false; }
 }
 
-export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) => Promise<void>, edited: () => void, viewed: () => void) {
+export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) => Promise<void>,
+  activeCell: () => Promise<Cell | null>, edited: () => void, viewed: () => void) {
   const panel = document.createElement('aside');
   panel.className = 'spreadsheet-notes'; panel.hidden = true; panel.setAttribute('aria-label', '单元格备注');
   const heading = document.createElement('header');
   const title = document.createElement('h2'); title.textContent = '单元格备注';
   const close = document.createElement('button'); close.type = 'button'; close.textContent = '关闭';
   heading.append(title, close);
+  const add = document.createElement('button'); add.type = 'button'; add.className = 'spreadsheet-note-add';
+  add.textContent = '新建备注';
   const list = document.createElement('div'); list.className = 'spreadsheet-notes-list'; list.setAttribute('aria-label', '备注列表');
   const status = document.createElement('p'); status.className = 'spreadsheet-notes-status'; status.setAttribute('role', 'status');
   const author = document.createElement('p'); author.className = 'spreadsheet-note-author'; author.hidden = true;
   const text = document.createElement('textarea');
   text.setAttribute('aria-label', '备注正文'); text.spellcheck = false; text.maxLength = 32_767; text.hidden = true;
-  panel.append(heading, list, author, text, status); root.after(panel);
+  panel.append(heading, add, list, author, text, status); root.after(panel);
   let notes: Note[] = [], selected: Note | null = null, locked = true, issue = '';
+  let defaultAuthor = '', unavailable = new Set<string>();
   let loaded = false, navigation = 0;
   const replacements = new Map<Note, string>();
   const buttons = new Map<Note, HTMLButtonElement>();
 
+  function updateControls() {
+    add.disabled = locked || !loaded || !!issue;
+    text.readOnly = locked || selected?.editable !== true;
+  }
   function refreshEditor() {
     const value = selected;
     author.hidden = !value?.author; author.textContent = value?.author ?? '';
     text.hidden = value === null;
-    text.readOnly = locked || value?.editable !== true;
+    updateControls();
     text.value = value ? replacements.get(value) ?? value.text : '';
     status.textContent = issue || (!notes.length ? '暂无单元格备注' : value && !value.editable ? '此备注只读' : '');
     for (const [note, button] of buttons) button.setAttribute('aria-pressed', String(note === value));
   }
+
+  function noteRow(note: Note) {
+    const button = document.createElement('button'); button.type = 'button';
+    const address = document.createElement('strong'); address.textContent = note.cell;
+    const sheet = document.createElement('span'); sheet.textContent = note.sheet;
+    button.append(address, sheet); button.title = `${note.sheet} · ${note.cell}`;
+    button.addEventListener('click', () => showNote(note, true));
+    buttons.set(note, button);
+    return button;
+  }
+
+  add.addEventListener('click', async () => {
+    if (add.disabled) return;
+    const token = ++navigation;
+    try {
+      const target = await activeCell();
+      if (navigation !== token || panel.hidden || add.disabled) return;
+      if (!target) {
+        status.textContent = '请先选中一个单元格';
+        return;
+      }
+      const existing = notes.find(note => note.sheet === target.sheet && note.cell === target.cell);
+      if (existing) {
+        showNote(existing, true);
+        text.focus();
+        return;
+      }
+      if (unavailable.has(target.sheet)) {
+        status.textContent = '当前工作表暂不支持新建备注';
+        return;
+      }
+      const note: Note = { ...target, author: defaultAuthor, text: '', editable: true, created: true };
+      notes.push(note);
+      const row = noteRow(note);
+      list.append(row); list.hidden = false;
+      showNote(note, true);
+      row.scrollIntoView({ block: 'nearest' });
+      text.focus();
+    } catch {
+      if (navigation === token) status.textContent = '无法读取当前单元格，请重新选择';
+    }
+  });
 
   function showNote(note: Note, seek: boolean) {
     const token = ++navigation;
@@ -65,38 +127,41 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
   list.addEventListener('scroll', viewed);
   text.addEventListener('input', () => {
     if (!selected || text.readOnly) return;
-    if (text.value === selected.text) replacements.delete(selected);
+    if (selected.created) {
+      if (!replacements.has(selected) && !text.value.trim()) return;
+      // Keep an explicitly cleared note in later exports after it was saved.
+      replacements.set(selected, text.value);
+    } else if (text.value === selected.text) replacements.delete(selected);
     else replacements.set(selected, text.value);
     edited();
   });
 
   return {
-    configure(items: Note[], warning: string) {
-      notes = items; issue = warning; loaded = true; selected = null;
+    configure(catalog: NoteCatalog, warning: string) {
+      notes = catalog.notes; issue = warning; loaded = true; selected = null;
+      defaultAuthor = catalog.author; unavailable = new Set(catalog.creationUnavailable);
       const rows = document.createDocumentFragment();
       for (const note of notes) {
-        const button = document.createElement('button'); button.type = 'button';
-        const address = document.createElement('strong'); address.textContent = note.cell;
-        const sheet = document.createElement('span'); sheet.textContent = note.sheet;
-        button.append(address, sheet); button.title = `${note.sheet} · ${note.cell}`;
-        button.addEventListener('click', () => showNote(note, true));
-        rows.append(button); buttons.set(note, button);
+        rows.append(noteRow(note));
       }
       list.replaceChildren(rows); list.hidden = !notes.length; refreshEditor();
     },
     get loaded() { return loaded; },
     visible() { return !panel.hidden; },
-    setLocked(value: boolean) { locked = value; text.readOnly = value || selected?.editable !== true; },
+    setLocked(value: boolean) { locked = value; updateControls(); },
     toggle() {
       panel.hidden = !panel.hidden;
       if (!panel.hidden) (selected ? buttons.get(selected) : buttons.values().next().value ?? close)?.focus();
       viewed();
       return !panel.hidden;
     },
-    edits() { return [...replacements].map(([{ sheet, cell, text: original }, text]) => ({ sheet, cell, original, text })); },
+    edits() {
+      return [...replacements].map(([note, text]) => ({ sheet: note.sheet, cell: note.cell, original: note.created ? null : note.text, text }));
+    },
     capture(): SpreadsheetNotesLocation | undefined {
       if (panel.hidden || !loaded) return undefined;
-      return { listY: list.scrollTop, selected: selected ? {
+      const retained = selected && (!selected.created || replacements.has(selected));
+      return { listY: list.scrollTop, selected: retained ? {
         sheet: selected.sheet, cell: selected.cell, start: Math.min(text.selectionStart, 32_767),
         end: Math.min(text.selectionEnd, 32_767), focused: document.activeElement === text
       } : null };
@@ -117,6 +182,7 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
     },
     reset() {
       navigation += 1; loaded = false; panel.hidden = true; notes = []; selected = null; issue = '';
+      defaultAuthor = ''; unavailable.clear();
       buttons.clear(); replacements.clear(); list.replaceChildren(); refreshEditor();
     }
   };

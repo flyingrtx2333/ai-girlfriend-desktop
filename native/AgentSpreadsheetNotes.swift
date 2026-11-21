@@ -5,18 +5,32 @@ struct AgentSpreadsheetNote: Encodable, Sendable {
 }
 
 struct AgentSpreadsheetNoteEdit: Decodable, Sendable {
-    let sheet: String, cell: String, original: String, text: String
+    let sheet: String, cell: String, original: String?, text: String
+}
+
+struct AgentSpreadsheetNoteCatalog: Encodable, Sendable {
+    let notes: [AgentSpreadsheetNote]
+    let creationUnavailable: [String]
+    let author: String
 }
 
 enum AgentSpreadsheetNotes {
     private static let limit = 5_000
     private static let xmlLimit = 2_000_000
+    private static let sheetURI = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
     private static let relationshipURI = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    private static let packageRelationshipURI = "http://schemas.openxmlformats.org/package/2006/relationships"
+    private static let contentTypeURI = "http://schemas.openxmlformats.org/package/2006/content-types"
+    private static let contentTypesPart = "[Content_Types].xml"
+    private static let vmlURI = "urn:schemas-microsoft-com:vml"
+    private static let vmlOfficeURI = "urn:schemas-microsoft-com:office:office"
+    private static let vmlExcelURI = "urn:schemas-microsoft-com:office:excel"
+    private static let noteAuthor = "小鲸"
     private struct Relation {
         let id: String, kind: String, target: String
     }
     private struct Sheet {
-        let name: String, part: String, visible: Bool
+        let name: String, part: String, visible: Bool, supportsCreation: Bool
     }
     private struct Note {
         let value: AgentSpreadsheetNote
@@ -36,15 +50,20 @@ enum AgentSpreadsheetNotes {
 
         func xml(_ part: String) async throws -> XMLDocument {
             guard entries.contains(part) else { throw PetError("工作簿备注关联的文件缺失") }
-            let data = try await AgentSpreadsheetNotes.command("/usr/bin/unzip", ["-p", archive.path, part], in: scratch, maximum: xmlLimit)
+            let member = part == contentTypesPart ? "[[]Content_Types].xml" : part
+            let data = try await AgentSpreadsheetNotes.command("/usr/bin/unzip", ["-p", archive.path, member], in: scratch, maximum: xmlLimit)
             let document = try XMLDocument(data: data, options: [.nodeLoadExternalEntitiesNever, .nodePreserveAll])
             guard document.dtd == nil, document.rootElement() != nil else { throw PetError("工作簿备注的 XML 无法读取") }
             return document
         }
 
-        func relationships(_ source: String) async throws -> [Relation] {
+        func relationshipPart(_ source: String) -> String {
             let pieces = source.split(separator: "/").map(String.init)
-            let path = (Array(pieces.dropLast()) + ["_rels", (pieces.last ?? "") + ".rels"]).joined(separator: "/")
+            return (Array(pieces.dropLast()) + ["_rels", (pieces.last ?? "") + ".rels"]).joined(separator: "/")
+        }
+
+        func relationships(_ source: String) async throws -> [Relation] {
+            let path = relationshipPart(source)
             guard entries.contains(path) else { return [] }
             let document = try await xml(path)
             let relations = try children(document.rootElement(), "Relationship").compactMap { item -> Relation? in
@@ -68,12 +87,12 @@ enum AgentSpreadsheetNotes {
             return try children(children(manifest.rootElement(), "sheets").first, "sheet").compactMap { node in
                 let id = node.attribute(forLocalName: "id", uri: relationshipURI)?.stringValue ?? node.attribute(forName: "r:id")?.stringValue
                 guard let name = attribute(node, "name"), let id, let address = target[id] else { return nil }
-                return Sheet(name: name, part: try part(address, from: path), visible: (attribute(node, "state") ?? "visible") == "visible")
+                return Sheet(name: name, part: try part(address, from: path), visible: (attribute(node, "state") ?? "visible") == "visible",
+                             supportsCreation: manifest.rootElement()?.uri == sheetURI)
             }
         }
 
-        func notes(on sheet: Sheet) async throws -> (part: String, document: XMLDocument, entries: [Note])? {
-            let relations = try await relationships(sheet.part)
+        func notes(on sheet: Sheet, relations: [Relation]) async throws -> (part: String, document: XMLDocument, entries: [Note])? {
             let notes = relations.filter { $0.kind == "comments" }
             guard !notes.isEmpty else { return nil }
             guard notes.count == 1, let relation = notes.first else { throw PetError("同一工作表包含多份备注文件") }
@@ -82,7 +101,7 @@ enum AgentSpreadsheetNotes {
             let root = document.rootElement()
             guard root?.localName == "comments" else { throw PetError("单元格备注格式无法识别") }
             let authorList = children(children(root, "authors").first, "author").map { $0.stringValue ?? "" }
-            let editAllowed = !relations.contains { $0.kind == "threadedComment" || $0.kind == "threadedComments" }
+            let editAllowed = !hasThreadedComments(relations)
             let items = try children(children(root, "commentList").first, "comment").map { item -> Note in
                 guard let cell = attribute(item, "ref"), validCell(cell), let content = children(item, "text").first else {
                     throw PetError("单元格备注的位置或正文无法识别")
@@ -104,55 +123,311 @@ enum AgentSpreadsheetNotes {
     }
 
     static func read(_ archive: URL) async throws -> [AgentSpreadsheetNote] {
+        try await catalog(archive).notes
+    }
+
+    static func catalog(_ archive: URL) async throws -> AgentSpreadsheetNoteCatalog {
         let package = try await Package(archive)
         var result: [AgentSpreadsheetNote] = [], bytes = 0
+        var unavailable: [String] = []
         for sheet in try await package.sheets() where sheet.visible {
             try Task.checkCancellation()
-            guard let entry = try await package.notes(on: sheet) else { continue }
+            let links = try await package.relationships(sheet.part)
+            if !sheet.supportsCreation || hasThreadedComments(links) { unavailable.append(sheet.name) }
+            guard let entry = try await package.notes(on: sheet, relations: links) else { continue }
             let notes = entry.entries.map(\.value)
             bytes += notes.reduce(0) { $0 + $1.text.utf8.count + $1.author.utf8.count + $1.sheet.utf8.count }
             guard result.count + notes.count <= limit, bytes <= 4_000_000 else { throw PetError("工作簿备注超过可显示大小") }
             result.append(contentsOf: notes)
         }
-        return result
+        return .init(notes: result, creationUnavailable: unavailable, author: noteAuthor)
     }
 
     static func apply(_ edits: [AgentSpreadsheetNoteEdit], to archive: URL) async throws {
         guard !edits.isEmpty else { return }
-        guard edits.count <= limit, edits.allSatisfy({ validCell($0.cell) && validText($0.original) && validText($0.text) }),
+        guard edits.count <= limit, edits.allSatisfy({ validCell($0.cell) && $0.original.map(validText) != false && validText($0.text) }),
               Set(edits.map { $0.sheet + "\0" + $0.cell }).count == edits.count else { throw PetError("备注修改格式无效") }
         let package = try await Package(archive)
-        let sheets = try await package.sheets().filter(\.visible)
-        guard Set(sheets.map(\.name)).count == sheets.count else { throw PetError("工作簿存在重名工作表，备注草稿已保留") }
-        var replacements: [String: Data] = [:]
-        for (name, changes) in Dictionary(grouping: edits, by: \.sheet) {
-            guard let sheet = sheets.first(where: { $0.name == name }),
-                  let input = try await package.notes(on: sheet), replacements[input.part] == nil else {
+        let sheets = try await package.sheets()
+        guard Set(sheets.map(\.name)).count == sheets.count, Set(sheets.map(\.part)).count == sheets.count else {
+            throw PetError("工作簿存在重名或重复的工作表，备注草稿已保留")
+        }
+        var documents: [String: XMLDocument] = [:], contentTypes: [String: String] = [:]
+        var usedNames = Set(package.entries.map { $0.lowercased() })
+        let grouped = Dictionary(grouping: edits, by: \.sheet)
+        for name in grouped.keys.sorted() {
+            guard let changes = grouped[name], let sheet = sheets.first(where: { $0.name == name && $0.visible }) else {
                 throw PetError("备注的原工作表已变化，草稿已保留")
             }
-            let notes = Dictionary(uniqueKeysWithValues: input.entries.map { ($0.value.cell, $0) })
-            for change in changes {
-                guard let note = notes[change.cell], let node = note.text, note.value.text == change.original else {
+            let links = try await package.relationships(sheet.part)
+            let existing = try await package.notes(on: sheet, relations: links)
+            let notes = Dictionary(uniqueKeysWithValues: (existing?.entries ?? []).map { ($0.value.cell, $0) })
+            for edit in changes where edit.original != nil {
+                guard let note = notes[edit.cell], let node = note.text, note.value.text == edit.original else {
                     throw PetError("单元格备注已变化，草稿已保留")
                 }
-                node.stringValue = change.text
-                if let space = node.attribute(forName: "xml:space") { space.stringValue = "preserve" }
-                else if let space = XMLNode.attribute(withName: "xml:space", stringValue: "preserve") as? XMLNode { node.addAttribute(space) }
+                writeText(edit.text, to: node)
             }
-            replacements[input.part] = input.document.xmlData(options: [.nodePreserveAll])
+            let additions = changes.filter { $0.original == nil }
+            if additions.isEmpty, let existing {
+                guard documents[existing.part] == nil else { throw PetError("多张工作表共用备注文件，原件已保留") }
+                documents[existing.part] = existing.document
+                continue
+            }
+            guard sheet.supportsCreation, !hasThreadedComments(links),
+                  notes.count + additions.count <= limit, additions.allSatisfy({ notes[$0.cell] == nil }) else {
+                throw PetError("该位置已有备注或工作表暂不支持新建，草稿已保留")
+            }
+            try await addNotes(additions, on: sheet, sheets: sheets, package: package, links: links,
+                               existing: existing.map { ($0.part, $0.document) }, documents: &documents,
+                               contentTypes: &contentTypes, usedNames: &usedNames)
         }
+        if !contentTypes.isEmpty {
+            let types = try await package.xml(contentTypesPart)
+            guard let root = types.rootElement(), root.localName == "Types", root.uri == contentTypeURI else {
+                throw PetError("工作簿内容类型无法读取")
+            }
+            for part in contentTypes.keys.sorted() {
+                let item = append("Override", to: root)
+                set("PartName", "/" + part, on: item)
+                set("ContentType", contentTypes[part]!, on: item)
+            }
+            documents[contentTypesPart] = types
+        }
+        try await write(documents, to: package)
+    }
+
+    private static func write(_ documents: [String: XMLDocument], to package: Package) async throws {
         let folder = package.scratch.appendingPathComponent("spreadsheet-notes-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: folder) }
         let files = try AgentFiles(workspace: folder.path, followParentLinks: false)
-        for (path, data) in replacements {
-            try files.writeData(data, to: files.literalURL(path), permissions: 0o600)
+        for (path, document) in documents {
+            try files.writeData(document.xmlData(options: [.nodePreserveAll]), to: files.literalURL(path), permissions: 0o600)
         }
-        let paths = replacements.keys.sorted()
+        let paths = documents.keys.sorted()
+        let replaced = paths.filter(package.entries.contains)
         // Update only the staged export. The user's original file is still
         // protected by the Office save checkpoint and source version check.
-        _ = try await command("/usr/bin/zip", ["-q", "-d", archive.path] + paths, in: folder, scratch: package.scratch, writable: true)
-        _ = try await command("/usr/bin/zip", ["-q", "-X", archive.path] + paths, in: folder, scratch: package.scratch, writable: true)
+        if !replaced.isEmpty {
+            _ = try await command("/usr/bin/zip", ["-q", "-d", "-nw", package.archive.path] + replaced, in: folder, scratch: package.scratch, writable: true)
+        }
+        _ = try await command("/usr/bin/zip", ["-q", "-X", "-nw", package.archive.path] + paths, in: folder, scratch: package.scratch, writable: true)
+    }
+
+    private static func addNotes(_ edits: [AgentSpreadsheetNoteEdit], on sheet: Sheet, sheets: [Sheet], package: Package,
+                                 links: [Relation], existing: (part: String, document: XMLDocument)?,
+                                 documents: inout [String: XMLDocument], contentTypes: inout [String: String],
+                                 usedNames: inout Set<String>) async throws {
+        let worksheet = try await package.xml(sheet.part)
+        guard let root = worksheet.rootElement(), root.localName == "worksheet", root.uri == sheetURI else {
+            throw PetError("原工作表无法读取，备注草稿已保留")
+        }
+        let relationshipPart = package.relationshipPart(sheet.part)
+        let relationships: XMLDocument
+        if package.entries.contains(relationshipPart) { relationships = try await package.xml(relationshipPart) }
+        else { relationships = try XMLDocument(xmlString: "<Relationships xmlns=\"\(packageRelationshipURI)\"/>", options: []) }
+        guard let relationshipRoot = relationships.rootElement(), relationshipRoot.localName == "Relationships",
+              relationshipRoot.uri == packageRelationshipURI else { throw PetError("工作表关联文件无效，备注草稿已保留") }
+
+        let key = String(AgentFiles.hash(Data(sheet.part.utf8)).prefix(16))
+        let commentsPath: String, comments: XMLDocument
+        var changedLinks = false
+        if let existing {
+            try await requireUnshared(existing.part, kind: "comments", on: sheet, sheets: sheets, package: package)
+            commentsPath = existing.part; comments = existing.document
+        } else {
+            commentsPath = unusedPart("xl/comments/notes-" + key, extension: "xml", used: &usedNames)
+            comments = try XMLDocument(xmlString: "<comments xmlns=\"\(sheetURI)\"><authors/><commentList/></comments>", options: [])
+            _ = addRelationship("comments", to: commentsPath, in: relationshipRoot)
+            contentTypes[commentsPath] = "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"
+            changedLinks = true
+        }
+        guard documents[commentsPath] == nil else { throw PetError("多张工作表共用备注文件，原件已保留") }
+        try appendComments(edits, to: comments)
+        documents[commentsPath] = comments
+
+        let legacy = children(root, "legacyDrawing")
+        guard legacy.count <= 1 else { throw PetError("工作表的备注绘图关联无效") }
+        let drawingPath: String, drawing: XMLDocument
+        if let prior = legacy.first {
+            guard let id = prior.attribute(forLocalName: "id", uri: relationshipURI)?.stringValue ?? attribute(prior, "r:id"),
+                  let link = links.first(where: { $0.id == id && $0.kind == "vmlDrawing" }) else {
+                throw PetError("找不到原工作表的备注绘图，原件已保留")
+            }
+            drawingPath = try part(link.target, from: sheet.part)
+            try await requireUnshared(drawingPath, kind: "vmlDrawing", on: sheet, sheets: sheets, package: package)
+            drawing = try await package.xml(drawingPath)
+        } else {
+            drawingPath = unusedPart("xl/drawings/notes-" + key, extension: "vml", used: &usedNames)
+            drawing = XMLDocument(rootElement: XMLElement(name: "xml"))
+            let id = addRelationship("vmlDrawing", to: drawingPath, in: relationshipRoot)
+            let element = XMLElement(name: qualified("legacyDrawing", in: root), uri: sheetURI)
+            if let namespace = XMLNode.namespace(withName: "r", stringValue: relationshipURI) as? XMLNode {
+                element.addNamespace(namespace)
+            }
+            set("r:id", id, on: element)
+            // legacyDrawing follows drawings and precedes headers, objects,
+            // tables and extensions in the worksheet schema.
+            let following: Set<String> = ["legacyDrawingHF", "picture", "oleObjects", "controls", "webPublishItems", "tableParts", "extLst"]
+            let index = root.children?.firstIndex { $0.uri == sheetURI && following.contains($0.localName ?? "") } ?? root.childCount
+            root.insertChild(element, at: index)
+            documents[sheet.part] = worksheet
+            contentTypes[drawingPath] = "application/vnd.openxmlformats-officedocument.vmlDrawing"
+            changedLinks = true
+        }
+        guard documents[drawingPath] == nil else { throw PetError("多张工作表共用备注绘图，原件已保留") }
+        try appendShapes(edits, to: drawing)
+        documents[drawingPath] = drawing
+        if changedLinks { documents[relationshipPart] = relationships }
+    }
+
+    private static func requireUnshared(_ target: String, kind: String, on sheet: Sheet, sheets: [Sheet], package: Package) async throws {
+        for other in sheets where other.part != sheet.part {
+            let links = try await package.relationships(other.part)
+            for link in links where link.kind == kind {
+                if try part(link.target, from: other.part) == target {
+                    throw PetError("多张工作表共用备注资源，原件已保留")
+                }
+            }
+        }
+    }
+
+    private static func addRelationship(_ type: String, to path: String, in root: XMLElement) -> String {
+        let ids = Set(children(root, "Relationship").compactMap { attribute($0, "Id") })
+        let id = (1...(ids.count + 1)).lazy.map { "rId" + String($0) }.first { !ids.contains($0) }!
+        let link = append("Relationship", to: root)
+        set("Id", id, on: link); set("Type", relationshipURI + "/" + type, on: link)
+        set("Target", "/" + path, on: link)
+        return id
+    }
+
+    private static func unusedPart(_ prefix: String, extension suffix: String, used: inout Set<String>) -> String {
+        var name = prefix + "." + suffix, index = 0
+        while !used.insert(name.lowercased()).inserted {
+            index += 1
+            name = prefix + "-" + String(index) + "." + suffix
+        }
+        return name
+    }
+
+    private static func appendComments(_ edits: [AgentSpreadsheetNoteEdit], to document: XMLDocument) throws {
+        guard let root = document.rootElement(), root.uri == sheetURI,
+              let authors = children(root, "authors").first, let list = children(root, "commentList").first else {
+            throw PetError("备注作者或列表无法读取，原件已保留")
+        }
+        let values = children(authors, "author")
+        let authorID = values.firstIndex { $0.stringValue == noteAuthor } ?? values.count
+        if authorID == values.count { append("author", to: authors).stringValue = noteAuthor }
+        for edit in edits {
+            let note = append("comment", to: list)
+            set("ref", edit.cell, on: note); set("authorId", String(authorID), on: note)
+            writeText(edit.text, to: append("t", to: append("text", to: note)))
+        }
+    }
+
+    private struct CellPosition: Hashable {
+        let row: Int, column: Int
+    }
+
+    private static func appendShapes(_ edits: [AgentSpreadsheetNoteEdit], to document: XMLDocument) throws {
+        guard let root = document.rootElement(), root.localName == "xml" else { throw PetError("原备注绘图无法读取") }
+        var occupied: Set<String> = []
+        var anchors: Set<CellPosition> = []
+        var pending = root.children ?? []
+        while let item = pending.popLast() {
+            guard let node = item as? XMLElement else { continue }
+            pending.append(contentsOf: node.children ?? [])
+            if node.uri == vmlURI {
+                let shapeID = attribute(node, "id")
+                let officeID = node.attribute(forLocalName: "spid", uri: vmlOfficeURI)?.stringValue
+                for id in Set([shapeID, officeID].compactMap { $0 }) where id.hasPrefix("_x0000_s") {
+                    guard occupied.insert(id).inserted else { throw PetError("原备注绘图含重复图形编号") }
+                }
+            }
+            guard node.uri == vmlExcelURI, node.localName == "ClientData", attribute(node, "ObjectType") == "Note" else { continue }
+            guard let row = children(node, "Row").first?.stringValue.flatMap(Int.init),
+                  let column = children(node, "Column").first?.stringValue.flatMap(Int.init),
+                  anchors.insert(CellPosition(row: row, column: column)).inserted else {
+                throw PetError("原备注绘图含重复或无效位置")
+            }
+        }
+        var positions: [CellPosition] = []
+        for edit in edits {
+            guard let position = cellPosition(edit.cell) else { throw PetError("无效的备注位置") }
+            if !anchors.contains(position) { positions.append(position) }
+        }
+        guard !positions.isEmpty else { return }
+        if !children(root, "shapetype").contains(where: { $0.uri == vmlURI && attribute($0, "id") == "_x0000_t202" }) {
+            let template = try XMLElement(xmlString: """
+                <v:shapetype xmlns:v="\(vmlURI)" xmlns:o="\(vmlOfficeURI)" id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe">
+                  <v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/>
+                </v:shapetype>
+                """)
+            let at = root.children?.firstIndex { $0.uri == vmlURI && ["shape", "group"].contains($0.localName ?? "") } ?? root.childCount
+            root.insertChild(template, at: at)
+        }
+        var next = 1025, usedBlocks: [String] = []
+        for position in positions {
+            while occupied.contains("_x0000_s" + String(next)) { next += 1 }
+            let block = String(next / 1024)
+            if usedBlocks.last != block { usedBlocks.append(block) }
+            root.addChild(try noteShape(id: next, at: position))
+            next += 1
+        }
+        let layout = children(root, "shapelayout").first { $0.uri == vmlOfficeURI }
+        if let layout, let map = children(layout, "idmap").first(where: { $0.uri == vmlOfficeURI }) {
+            let existing = (attribute(map, "data") ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            let extras = usedBlocks.filter { !existing.contains($0) }
+            if !extras.isEmpty { set("data", (existing + extras).joined(separator: ","), on: map) }
+        } else if layout == nil {
+            let map = try XMLElement(xmlString: """
+                <o:shapelayout xmlns:o="\(vmlOfficeURI)" xmlns:v="\(vmlURI)" v:ext="edit">
+                  <o:idmap v:ext="edit" data="\(usedBlocks.joined(separator: ","))"/>
+                </o:shapelayout>
+                """)
+            root.insertChild(map, at: 0)
+        } else {
+            throw PetError("原备注绘图缺少图形编号映射，原件已保留")
+        }
+    }
+
+    private static func noteShape(id: Int, at position: CellPosition) throws -> XMLElement {
+        let left = min(position.column + 1, 16_381), top = min(position.row, 1_048_571)
+        return try XMLElement(xmlString: """
+            <v:shape xmlns:v="\(vmlURI)" xmlns:o="\(vmlOfficeURI)" xmlns:x="\(vmlExcelURI)"
+                     id="_x0000_s\(id)" type="#_x0000_t202" fillcolor="#FFFFE1"
+                     style="position:absolute;width:108pt;height:59pt;z-index:1;visibility:hidden" o:insetmode="auto">
+              <v:fill color2="#FFFFE1"/><v:shadow on="t" color="#000000" obscured="t"/>
+              <v:path o:connecttype="none"/><v:textbox><div style="text-align:left"/></v:textbox>
+              <x:ClientData ObjectType="Note">
+                <x:MoveWithCells/><x:SizeWithCells/>
+                <x:Anchor>\(left), 12, \(top), 6, \(left + 2), 32, \(top + 4), 6</x:Anchor>
+                <x:AutoFill>False</x:AutoFill><x:Row>\(position.row)</x:Row><x:Column>\(position.column)</x:Column>
+              </x:ClientData>
+            </v:shape>
+            """)
+    }
+
+    private static func hasThreadedComments(_ relations: [Relation]) -> Bool {
+        relations.contains { $0.kind == "threadedComment" || $0.kind == "threadedComments" }
+    }
+    private static func qualified(_ name: String, in element: XMLElement) -> String {
+        if let prefix = element.prefix, !prefix.isEmpty { return prefix + ":" + name }
+        return name
+    }
+    private static func append(_ name: String, to parent: XMLElement) -> XMLElement {
+        let child = XMLElement(name: qualified(name, in: parent), uri: parent.uri)
+        parent.addChild(child)
+        return child
+    }
+    private static func set(_ name: String, _ value: String, on node: XMLElement) {
+        if let attribute = node.attribute(forName: name) { attribute.stringValue = value }
+        else if let attribute = XMLNode.attribute(withName: name, stringValue: value) as? XMLNode { node.addAttribute(attribute) }
+    }
+    private static func writeText(_ text: String, to node: XMLElement) {
+        node.stringValue = text
+        set("xml:space", "preserve", on: node)
     }
 
     private static func command(_ tool: String, _ args: [String], in directory: URL, scratch: URL? = nil,
@@ -185,10 +460,13 @@ enum AgentSpreadsheetNotes {
         (node?.children ?? []).compactMap { $0 as? XMLElement }.filter { $0.localName == name }
     }
     private static func attribute(_ node: XMLElement, _ name: String) -> String? { node.attribute(forName: name)?.stringValue }
-    private static func validCell(_ value: String) -> Bool {
+    private static func validCell(_ value: String) -> Bool { cellPosition(value) != nil }
+    private static func cellPosition(_ value: String) -> CellPosition? {
         guard value.range(of: "^[A-Z]{1,3}[1-9][0-9]{0,6}$", options: .regularExpression) != nil,
-              let firstNumber = value.firstIndex(where: \.isNumber), let row = Int(value[firstNumber...]), row <= 1_048_576 else { return false }
-        return value[..<firstNumber].utf8.reduce(0) { $0 * 26 + Int($1) - 64 } <= 16_384
+              let firstNumber = value.firstIndex(where: \.isNumber), let row = Int(value[firstNumber...]), row <= 1_048_576 else { return nil }
+        let column = value[..<firstNumber].utf8.reduce(0) { $0 * 26 + Int($1) - 64 }
+        guard column <= 16_384 else { return nil }
+        return CellPosition(row: row - 1, column: column - 1)
     }
     private static func validText(_ text: String) -> Bool {
         text.utf16.count <= 32_767 && text.unicodeScalars.allSatisfy { scalar in

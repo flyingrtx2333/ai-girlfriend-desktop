@@ -21,6 +21,9 @@ let workspaceView: ReturnType<typeof createOfficeView> | null = null;
 const sheetNotes = createSpreadsheetNotes(rootElement, async ({ sheet, cell }) => {
   if (!ready || currentFormat !== 'xlsx' || !workspaceView) throw new Error('工作簿尚未就绪');
   await perform(() => workspaceView!.locateSpreadsheetNote(sheet, cell));
+}, async () => {
+  if (!ready || currentFormat !== 'xlsx' || !workspaceView) return null;
+  return await perform(() => workspaceView!.activeSpreadsheetNoteCell());
 }, changed, () => { if (ready && currentFormat === 'xlsx') notify('view-change'); });
 function updateInteraction() {
   rootElement.inert = !ready || readOnly || operationBusy > 0;
