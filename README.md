@@ -231,9 +231,11 @@ Git 操作需要已安装的 Xcode 命令行工具。仓库初始化、模型预
 
 插件 MCP 支持 manifest 内的 `mcpServers` 对象、相对 JSON 路径或路径数组；未声明时读取 `.mcp.json`，其次 `mcp.json`。可安装只有连接器的插件。从组件列表选择 MCP 后点击「配置连接器」，在现有管理器保存配置并单独启用，再明确连接；安装与父插件启用不会启动程序。支持 stdio、`http`／`streamable-http`、环境变量、HTTP 请求头、`cwd` 与以毫秒计的 `timeout`。`${QODER_PLUGIN_ROOT}`、`${CLAUDE_PLUGIN_ROOT}`、`${PLUGIN_ROOT}` 展开为已安装资源目录；其他变量由用户在本机配置中填写，不读取应用进程的环境凭据，也不自动安装依赖。自定义 Agent 可像选择独立 MCP 一样分配插件连接器。停用、移除或修改配置会断开相关连接，重新启用后须重新连接；旧确认和旧工具引用不会恢复。移除保留本机连接配置与钥匙串凭据，便于从废纸篓恢复插件。
 
-「设置 → 扩展管理 → 插件 → 插件市场」可加载 HTTPS 目录或 Git 仓库。私有来源先填写地址，再打开「访问凭据」保存令牌。HTTPS 文件目录留空用户名时使用 Bearer，填写用户名时使用 Basic。Git 仓库填写用户名和具有读取权限的访问令牌。[GitHub](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#using-a-personal-access-token-on-the-command-line) · [GitLab](https://docs.gitlab.com/user/profile/personal_access_tokens/#use-git-over-https)
+「设置 → 扩展管理 → 插件 → 插件市场」可加载 HTTPS 目录、HTTPS Git 或 SSH Git 仓库。私有 HTTPS 来源先填写地址，再打开「访问凭据」保存令牌。HTTPS 文件目录留空用户名时使用 Bearer，填写用户名时使用 Basic。HTTPS Git 仓库填写用户名和具有读取权限的访问令牌。[GitHub](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#using-a-personal-access-token-on-the-command-line) · [GitLab](https://docs.gitlab.com/user/profile/personal_access_tokens/#use-git-over-https)
 
-凭据存放在本机应用配置中，并按目录地址隔离。HTTPS 文件目录的凭据仅用于同站点下该目录的文件，Git 凭据仅用于所填仓库。需要凭据的地址须直接返回资源。可在「访问凭据」更换或清除令牌，已保存的目录和已安装插件仍可查看。安装和更新需先审阅，完成后插件处于停用状态。
+SSH 仓库可填写 `ssh://git@host/仓库路径` 或 `git@host:仓库路径`。读取沿用本机 SSH 代理中已加载的身份，按已知主机记录验证指纹。市场内的 SSH 插件来自当前添加的仓库，审阅中可核对提交和子目录。[Git 地址格式](https://git-scm.com/docs/git-fetch#_git_urls) · [OpenSSH 主机校验](https://man.openbsd.org/ssh_config.5#StrictHostKeyChecking)
+
+HTTPS 凭据存放在本机应用配置中，并按目录地址隔离。文件目录的凭据仅用于同站点下该目录的文件，Git 凭据仅用于所填仓库。需要凭据的地址须直接返回资源。可在「访问凭据」更换或清除令牌，已保存的目录和已安装插件仍可查看。安装和更新需先审阅，完成后插件处于停用状态。
 
 插件包与展开资源分别不超过 20MB，单个资源不超过 2MB。最多64个插件、共64个插件连接器，每个插件最多16个连接器。安装不覆盖其他来源的同名插件，拒绝不安全路径、路径别名、过期或被修改的资源。其余插件能力与验收状态见 [Qoder 功能对照清单](docs/QODER-PARITY-TODO.md)。
 
