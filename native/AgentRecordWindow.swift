@@ -51,7 +51,11 @@ import UniformTypeIdentifiers
     private var wikiSharingTask: Task<Void, Never>?
     private var wikiSharingAlert: AgentConfirmation?
     private var wikiReviewWindow: AgentKnowledgeReviewWindow?
-    private var wikiCatalogScope: (workspace: String, branch: String)?
+    private struct WikiCatalogScope {
+        let workspace: String, branch: String, language: String, root: String
+    }
+    private var wikiCatalogScope: WikiCatalogScope?
+    private var unavailableWiki: (directory: AgentWikiTree.RecoveryState, mode: Int, preview: AgentMarkdownReader.ViewRecovery?)?
     private var wikiCitation: (enabled: Bool, signature: String, workspace: String)?
     private var wikiMaintenance: (options: AgentWikiMaintenanceOptions, signature: String, workspace: String)?
     private var wikiMaintenanceNotice = ""
@@ -478,13 +482,15 @@ import UniformTypeIdentifiers
             let value = try await current.captureWorkspaceRecovery()
             guard sourceWindow === current else { continue }; source = value; break
         }
-        let markdownViewport = markdownFile == nil ? nil : try markdown.captureViewRecovery(source: text.string)
+        let markdownViewport = try unavailableWiki?.preview ?? (markdownFile == nil ? nil : markdown.captureViewRecovery(source: text.string))
         let plan = try wikiPlanWindow?.captureWorkspaceRecovery()
         let viewport = try captureTextViewport()
-        let directory = try (sections.selectedSegment == 6 ? wikiCatalogScope : nil).map { try wikiTree.captureRecovery(workspace: $0.workspace, branch: $0.branch) }
+        let directory = try unavailableWiki?.directory ?? (sections.selectedSegment == 6 ? wikiCatalogScope : nil).map {
+            try wikiTree.captureRecovery(workspace: $0.workspace, branch: $0.branch)
+        }
         let value = RecoveryState(taskID: taskID, documentOnly: documentOnly, section: sections.selectedSegment, selection: selection,
             file: openedFile?.path, memoryWorkspace: openedMemoryWorkspace ?? memoryWorkspace, openedHash: openedHash,
-            text: dirty ? text.string : nil, encoding: fileFormat.encoding.rawValue, bom: fileFormat.bom, mode: displayMode.selectedSegment, dirty: dirty, video: playback,
+            text: dirty ? text.string : nil, encoding: fileFormat.encoding.rawValue, bom: fileFormat.bom, mode: unavailableWiki?.mode ?? displayMode.selectedSegment, dirty: dirty, video: playback,
             memoryExists: selection.flatMap(AgentMemoryDocument.init(selection:))?.topic == nil ? nil : openedMemoryExists,
             videoWindow: child, textViewport: viewport, markdownViewport: markdownViewport, sourceWindow: source, wikiPlan: plan, wikiDirectory: directory,
             versionReview: try wikiReviewWindow?.captureVersionPosition(), conflict: try conflictWindow?.captureRecovery() ?? pendingConflict)
@@ -499,12 +505,30 @@ import UniformTypeIdentifiers
         if let file = value.file { encodings[file] = format.encoding }
         restoringVideo = value.video.flatMap { state in value.file.map { ($0, state) } }
         defer { restoringVideo = nil }
-        if let directory = value.wikiDirectory {
-            let scope = try store.knowledgeCards.scope(task)
-            guard scope.root == directory.workspace, scope.branch == directory.branch else { throw PetError("Wiki 所属项目或分支已变化，原阅读记录已保留") }
-            let current = try AgentWiki.view(store: store, taskID: taskID, language: directory.language)
-            guard current.root == directory.root, directory.document.map({ path in current.pages.contains { $0.path == path } }) != false else {
-                throw PetError("原 Wiki 文档或目录暂不可用，阅读记录已保留")
+        var issue: String?, currentHash: String?, wikiDocument: String?
+        if var directory = value.wikiDirectory {
+            if value.dirty, let file = value.file {
+                let prefix = directory.workspace + "/"
+                guard file.hasPrefix(prefix + directory.root + "/"), URL(fileURLWithPath: file).standardizedFileURL.path == file else {
+                    throw PetError("Wiki 草稿与原目录不符，原草稿已保留")
+                }
+                let document = String(file.dropFirst(prefix.count))
+                guard directory.document == nil || directory.document == document else {
+                    throw PetError("Wiki 草稿与原文档不符，原草稿已保留")
+                }
+                directory.document = document
+                wikiDocument = document
+            }
+            do {
+                let scope = try store.knowledgeCards.scope(task)
+                guard scope.root == directory.workspace, scope.branch == directory.branch else { throw PetError("Wiki 所属项目或分支已变化") }
+                let current = try AgentWiki.view(store: store, taskID: taskID, language: directory.language)
+                guard current.root == directory.root else { throw PetError("Wiki 发布目录已变化") }
+                guard directory.document.map({ path in current.pages.contains { $0.path == path } }) != false else { throw PetError("原 Wiki 文档暂不可用") }
+            } catch {
+                guard value.dirty, wikiDocument != nil else { throw error }
+                unavailableWiki = (directory, value.mode, value.markdownViewport)
+                issue = AgentFileConflictSnapshot.readFailure(error).message
             }
             wikiTree.prepareRecovery(directory)
         }
@@ -519,16 +543,18 @@ import UniformTypeIdentifiers
             try restoreVersionReview(value.versionReview); pendingConflict = value.conflict; return
         }
         guard let draft = value.text, let hash = value.openedHash else { throw PetError("恢复草稿缺少原始版本") }
-        var issue: String?, currentHash: String?
         if let path = value.file, [1, 6].contains(value.section) {
             let file = URL(fileURLWithPath: path).standardizedFileURL
-            do {
-                let (files, current) = try AgentWorkspaceScope.location(task, path: path)
-                guard current == file, !AgentFiles.sensitive(files.relative(file)) else { throw PetError("原文件位置或访问范围已变化") }
-                currentHash = try files.fileHash(file, maximum: 4_000_000)
-            } catch { issue = AgentFileConflictSnapshot.readFailure(error).message }
+            if issue == nil {
+                do {
+                    try requireWikiFile(file, task: task)
+                    let (files, current) = try AgentWorkspaceScope.location(task, path: path)
+                    guard current == file, !AgentFiles.sensitive(files.relative(file)) else { throw PetError("原文件位置或访问范围已变化") }
+                    currentHash = try files.fileHash(file, maximum: 4_000_000)
+                } catch { issue = AgentFileConflictSnapshot.readFailure(error).message }
+            }
             loadText(AgentTextFile(text: draft, format: format), data: Data(draft.utf8), file: file, task: task)
-            selection = path; openedFile = file
+            selection = wikiDocument ?? path; openedFile = file
             if !openedFiles.contains(path) { openedFiles.append(path) }
             if documentOnly { window?.title = file.lastPathComponent }
         } else if value.section == 5, let selection = value.selection, let document = AgentMemoryDocument(selection: selection), document.scope != .effectiveInstructions {
@@ -548,7 +574,11 @@ import UniformTypeIdentifiers
             state.stringValue = "草稿只读 · " + issue
         }
         else { state.stringValue = currentHash == hash ? "已恢复未保存内容" : "文件已更改，草稿已恢复；保存前请比较" }
-        if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }
+        if !displayMode.isHidden {
+            displayMode.setEnabled(unavailableWiki == nil, forSegment: 0)
+            displayMode.selectedSegment = unavailableWiki == nil ? value.mode : 1
+            switchDocumentMode()
+        }
         text.undoManager?.removeAllActions(); updateTaskItemPicker(); onWorkspaceChange?()
         try restoreTextViewports(value); try restoreSourceWindow(value.sourceWindow); restoreVideoWindow(value.videoWindow); try restoreWikiPlan(value.wikiPlan)
         try restoreVersionReview(value.versionReview); pendingConflict = value.conflict
@@ -569,7 +599,7 @@ import UniformTypeIdentifiers
     }
     private func restoreTextViewports(_ value: RecoveryState) throws {
         try prepareTextViewport(value.textViewport)
-        if let viewport = value.markdownViewport { try markdown.restoreViewRecovery(viewport) }
+        if unavailableWiki == nil, let viewport = value.markdownViewport { try markdown.restoreViewRecovery(viewport) }
         scheduleTextViewport()
     }
     private func scheduleTextViewport(activating: Bool = false, forceFocus: Bool = false) {
@@ -659,6 +689,7 @@ import UniformTypeIdentifiers
     private func refreshCatalog(selecting preferred: String?, restoringWiki: Bool = false) {
         defer { onWorkspaceChange?() }
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
+        if !restoringWiki { unavailableWiki = nil }
         load?.cancel(); selection = nil; openedHash = nil; openedMemoryExists = nil; openedMemorySource = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true
         allowInstruction.isHidden = true; revokeInstruction.isHidden = true
@@ -701,10 +732,16 @@ import UniformTypeIdentifiers
         case 4:
             items = [("全部日志", "all-logs")] + task.events.filter { $0.kind == "hook" }.suffix(64).reversed().map { ($0.statusTitle + " · " + $0.title, $0.id) }
         case 6:
+            if let saved = unavailableWiki?.directory {
+                wikiCatalogScope = .init(workspace: saved.workspace, branch: saved.branch, language: saved.language, root: saved.root)
+                items = []; wikiTree.show([], selected: saved.document, root: saved.root)
+                break
+            }
             do {
-                let view = try AgentWiki.view(store: store, taskID: taskID, language: wikiTree.selectedLanguage)
+                let language = wikiTree.selectedLanguage, view = try AgentWiki.view(store: store, taskID: taskID, language: language)
                 let scope = try store.knowledgeCards.scope(task)
-                wikiCatalogScope = (scope.root, scope.branch); items = view.pages.map { ($0.title, $0.path) }
+                wikiCatalogScope = .init(workspace: scope.root, branch: scope.branch, language: language, root: view.root)
+                items = view.pages.map { ($0.title, $0.path) }
                 let document = restoringWiki ? wikiTree.selectedDocument : items.first { $0.value == preferred || preferred == nil && $0.value == wikiTree.selectedDocument }?.value ?? items.first?.value
                 wikiTree.show(view.pages, selected: document, root: view.root)
                 state.stringValue = items.isEmpty ? "未生成" : try AgentWiki.status(store: store, taskID: taskID, language: wikiTree.selectedLanguage)
@@ -719,7 +756,7 @@ import UniformTypeIdentifiers
         table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
         updateTaskItemPicker()
         if sections.selectedSegment == 6 {
-            if let selected = wikiTree.selectedDocument {
+            if unavailableWiki == nil, let selected = wikiTree.selectedDocument {
                 if !restoringWiki { _ = wikiTree.select(selected, notify: false) }
                 loadSelection(selected)
             }
@@ -728,15 +765,34 @@ import UniformTypeIdentifiers
     }
     private func refreshWikiCatalog() {
         guard sections.selectedSegment == 6, let task = store.task(taskID) else { return }
+        if unavailableWiki != nil { presentConflict(); return }
         updateWikiSharingState()
         do {
-            let view = try AgentWiki.view(store: store, taskID: taskID, language: wikiTree.selectedLanguage), pages = view.pages
+            if dirty, let file = openedFile { try requireWikiFile(file, task: task) }
+            let language = wikiTree.selectedLanguage, view = try AgentWiki.view(store: store, taskID: taskID, language: language), pages = view.pages
             let scope = try store.knowledgeCards.scope(task)
-            wikiCatalogScope = (scope.root, scope.branch); items = pages.map { ($0.title, $0.path) }
-            wikiTree.show(pages, selected: selection.flatMap { value in pages.first { $0.path == value || scope.root + "/" + $0.path == value }?.path }, root: view.root)
-            if let selection, !pages.contains(where: { $0.path == selection }) { state.stringValue = dirty ? "文档已移出目录，草稿已保留" : "文档已移出目录" }
+            wikiCatalogScope = .init(workspace: scope.root, branch: scope.branch, language: language, root: view.root)
+            items = pages.map { ($0.title, $0.path) }
+            let document = selection.flatMap { value in pages.first { $0.path == value || scope.root + "/" + $0.path == value }?.path }
+            wikiTree.show(pages, selected: document, root: view.root)
+            if selection != nil, document == nil { state.stringValue = dirty ? "文档已移出目录，草稿已保留" : "文档已移出目录" }
             else if selection == nil, let first = items.first { _ = wikiTree.select(first.value) }
         } catch { state.stringValue = error.localizedDescription }
+    }
+    private func requireWikiFile(_ file: URL, task: AgentTaskRecord) throws {
+        guard sections.selectedSegment == 6 else { return }
+        guard let expected = wikiCatalogScope, expected.language == wikiTree.selectedLanguage,
+              file.path.hasPrefix(expected.workspace + "/" + expected.root + "/") else {
+            throw PetError("Wiki 文档已离开原目录，草稿已保留")
+        }
+        let scope = try store.knowledgeCards.scope(task)
+        guard scope.root == expected.workspace, scope.branch == expected.branch else { throw PetError("Wiki 所属项目或分支已变化，草稿已保留") }
+        if expected.language != "legacy" {
+            let manifest = try AgentWiki.plannedManifest(scope: scope, language: expected.language)
+            guard (manifest?.root ?? ".bluefatfish/wiki") == expected.root, expected.language != "en" || manifest != nil else {
+                throw PetError("Wiki 发布目录已变化，草稿已保留")
+            }
+        }
     }
     func refreshLiveRecords(_ id: String) {
         if isPageVisible, sections.selectedSegment == 6 {
@@ -1055,6 +1111,7 @@ import UniformTypeIdentifiers
     }
     private func loadSelection(_ value: String) {
         defer { updateTaskItemPicker(); onWorkspaceChange?() }
+        unavailableWiki = nil
         load?.cancel(); selection = value; openedHash = nil; openedMemoryExists = nil; openedMemorySource = nil; recoveryBlockedReason = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
         revealMemory.isEnabled = false
         text.undoManager?.removeAllActions()
@@ -1129,7 +1186,7 @@ import UniformTypeIdentifiers
               (try? store.agents.limits(task, store: store).readOnly) == false else { return false }
         return true
     }
-    private func resetDocumentMode() { pendingTextViewport = nil; rememberedTextFocus = false; textFocusRequested = false; readingToolbar.isHidden = true; video.clear(); video.isHidden = true; conflictWindow?.close(); conflictWindow = nil; markdownFile = nil; openedFile = nil; fileFormat = AgentTextFormat(); requestedEncoding = nil; encodingMenu.isHidden = true; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
+    private func resetDocumentMode() { pendingTextViewport = nil; rememberedTextFocus = false; textFocusRequested = false; readingToolbar.isHidden = true; video.clear(); video.isHidden = true; conflictWindow?.close(); conflictWindow = nil; markdownFile = nil; openedFile = nil; fileFormat = AgentTextFormat(); requestedEncoding = nil; encodingMenu.isHidden = true; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; displayMode.setEnabled(true, forSegment: 0); sourceSelection.update() }
     private func videoScope(_ files: AgentFiles) -> () throws -> Void {
         { [weak self] in guard let self, let task = self.store.task(self.taskID), try AgentWorkspaceScope.roots(task).contains(where:{$0.root == files.root}) else { throw PetError("视频所属任务或工作区已变化") } }
     }
@@ -1179,7 +1236,7 @@ import UniformTypeIdentifiers
         } catch { dirty = dirty || retainedDirty; state.stringValue = error.localizedDescription; AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: openedHash == nil ? nil : fileFormat) }
     }
     @objc private func switchDocumentMode(_ sender: Any? = nil) {
-        guard let file = markdownFile, let task = store.task(taskID), let workspace = try? AgentWorkspaceScope.files(task,path:file.path).root.path else { return }
+        guard unavailableWiki == nil, let file = markdownFile, let task = store.task(taskID), let workspace = try? AgentWorkspaceScope.files(task,path:file.path).root.path else { return }
         if isPageVisible, !viewer.isHidden, !textViewportScheduled, presentingWindow?.firstResponder === text { rememberedTextFocus = true }
         markdown.rememberViewportFocus()
         defer {
@@ -1243,7 +1300,8 @@ import UniformTypeIdentifiers
                 if memorySettingsTarget != nil || document.topic != nil { openedMemoryExists = saved.exists }
                 openedHash = saved.hash; revealMemory.isEnabled = saved.exists; dirty = false; state.stringValue = "已保存"; onWorkspaceChange?(); return
             }
-            guard let task else { return }
+            guard let task, let openedFile else { return }
+            try requireWikiFile(openedFile, task: task)
             let (files,file) = try AgentWorkspaceScope.location(task,path:path), current = try files.readData(file)
             guard file == openedFile, fileIsEditable(task, file: file) else { throw PetError("文件位置已变化或当前只读，草稿已保留") }
             guard let hash = openedHash else { throw PetError("打开的文件版本不可用，草稿已保留") }
@@ -1261,6 +1319,7 @@ import UniformTypeIdentifiers
     }
     private func persistFile(path: String, content: String, format: AgentTextFormat, expectedHash: String) async throws {
         guard !saving, let task = store.task(taskID), let file = openedFile, fileIsEditable(task, file: file), try AgentWorkspaceScope.location(task,path:path).1 == file else { throw PetError("文件位置已变化或当前只读，草稿已保留") }
+        try requireWikiFile(file, task: task)
         let data = try format.encode(content)
         let args = try JSONSerialization.data(withJSONObject: ["path": path, "content": content, "expected_hash": expectedHash, "encoding": format.encoding.rawValue, "byte_order_mark": format.bom])
         saving = true; save.isEnabled = false; compare.isEnabled = false; state.stringValue = "正在保存…"
@@ -1272,6 +1331,7 @@ import UniformTypeIdentifiers
         let ownComparisonVisible = settingsHostWindow != nil && conflictWindow?.isPageVisible == true && conflictWindow?.presentingWindow === presentingWindow
         guard !saving, isPageVisible || ownComparisonVisible, [1, 6].contains(sections.selectedSegment), let task = store.task(taskID),
               let file = openedFile, let path = selection else { throw PetError("文档或任务已变化，草稿已保留") }
+        try requireWikiFile(file, task: task)
         let (files, current) = try AgentWorkspaceScope.location(task, path: path)
         guard current == file else { throw PetError("原文件位置已变化，草稿已保留") }
         try markdown.finishEditing()
@@ -1284,15 +1344,7 @@ import UniformTypeIdentifiers
         let next = AgentFileConflictWindow(file: file, protectedData: store.directory.deletingLastPathComponent(), recovery: recovery, read: { [weak self] in
             guard let self else { throw PetError("文档已关闭") }; return try self.conflictSnapshot()
         }, didReview: { [weak self] reviewed in
-            guard let self, self.recoveryBlockedReason != nil else { return }
-            guard reviewed.allowsOverwrite else {
-                let issue = "当前文件只读，草稿已保留"
-                self.recoveryBlockedReason = issue; self.state.stringValue = issue
-                return
-            }
-            self.recoveryBlockedReason = nil
-            self.text.isEditable = true; self.save.isEnabled = true
-            self.state.stringValue = self.openedHash == reviewed.diskHash ? "已恢复未保存内容" : "文件已更改，保存前请比较"
+            try self?.resumeAfterReview(reviewed)
         }, resolve: { [weak self] reviewed, resolution in
             guard let self else { throw PetError("文档已关闭") }
             let current = try self.conflictSnapshot(); try reviewed.requireUnchanged(current)
@@ -1314,6 +1366,39 @@ import UniformTypeIdentifiers
             conflictWindow = nil; onWorkspaceChange?()
         }
         conflictWindow = next; presentSettingsChild(next); onWorkspaceChange?()
+    }
+    private func resumeAfterReview(_ reviewed: AgentFileConflictSnapshot) throws {
+        guard recoveryBlockedReason != nil else { return }
+        let saved = unavailableWiki
+        if let saved {
+            let directory = saved.directory
+            let view = try AgentWiki.view(store: store, taskID: taskID, language: directory.language)
+            guard view.root == directory.root else { throw PetError("Wiki 发布目录已变化，草稿已保留") }
+            guard view.pages.contains(where: { $0.path == directory.document }) else { throw PetError("原 Wiki 文档暂不可用") }
+            items = view.pages.map { ($0.title, $0.path) }
+            wikiTree.prepareRecovery(directory)
+            wikiTree.show(view.pages, selected: directory.document, root: directory.root)
+            unavailableWiki = nil
+        }
+        let readOnly = "当前文件只读，草稿已保留"
+        recoveryBlockedReason = reviewed.allowsOverwrite ? nil : readOnly
+        text.isEditable = reviewed.allowsOverwrite; save.isEnabled = text.isEditable
+        if reviewed.allowsOverwrite { state.stringValue = openedHash == reviewed.diskHash ? "已恢复未保存内容" : "文件已更改，保存前请比较" }
+        else { state.stringValue = readOnly }
+        if let saved {
+            displayMode.setEnabled(true, forSegment: 0)
+            displayMode.selectedSegment = saved.mode
+            switchDocumentMode()
+            if let preview = saved.preview {
+                markdown.show(text.string, file: reviewed.file, workspace: saved.directory.workspace, reuseIfUnchanged: true)
+                do { try markdown.restoreViewRecovery(preview) }
+                catch {
+                    displayMode.selectedSegment = 1
+                    switchDocumentMode()
+                    state.stringValue = "原预览位置暂不可用，草稿已保留"
+                }
+            }
+        }
     }
     @objc private func restoreFile() {
         guard let task = store.task(taskID), let change = task.changes.first(where: { $0.id == selection }) else { return }

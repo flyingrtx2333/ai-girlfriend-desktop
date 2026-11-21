@@ -86,7 +86,7 @@ struct AgentFileConflictSnapshot {
 
     private let file: URL
     private let readSnapshot: () throws -> AgentFileConflictSnapshot
-    private let didReview: (AgentFileConflictSnapshot) -> Void
+    private let didReview: (AgentFileConflictSnapshot) throws -> Void
     private let resolve: (AgentFileConflictSnapshot, Resolution) async throws -> Void
     private let protectedData: URL
     private let diff = AgentGitDiffView(), full = NSStackView(), diskText = NSTextView(), draftText = NSTextView()
@@ -99,7 +99,7 @@ struct AgentFileConflictSnapshot {
     private var recovery: RecoveryState?, applyingPosition = false
     var onPositionChange: (() -> Void)?, onClose: (() -> Void)?
     init(file: URL, protectedData: URL, recovery: RecoveryState? = nil,
-         read: @escaping () throws -> AgentFileConflictSnapshot, didReview: @escaping (AgentFileConflictSnapshot) -> Void = { _ in },
+         read: @escaping () throws -> AgentFileConflictSnapshot, didReview: @escaping (AgentFileConflictSnapshot) throws -> Void = { _ in },
          resolve: @escaping (AgentFileConflictSnapshot, Resolution) async throws -> Void) {
         self.file = file; self.readSnapshot = read; self.didReview = didReview; self.resolve = resolve
         self.protectedData = protectedData; self.recovery = recovery
@@ -233,13 +233,16 @@ struct AgentFileConflictSnapshot {
         showSelectedVersion(); showStatus("正在比较…"); updateActions()
         do {
             let value = try readSnapshot()
-            if let expected = recovery, expected.file != value.file.path || expected.diskHash != value.diskHash || expected.draftHash != value.draftHash {
-                guard !requiringMatch else { throw PetError("文件或草稿已变化，请刷新比较") }
-                recovery = nil
+            let matches = recovery.map { expected in
+                expected.file == value.file.path && expected.diskHash == value.diskHash && expected.draftHash == value.draftHash
+            } ?? true
+            guard matches || !requiringMatch else {
+                throw PetError("文件或草稿已变化，请刷新比较")
             }
             diskText.string = try value.diskDocument().text; draftText.string = try value.draftDocument().text
+            try didReview(value)
+            if !matches { recovery = nil }
             review = value
-            didReview(value)
             diskFormat.stringValue = AgentTextFile.formatDescription(value.disk, encoding: value.diskEncoding); draftFormat.stringValue = AgentTextFile.formatDescription(value.draft, encoding: value.draftEncoding)
             diff.show("", oldTitle: "磁盘文件", newTitle: "我的草稿", accessibilityContext: "文件"); switchComparisonView()
             job = Task { [weak self] in
