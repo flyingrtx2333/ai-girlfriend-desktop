@@ -31,6 +31,9 @@ import AppKit
         import fs from 'node:fs';
         import readline from 'node:readline';
         fs.writeFileSync(process.argv[3], String(process.pid));
+        if (process.argv[4]) setInterval(() => {
+          if (fs.existsSync(process.argv[4])) process.exit(0);
+        }, 20);
         const input = readline.createInterface({input: process.stdin});
         input.on('line', line => {
           const request = JSON.parse(line);
@@ -218,5 +221,21 @@ import AppKit
             && userCatalog.contains { $0.source == userInstalled.path && !store.hooks.enabled($0) }
         checks["sourceFilesAndReadmeAreUntouched"] = try Data(contentsOf: codex) == Data(json.utf8)
             && Data(contentsOf: inline) == Data(toml.utf8) && Data(contentsOf: readmePath) == Data((readme + "\n").utf8)
+
+        let exitGate = output.appendingPathComponent("connector-exit")
+        let exitPID = output.appendingPathComponent("connector-exit-pid")
+        let exiting = try store.mcp.save(encoded(["name": "公开自行退出连接器", "type": "stdio", "command": "/opt/homebrew/bin/node",
+            "args": [command.path, calls.path, exitPID.path, exitGate.path], "env": [:], "timeoutSeconds": 5]))
+        defer { store.mcp.disconnect(owner: unrelated) }
+        _ = try await store.mcp.connect(exiting.id, revision: exiting.revision, owner: unrelated, workspace: project.path)
+        let pid = await store.mcp.processID(exiting.id, owner: unrelated)
+        let reportedPID = Int32(try String(contentsOf: exitPID, encoding: .utf8))
+        let connected = store.mcp.token(exiting.id, owner: unrelated) != nil
+        try Data().write(to: exitGate)
+        let exitDeadline = Date().addingTimeInterval(3)
+        while store.mcp.connected(exiting.id, owner: unrelated), Date() < exitDeadline { await wait(0.025) }
+        checks["idleConnectorExitClearsItsSessionAndReportsActualPID"] = connected && pid != nil && pid == reportedPID
+            && store.mcp.status(exiting.id, owner: unrelated, workspace: project.path) == "已断开"
+            && store.mcp.token(exiting.id, owner: unrelated) == nil
     }
 }

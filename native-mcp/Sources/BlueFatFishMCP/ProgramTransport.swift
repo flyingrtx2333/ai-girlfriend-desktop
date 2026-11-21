@@ -8,7 +8,9 @@ import Logging
 actor ProgramTransport: Transport {
     nonisolated let logger = Logger(label: "com.xjs.bluefatfish.mcp", factory: { _ in SwiftLogNoOpLogHandler() })
     private nonisolated let io: ProgramIO
-    init(command: String, arguments: [String], environment: [String: String], directory: String) { io = ProgramIO(command: command, arguments: arguments, environment: environment, directory: directory) }
+    init(command: String, arguments: [String], environment: [String: String], directory: String, onClose: @escaping @Sendable () -> Void) {
+        io = ProgramIO(command: command, arguments: arguments, environment: environment, directory: directory, onClose: onClose)
+    }
     nonisolated var processID: Int32? { io.processID }
     nonisolated func stop() { io.stop() }
     func connect() async throws { try await io.connect() }
@@ -20,15 +22,26 @@ actor ProgramTransport: Transport {
 private final class ProgramIO: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.xjs.bluefatfish.mcp.program", qos: .utility)
     private let command: String, arguments: [String], environment: [String: String], directory: String
+    private let onClose: @Sendable () -> Void
     private var pid: pid_t = 0, closed = false
+    private var lifetimeDescriptor: Int32 = -1
     private var reader: DispatchSourceRead?, process: DispatchSourceProcess?, writer: DispatchIO?
     private var pending = Data()
     private let stream: AsyncThrowingStream<Data, Error>
     private let continuation: AsyncThrowingStream<Data, Error>.Continuation
-    var processID: Int32? { queue.sync { pid > 0 ? pid : nil } }
+    var processID: Int32? {
+        queue.sync {
+            guard pid > 0, !closed else { return nil }
+            // The supervisor is our child and starts one connector.
+            var connector: pid_t = 0
+            let count = proc_listchildpids(pid, &connector, Int32(MemoryLayout<pid_t>.size))
+            return count > 0 && connector > 0 ? connector : nil
+        }
+    }
 
-    init(command: String, arguments: [String], environment: [String: String], directory: String) {
+    init(command: String, arguments: [String], environment: [String: String], directory: String, onClose: @escaping @Sendable () -> Void) {
         self.command = command; self.arguments = arguments; self.environment = environment; self.directory = directory
+        self.onClose = onClose
         (stream, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(64))
     }
     func connect() async throws { try queue.sync { try launch() } }
@@ -37,9 +50,10 @@ private final class ProgramIO: @unchecked Sendable {
     func stop() { queue.sync { finish() } }
     private func finish(_ error: Error? = nil) {
         guard !closed else { return }; closed = true
-        if pid > 0 { kill(-pid, SIGKILL) }
+        if lifetimeDescriptor >= 0 { close(lifetimeDescriptor); lifetimeDescriptor = -1 }
         writer?.close(flags: .stop); writer = nil; reader?.cancel(); reader = nil
         continuation.finish(throwing: error)
+        if error != nil { onClose() }
     }
     func send(_ data: Data) async throws {
         guard data.count <= 1_000_000 else { throw MCPConnectionError("MCP 请求超过 1MB") }
@@ -56,9 +70,17 @@ private final class ProgramIO: @unchecked Sendable {
     }
     private func launch() throws {
         guard pid == 0, !closed else { throw MCPConnectionError("本机连接不能重复启动") }
-        var input: [Int32] = [0, 0], output: [Int32] = [0, 0]
+        guard FileManager.default.isExecutableFile(atPath: command) else { throw MCPConnectionError("本机 MCP 程序不可用，请检查连接器配置") }
+        guard let supervisor = Bundle.main.url(forAuxiliaryExecutable: "BlueFatFishCommand"),
+              FileManager.default.isExecutableFile(atPath: supervisor.path) else { throw MCPConnectionError("本机连接器进程监控不可用") }
+        var input: [Int32] = [0, 0], output: [Int32] = [0, 0], lifetime: [Int32] = [0, 0]
         guard pipe(&input) == 0 else { throw MCPConnectionError("无法创建 MCP 输入管道") }
         guard pipe(&output) == 0 else { input.forEach { close($0) }; throw MCPConnectionError("无法创建 MCP 输出管道") }
+        guard pipe(&lifetime) == 0 else { (input + output).forEach { close($0) }; throw MCPConnectionError("无法创建 MCP 进程监控管道") }
+        var spawned = false
+        defer { if !spawned { (input + output + lifetime).forEach { close($0) } } }
+        guard fcntl(lifetime[0], F_SETFD, FD_CLOEXEC) == 0, fcntl(lifetime[1], F_SETFD, FD_CLOEXEC) == 0,
+              fcntl(input[1], F_SETNOSIGPIPE, 1) == 0 else { throw MCPConnectionError("无法配置 MCP 管道") }
         var actions: posix_spawn_file_actions_t?, attributes: posix_spawnattr_t?
         posix_spawn_file_actions_init(&actions); posix_spawnattr_init(&attributes)
         defer { posix_spawn_file_actions_destroy(&actions); posix_spawnattr_destroy(&attributes) }
@@ -68,16 +90,17 @@ private final class ProgramIO: @unchecked Sendable {
         // stderr is never protocol data and may contain credentials.
         posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0)
         for fd in input + output { posix_spawn_file_actions_addclose(&actions, fd) }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
-        posix_spawnattr_setpgroup(&attributes, 0)
-        let argv = ([command] + arguments).map { strdup($0) } + [nil]
+        guard posix_spawn_file_actions_addinherit_np(&actions, lifetime[0]) == 0,
+              posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0 else { throw MCPConnectionError("无法配置 MCP 进程监控") }
+        let argv = ([supervisor.path, String(getpid()), String(lifetime[0]), "--stdio", command] + arguments).map { strdup($0) } + [nil]
         let env = environment.sorted { $0.key < $1.key }.map { strdup($0.key + "=" + $0.value) } + [nil]
         defer { argv.forEach { free($0) }; env.forEach { free($0) } }
         var child: pid_t = 0
-        let error = argv.withUnsafeBufferPointer { a in env.withUnsafeBufferPointer { e in posix_spawn(&child, command, &actions, &attributes, a.baseAddress!, e.baseAddress!) } }
-        close(input[0]); close(output[1])
-        guard error == 0 else { close(input[1]); close(output[0]); throw MCPConnectionError("本机 MCP 程序无法启动（\(error)）") }
-        pid = child
+        let error = argv.withUnsafeBufferPointer { a in env.withUnsafeBufferPointer { e in posix_spawn(&child, supervisor.path, &actions, &attributes, a.baseAddress!, e.baseAddress!) } }
+        guard error == 0 else { throw MCPConnectionError("本机 MCP 程序无法启动（\(error)）") }
+        spawned = true
+        close(input[0]); close(output[1]); close(lifetime[0])
+        pid = child; lifetimeDescriptor = lifetime[1]
         let inputFD = input[1], outputFD = output[0]
         writer = DispatchIO(type: .stream, fileDescriptor: inputFD, queue: queue) { _ in close(inputFD) }
         _ = fcntl(outputFD, F_SETFL, fcntl(outputFD, F_GETFL) | O_NONBLOCK)
@@ -87,7 +110,7 @@ private final class ProgramIO: @unchecked Sendable {
         let process = DispatchSource.makeProcessSource(identifier: child, eventMask: .exit, queue: queue)
         process.setEventHandler { [self] in
             self.drain(outputFD); var status: Int32 = 0; waitpid(child, &status, 0)
-            kill(-child, SIGKILL); self.pid = 0; self.finish(MCPConnectionError("MCP 程序已退出")); self.process?.cancel(); self.process = nil
+            self.pid = 0; self.finish(MCPConnectionError("MCP 程序已退出")); self.process?.cancel(); self.process = nil
         }
         self.process = process; process.resume()
     }

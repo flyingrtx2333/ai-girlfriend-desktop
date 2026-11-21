@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,7 +49,8 @@ static void watchCommand(int queue, int lifetime, pid_t command)
 
 int main(int argc, char *argv[])
 {
-    if (argc < 6 || strcmp(argv[3], "-p") != 0) return launchFailure(EINVAL);
+    bool connector = argc >= 5 && strcmp(argv[3], "--stdio") == 0;
+    if (connector ? argv[4][0] != '/' : (argc < 6 || strcmp(argv[3], "-p") != 0)) return launchFailure(EINVAL);
     pid_t owner = number(argv[1]);
     int lifetime = number(argv[2]);
     if (owner <= 1 || owner != getppid() || lifetime <= STDERR_FILENO) return launchFailure(EINVAL);
@@ -64,18 +66,25 @@ int main(int argc, char *argv[])
     if (ready < 0 || (ready == 1 && (event.flags & EV_ERROR))) return launchFailure(ready < 0 ? errno : (int)event.data);
     if (ready != 0 || owner != getppid()) return 128 + SIGKILL;
 
-    const char *sandbox = "/usr/bin/sandbox-exec";
-    argv[2] = (char *)sandbox;
+    char **invocation = connector ? argv + 4 : argv + 2;
+    if (!connector) invocation[0] = "/usr/bin/sandbox-exec";
     posix_spawnattr_t attributes;
     pid_t command;
     int error = posix_spawnattr_init(&attributes);
     if (error != 0) return launchFailure(error);
     error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
     if (error == 0) error = posix_spawnattr_setpgroup(&attributes, 0);
-    if (error == 0) error = posix_spawn(&command, sandbox, NULL, &attributes, argv + 2, environ);
+    if (error == 0) error = posix_spawn(&command, invocation[0], NULL, &attributes, invocation, environ);
     posix_spawnattr_destroy(&attributes);
     if (error != 0) return launchFailure(error);
 
+    if (connector) {
+        // Keep only the lifetime pipe. The connector's streams must report
+        // EOF as soon as that program closes them.
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+    }
     watchCommand(queue, lifetime, command);
     kill(-command, SIGKILL);
     siginfo_t exited;

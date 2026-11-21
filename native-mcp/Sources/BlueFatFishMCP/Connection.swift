@@ -52,7 +52,9 @@ public actor MCPConnection {
     public func onChange(_ handler: @escaping @Sendable (String, String?) -> Void) { changeHandler = handler }
     public func onElicitation(_ handler: @escaping @Sendable (Data) async throws -> Data) { elicitationHandler = handler }
     public func connectProgram(command: String, arguments: [String], environment: [String: String], directory: String, timeout: Double) async throws -> Data {
-        let transport = ProgramTransport(command: command, arguments: arguments, environment: environment, directory: directory)
+        let transport = ProgramTransport(command: command, arguments: arguments, environment: environment, directory: directory) { [weak self] in
+            Task { await self?.transportClosed() }
+        }
         program = transport
         return try await initialize(transport, timeout: timeout)
     }

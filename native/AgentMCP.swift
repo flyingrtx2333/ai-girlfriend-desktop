@@ -578,8 +578,9 @@ struct AgentMCPServer: Codable, Identifiable {
             try rejectOAuthCredentials(in: info, server: server, session: session)
             try rejectOAuthCredentials(in: catalog, server: server, session: session)
             session.catalog = catalog
+            let ready = await session.client.isReady()
             try Task.checkCancellation(); _ = try self.server(id, revision: revision, workspace: workspace)
-            guard sessions[sessionKey] === session else { throw PetError("连接已被关闭") }
+            guard ready, sessions[sessionKey] === session else { throw PetError("连接已被关闭") }
             session.connected = true; states[sessionKey] = "已连接"; notify()
             let initialize = try JSONSerialization.jsonObject(with: info) as? [String: Any]
             session.info = initialize?["serverInfo"] as? [String: Any] ?? [:]
