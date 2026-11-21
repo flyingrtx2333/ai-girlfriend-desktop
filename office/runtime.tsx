@@ -4,11 +4,13 @@ import * as fonts from '@betteroffice/fonts';
 import { configureDefaultFonts } from '@betteroffice/docx/layout';
 import { sheetLocale, slidesLocale } from './locales';
 import { createOfficeView, type OfficeView } from './view-state';
+import { createDocxReview } from './docx-review';
 import './style.css';
 
 configureDefaultFonts({ fonts });
 const rootElement = document.getElementById('office-root')!;
 const root = createRoot(rootElement);
+const docxReview = createDocxReview(rootElement);
 let editor: any, revision = 0, exportedRevision = -1, exported: Uint8Array | null = null;
 let generation = 0, currentFormat = '', ready = false, dirty = false;
 let readOnly = true, operationBusy = 0, lockGeneration = 0, fatal: Error | null = null;
@@ -45,6 +47,7 @@ function changed() {
   if (!ready) return;
   revision += 1;
   dirty = true; notify('dirty', { value: true, revision });
+  if (currentFormat === 'docx') docxReview.refresh();
 }
 async function presentationFonts() {
   const selected = fonts.BUNDLED_FONTS.filter(face => ['Carlito', 'Noto Sans SC'].includes(face.family));
@@ -63,6 +66,7 @@ function LoadedEditor({ Component, properties, format, token }: { Component: Rea
     if (!zoom || !width) return;
     const next = Math.max(0.1, Math.min(1, (rootElement.clientWidth - 96) / (width / zoom)));
     if (Math.abs(next - zoom) > 0.005) value.setZoom(next);
+    docxReview.refresh();
   }, []);
   const assign = useCallback((value: any) => {
     reference.current = value;
@@ -126,7 +130,7 @@ async function load(url: string, name: string, locked: boolean) {
   const token = ++generation, format = name.split('.').pop()?.toLowerCase() ?? '';
   if (!['docx', 'xlsx', 'pptx'].includes(format)) throw new Error('不支持此办公文件格式');
   pendingReady?.reject(new Error('文档已切换')); pendingReady = null; rejectOperations(new Error('文档已切换'));
-  workspaceView?.dispose(); workspaceView = null;
+  workspaceView?.dispose(); workspaceView = null; docxReview.reset();
   ready = false; dirty = false; readOnly = locked; operationBusy = 0; lockGeneration += 1; fatal = null; editor = null; exported = null; currentFormat = format; updateInteraction(); root.render(null);
   const response = await fetch(url, { cache: 'no-store' });
   if (!response.ok) throw new Error('文档读取失败');
@@ -137,7 +141,13 @@ async function load(url: string, name: string, locked: boolean) {
   if (format === 'docx') {
     const [module, locale] = await Promise.all([import('@betteroffice/docx-react'), import('@betteroffice/docx-i18n/zh-CN')]);
     await import('@betteroffice/docx-react/styles.css');
-    Component = module.DocxEditor; properties = { ...shared, documentBuffer: bytes, documentName: name, documentNameEditable: false, i18n: locale.default, showFileOpen: false, showHelpMenu: false, colorMode: 'system' };
+    const i18n = {
+      ...locale.default,
+      editor: { ...locale.default.editor, addComment: '添加批注' },
+      contextMenu: { ...locale.default.contextMenu, addComment: '添加批注' },
+      comments: { ...locale.default.comments, replyPlaceholder: '回复' },
+    };
+    Component = module.DocxEditor; properties = { ...shared, documentBuffer: bytes, documentName: name, documentNameEditable: false, i18n, showFileOpen: false, showHelpMenu: false, colorMode: 'system' };
     properties.onSelectionChange = () => { if (token === generation && ready) notify('view-change'); };
   } else if (format === 'xlsx') {
     const [module, locale] = await Promise.all([import('@betteroffice/xlsx-react'), import('@betteroffice/xlsx-i18n/zh-CN')]);
@@ -228,6 +238,14 @@ async function selectionInfo() {
   return await perform(() => editor.readSelectionInfo());
 }
 async function focusEditor() { if (ready && !operationBusy && workspaceView) await workspaceView.focus(); }
+async function navigateDocxReview(showComments: boolean) {
+  if (!ready || !editor || currentFormat !== 'docx' || operationBusy) throw new Error('Word 文档尚未就绪');
+  return await perform(async () => {
+    if (showComments) return await docxReview.show(editor);
+    docxReview.showBody();
+    return '';
+  });
+}
 async function inspectContent(request: any = {}) {
   if (!ready || !editor) throw new Error('文档尚未打开');
   const offset = Math.max(0, Math.min(100_000, Number.isSafeInteger(request.offset) ? request.offset : 0));
@@ -265,5 +283,5 @@ async function inspectContent(request: any = {}) {
   return { version: result.version, slides: result.slides.map((s: any) => ({ id: s.id, title: s.title, hidden: s.hidden })), stories: result.stories.slice(offset, offset + limit).map((s: any) => ({ id: s.storyId, slideId: s.slideId, shapeId: s.shapeId, ...text(s.text) })), total: result.stories.length, offset, next_offset: offset + limit < result.stories.length ? offset + limit : null };
 }
 async function inspect(request: any = {}) { return await perform(() => inspectContent(request)); }
-(window as any).BlueFatFishOffice = { load, beginExport, exportChunk, finishExport, read, inspect, edit, verifyClean, captureView, restoreView, selectionInfo, focusEditor, setInteractionLocked, state: () => ({ ready, dirty, format: currentFormat, revision, readOnly }), close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
+(window as any).BlueFatFishOffice = { load, beginExport, exportChunk, finishExport, read, inspect, edit, verifyClean, captureView, restoreView, selectionInfo, focusEditor, setInteractionLocked, navigateDocxReview, docxReviewGeometry: docxReview.geometry, state: () => ({ ready, dirty, format: currentFormat, revision, readOnly }), close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; docxReview.reset(); ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
 notify('shell-ready');

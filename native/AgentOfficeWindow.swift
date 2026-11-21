@@ -10,6 +10,7 @@ import Darwin
     private(set) var dirty = false { didSet { if dirty != oldValue { onWorkspaceChange?() } } }
     private(set) var working = false, openedHash = "", openedSignature = "", openedPermissions = 0o644
     private let save = NSButton(title: "保存", target: nil, action: nil), reload = NSButton(title: "重新载入", target: nil, action: nil), saveCopy = NSButton(title: "另存为…", target: nil, action: nil)
+    private let body = NSButton(title: "正文", target: nil, action: nil), comments = NSButton(title: "批注", target: nil, action: nil)
     private let state = NSTextField(labelWithString: ""), content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface)
     private var web: WKWebView!, server: AgentOfficeHTTP?, base: URL?, snapshot: AgentOfficeSnapshot?
     private var ready = false, closed = false, conflict = false, lastReadOnly: Bool?
@@ -27,13 +28,17 @@ import Darwin
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 800), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         window.title = file.lastPathComponent; window.minSize = NSSize(width: 760, height: 520); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self; window.contentView = content
-        for (button, action) in [(save, #selector(saveFile)), (reload, #selector(reloadFile)), (saveCopy, #selector(saveAs))] { button.target = self; button.action = action; button.bezelStyle = .texturedRounded; button.controlSize = .small }
+        for (button, action) in [(save, #selector(saveFile)), (reload, #selector(reloadFile)), (saveCopy, #selector(saveAs)), (body, #selector(reviewLocation(_:))), (comments, #selector(reviewLocation(_:)))] { button.target = self; button.action = action; button.bezelStyle = .texturedRounded; button.controlSize = .small }
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         reload.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "重新载入"); reload.title = ""; reload.toolTip = "重新载入"; reload.setAccessibilityLabel("重新载入办公文件")
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingMiddle
         let name = NSTextField(labelWithString: file.lastPathComponent); name.font = .systemFont(ofSize: 12, weight: .medium); name.lineBreakMode = .byTruncatingMiddle; name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let heading = NSStackView(views: [name, NSView(), state]), actions = NSStackView(views: [reload, NSView(), saveCopy, save]); heading.spacing = 9; actions.spacing = 9
+        body.setAccessibilityLabel("返回 Word 正文")
+        comments.setAccessibilityLabel("查看 Word 批注")
+        let review: [NSView] = file.pathExtension.lowercased() == "docx" ? [body, comments] : []
+        let heading = NSStackView(views: [name, NSView(), state])
+        let actions = NSStackView(views: [reload] + review + [NSView(), saveCopy, save]); heading.spacing = 9; actions.spacing = 9
         let bar = NSStackView(views: [heading, actions]); bar.orientation = .vertical; bar.alignment = .leading; bar.spacing = 8
         for row in [heading, actions] { row.widthAnchor.constraint(equalTo: bar.widthAnchor).isActive = true }
         let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .nonPersistent(); configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -52,6 +57,7 @@ import Darwin
         let metadata = try? files.entryMetadata(file), sourceWritable = metadata?.kind == "file" && (metadata?.permissions ?? 0) & 0o222 != 0
         save.isEnabled = ready && dirty && !locked && !working && !conflict && sourceWritable
         saveCopy.isEnabled = ready && dirty && !locked && !working; reload.isEnabled = !working
+        body.isEnabled = ready && !working; comments.isEnabled = body.isEnabled
         if ready, lastReadOnly != locked { lastReadOnly = locked; web.evaluateJavaScript("BlueFatFishOffice.setInteractionLocked(\(locked ? "true" : "false"))", in: nil, in: .page) { _ in } }
         if locked && !working && state.stringValue.isEmpty { state.stringValue = "只读" }
         else if !locked && state.stringValue == "只读" { state.stringValue = dirty ? "未保存" : "" }
@@ -298,6 +304,20 @@ import Darwin
         guard uiTask == nil, !working else { return }
         uiTask = Task { [weak self] in guard let self else { return }; defer { uiTask = nil }; do { try await saveDocument() } catch { state.stringValue = error.localizedDescription } }
     }
+    @objc private func reviewLocation(_ sender: NSButton) {
+        guard ready, !working, uiTask == nil else { return }
+        let showComments = sender === comments
+        uiTask = Task { [weak self] in
+            guard let self else { return }
+            defer { uiTask = nil; onWorkspaceChange?() }
+            do {
+                let notice = try await evaluate("return await BlueFatFishOffice.navigateDocxReview(showComments)", args: ["showComments": showComments]) as? String ?? ""
+                if !notice.isEmpty { state.stringValue = notice }
+                else if state.stringValue.hasPrefix("暂无可查看的批注") { state.stringValue = dirty ? "未保存" : ""; updateAvailability() }
+            } catch { state.stringValue = error.localizedDescription }
+            state.toolTip = state.stringValue
+        }
+    }
     @objc private func reloadFile() {
         guard !working, uiTask == nil else { return }
         uiTask = Task { [weak self] in guard let self else { return }; defer { uiTask = nil; onWorkspaceChange?() }; do { if ready { try await verifyClean() }; guard canDiscard() else { return }; recoveredDirty = false; dirty = false; window?.isDocumentEdited = false; ready = false; try await open() } catch { state.stringValue = error.localizedDescription } }
@@ -388,7 +408,7 @@ import Darwin
     override func settingsWillLeave() { finishClose() }
     func workspaceReadback() async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        let controls = [save, reload, saveCopy].filter { !$0.isHiddenOrHasHiddenAncestor }
+        let controls = [save, reload, saveCopy, body, comments].filter { $0.superview != nil && !$0.isHiddenOrHasHiddenAncestor }
         let frames = controls.map { content.convert($0.bounds, from: $0) }
         var value: [String: Any] = ["taskID": taskID, "file": file.path, "dirty": dirty, "working": working, "closed": closed, "ready": ready, "openedHash": openedHash, "state": state.stringValue,
             "loopbackURL": base?.absoluteString ?? "", "snapshot": snapshot?.folder.path ?? "", "saveEnabled": save.isEnabled,
@@ -396,7 +416,10 @@ import Darwin
         if ready, !working, !closed {
             value["editor"] = try? await evaluate("return BlueFatFishOffice.state()")
             value["view"] = try? await evaluate("return await BlueFatFishOffice.captureView()")
-            if file.pathExtension.lowercased() == "docx" { value["selectionInfo"] = try? await evaluate("return await BlueFatFishOffice.selectionInfo()") }
+            if file.pathExtension.lowercased() == "docx" {
+                value["selectionInfo"] = try? await evaluate("return await BlueFatFishOffice.selectionInfo()")
+                value["review"] = try? await evaluate("return BlueFatFishOffice.docxReviewGeometry()")
+            }
             if file.pathExtension.lowercased() == "docx", let page = try? await evaluate("const p=document.querySelector('.paged-editor__page')?.getBoundingClientRect(); return {width:innerWidth,pageWidth:p?.width??0,pageLeft:p?.left??0,pageRight:p?.right??0,dark:!!document.querySelector('.docx-editor.dark')}") as? [String: Any] {
                 value["page"] = page
                 var checks = value["checks"] as? [String: Bool] ?? [:]
