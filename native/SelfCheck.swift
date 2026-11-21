@@ -139,8 +139,9 @@ import WebKit
                     runtime.modelRequestCheck = { try budget.request(); requests = budget.used }
                 } else if streamRecoveryUI {
                     let endpoint = try prepareStreamRecoveryUI(output, tasks: tasks, runtime: runtime)
+                    let limit = CommandLine.arguments.contains("--slot-queue-ui") ? 3 : 2
                     runtime.modelRequestCheck = { [weak self] in
-                        guard self?.store.preferences.endpoint == endpoint, requests < 2 else { throw PetError("流式验收仅允许本机样例请求") }
+                        guard self?.store.preferences.endpoint == endpoint, requests < limit else { throw PetError("流式验收仅允许本机样例请求") }
                         requests += 1
                     }
                 } else { runtime.modelRequestCheck = { requests += 1; throw PetError("本轮手动窗口检查禁止模型请求") } }

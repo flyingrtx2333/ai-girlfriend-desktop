@@ -148,6 +148,10 @@ struct AgentGoalExecution: Codable {
     var isValid: Bool { Self.turnChoices.contains(maximumTurns) && (0...maximumTurns).contains(usedTurns) }
     var exhausted: Bool { usedTurns >= maximumTurns }
 }
+struct AgentQueuedRun: Codable {
+    let previousStatus: AgentTaskStatus
+    let continuingGoal: Bool
+}
 struct AgentTaskRecord: Codable, Identifiable {
     var id = UUID().uuidString
     var title: String
@@ -194,6 +198,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var kind: String?
     var queuedInputs: [String]?
     var queuedMessages: [AgentMessage]?
+    var queuedRun: AgentQueuedRun?
     var unansweredQueuedMessageID: String?
     var goalAccepted: Bool?
     var goalExecution: AgentGoalExecution?
@@ -275,6 +280,10 @@ struct AgentTaskRecord: Codable, Identifiable {
     var inputTokens = 0, outputTokens = 0
     var created = Date(), updated = Date()
     var statusTitle: String {
+        if queuedRun != nil {
+            if status == .ready { return "排队中" }
+            if status == .stopped { return "排队已暂停" }
+        }
         if kind == "hook", status == .completed {
             if summary.hasPrefix("未通过：") { return "校验未通过" }
             if summary.hasPrefix("通过：") { return "校验通过" }
@@ -282,6 +291,7 @@ struct AgentTaskRecord: Codable, Identifiable {
         return status.title
     }
     var queuedCount: Int { (queuedInputs?.count ?? 0) + (queuedMessages?.count ?? 0) }
+    var isAwaitingExecutionSlot: Bool { status == .ready && (queuedRun != nil || queuedCount > 0) }
     var unfinishedResponseIDs: Set<String> {
         let receipts = (modelReceipts ?? []).filter { $0.purpose == "conversation" }
         let failed = Set(receipts.filter { !$0.completed }.compactMap(\.messageID))
@@ -304,6 +314,14 @@ struct AgentTaskRecord: Codable, Identifiable {
         return submittedAttachmentIDs.union(captures.intersection(observed)).union(mcp.intersection(received))
     }
     var hasUndeliveredVisuals: Bool { messages.contains { $0.role == "tool" && $0.visualsDelivered == false && $0.visuals?.isEmpty == false } }
+    mutating func skipPendingCalls(reason: String) {
+        for call in pendingCalls {
+            messages.append(AgentMessage(role: "tool", content: reason, toolCallID: call.id))
+            if let i = events.lastIndex(where: { $0.toolCallID == call.id }) { events[i].status = "stopped"; events[i].detail += "\n" + reason }
+            else { events.append(AgentEvent(kind: "tool", title: call.name, detail: reason, status: "stopped", toolCallID: call.id)) }
+        }
+        pendingCalls = []
+    }
     mutating func flushQueuedInputs() {
         let pending = (queuedInputs ?? []).map { AgentMessage(role: "user", content: $0) } + (queuedMessages ?? [])
         for message in pending { activateExtensions(message) }; messages += pending

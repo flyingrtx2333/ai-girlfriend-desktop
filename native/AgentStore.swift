@@ -79,7 +79,7 @@ import Foundation
         if let data = try? Data(contentsOf: self.directory.appendingPathComponent("index.json")), let index = try? JSONDecoder().decode(Index.self, from: data) {
             indexHash = AgentFiles.hash(data)
             tasks = index.tasks.filter { UUID(uuidString: $0.id) != nil }; previousSelection = index.selectedID
-            for i in tasks.indices where tasks[i].status == .running { tasks[i].status = .stopped }
+            for i in tasks.indices where tasks[i].status == .running || tasks[i].isAwaitingExecutionSlot { tasks[i].status = .stopped }
         }
         let files = (try? FileManager.default.contentsOfDirectory(at: self.directory, includingPropertiesForKeys: nil)) ?? []
         let indexedIDs = Set(tasks.map(\.id))
@@ -165,8 +165,10 @@ import Foundation
         if task.importOrigin != nil, task.importOrigin?.historyThroughID == nil {
             let boundary = try? AgentDataImport.historyBoundary(task, directory: directory); task.importOrigin?.historyThroughID = boundary
         }
+        let awaitingSlot = task.isAwaitingExecutionSlot
         let hasWaitingSupplements = [.failed, .stopped].contains(task.status) && task.queuedCount > 0
-        let interrupted = !hooks.isRunning(id) && (task.status == .running || hasWaitingSupplements || task.pendingFileCapture != nil ||
+        let interrupted = !hooks.isRunning(id) && (!awaitingSlot || archiveIsBusy?(id) != true) &&
+            (awaitingSlot || task.status == .running || hasWaitingSupplements || task.pendingFileCapture != nil ||
             !task.unfinishedResponseIDs.isEmpty || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
         if interrupted { Self.recover(&task) }
         cache[id] = task
@@ -226,8 +228,17 @@ import Foundation
             task.events[i].detail += "\n应用中断，后台结果未确认；未自动重放"
         }
         if task.status == .running || !task.unfinishedResponseIDs.isEmpty { task.interruptResponses() }
+        if task.isAwaitingExecutionSlot {
+            if task.queuedRun == nil { task.queuedRun = AgentQueuedRun(previousStatus: .ready, continuingGoal: false) }
+            task.status = .stopped
+            task.hookSession = nil
+            task.events.append(AgentEvent(kind: "state", title: "排队已暂停，可继续", detail: "", status: "stopped"))
+        }
         guard task.status == .running else {
-            if [.failed, .stopped].contains(task.status), task.queuedCount > 0 { task.flushQueuedInputs() }
+            if [.failed, .stopped].contains(task.status), task.queuedCount > 0 {
+                if task.queuedRun != nil { task.skipPendingCalls(reason: "用户更新了要求，此操作尚未执行。") }
+                task.flushQueuedInputs()
+            }
             return
         }
         task.status = .stopped; task.goalAccepted = nil; task.completionEvidence = nil
@@ -558,7 +569,7 @@ import Foundation
             original.pendingCalls = []; original.approvals = []; original.status = .ready; original.archived = false
             original.workspaceArchiveID = nil
             original.changes = []; original.changeRounds = nil; original.changeTrackingFromID = nil; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.queuedMessages = nil; original.kind = nil
-            original.unansweredQueuedMessageID = nil
+            original.unansweredQueuedMessageID = nil; original.queuedRun = nil
             original.skillEvolutionJob = nil; original.skillDraft = nil; original.skillDraftHistory = nil
             original.recap = nil; original.resultHistory = nil; original.gitReview = nil; original.gitTurn = nil; original.pendingFileCapture = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
             original.hookSession = nil; original.hookContexts = nil; original.hookContextIDs = nil

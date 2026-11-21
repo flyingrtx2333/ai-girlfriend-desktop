@@ -151,7 +151,15 @@ import Foundation
             guard let run = active[id], let continuation = run.slotWaiter, let task = store.task(id), hasSlot(task) else { continue }
             run.slotWaiter = nil; run.suspendedForChild = false; continuation.resume()
         }
-        while let next = queued.first(where: { id in store.task(id).map(hasSlot) == true }) { queued.removeAll { $0 == next }; start(next, continuingGoal: true) }
+        while let next = queued.first(where: { id in store.task(id).map(hasSlot) == true }) {
+            start(next)
+            // A deferred preflight can fail after the workspace or its permissions changed.
+            if queued.contains(next) {
+                store.update(next) { if $0.status == .ready { $0.status = .stopped } }
+                queued.removeAll { $0 == next }
+                notifyChange(next)
+            }
+        }
     }
     private func regainSlot(_ id: String, run: Run) async throws {
         try Task.checkCancellation()
@@ -279,12 +287,13 @@ import Foundation
         store.update(id) { record in
             // A new instruction can steer away from a pending action, but does
             // not count as approving that action.
-            Self.skipPending(&record, reason: "用户补充了新要求，未执行此操作。")
+            record.skipPendingCalls(reason: "用户补充了新要求，未执行此操作。")
             record.flushQueuedInputs()
             record.unansweredQueuedMessageID = nil
             try? AgentSkillDrafts.prepareNewRound(&record,message:message)
             record.messages.append(message); record.activateExtensions(message); record.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) }; record.goalAccepted = nil; record.completionEvidence = nil
             record.goalExecution = nil
+            record.queuedRun = nil
             if record.title == "新的任务" { record.title = String(text.replacingOccurrences(of: "\n", with: " ").prefix(28)) }
             if record.model.isEmpty { record.model = preferences().model }
             record.status = .ready
@@ -331,30 +340,36 @@ import Foundation
         if let reason = store.offices.unsavedReason(task:task) {
             store.update(id) { $0.status = .stopped; $0.events.append(AgentEvent(kind: "state", title: "办公文档未保存", detail: reason, status: "stopped")) }; notifyChange(id); return
         }
+        let launch = task.queuedRun ?? AgentQueuedRun(previousStatus: task.status, continuingGoal: continuingGoal)
         if !hasSlot(task) {
-            if !queued.contains(id) { queued.append(id); store.update(id) { $0.status = .ready }; notifyChange(id) }
+            if !queued.contains(id) {
+                queued.append(id)
+                store.update(id) { $0.status = .ready; $0.queuedRun = launch }
+                notifyChange(id)
+            }
             return
         }
         queued.removeAll { $0 == id }
         let startSource: AgentHookStartSource?
         if task.hookSession == nil {
-            let existing = task.hookCwd != nil || task.importOrigin != nil || task.status != .ready
+            let existing = task.hookCwd != nil || task.importOrigin != nil || launch.previousStatus != .ready
                 || task.messages.contains { $0.role == "assistant" || $0.role == "tool" }
             startSource = task.pendingFreshSessionSource ?? task.nextHookStartSource ?? (existing ? .resume : .startup)
         } else { startSource = nil }
         let run = Run(store: store, id: id, startSource: startSource); active[id] = run
         run.tools.delegateTask = { [weak self] call in guard let self else { throw CancellationError() }; return try await self.delegate(call, owner: id) }
         store.update(id) { record in
-            if record.mode == .goal, !continuingGoal || record.goalExecution == nil { record.goalExecution = AgentGoalExecution(maximumTurns: taskSettings().goalMaximumTurns) }
-            if [.stopped, .failed].contains(task.status), !task.hasConfirmedKnowledgeCompletion {
+            if record.mode == .goal, !launch.continuingGoal || record.goalExecution == nil { record.goalExecution = AgentGoalExecution(maximumTurns: taskSettings().goalMaximumTurns) }
+            if [.stopped, .failed].contains(launch.previousStatus), !task.hasConfirmedKnowledgeCompletion {
                 let latest = task.messages.last(where: \.isHumanInput)
-                if task.unansweredQueuedMessageID == nil || task.unansweredQueuedMessageID != latest?.id {
+                if task.queuedCount == 0, task.unansweredQueuedMessageID == nil || task.unansweredQueuedMessageID != latest?.id {
                     record.messages.append(AgentMessage(role: "user", content: "继续完成原任务，保留之前的约束。", mcpSelection: latest?.mcpSelection))
                 }
                 record.goalAccepted = nil
             }
             if record.hookSession == nil { record.hookSession = UUID().uuidString; record.hookStopBlocks = 0 }
             record.status = .running
+            record.queuedRun = nil
         }; notifyChange(id)
         run.task = Task { [weak self] in await self?.execute(id, run: run) }
     }
@@ -394,8 +409,8 @@ import Foundation
         for child in store.tasks where child.agent?.ownerID == id { cancel(child.id, visited: next) }
         store.desktop.disconnect(id)
         store.canvases.stop(id)
-        guard isRunning(id) || store.task(id)?.status == .waiting else { return }
-        queued.removeAll { $0 == id }
+        let task = store.task(id)
+        guard isRunning(id) || task?.status == .waiting || task?.queuedRun != nil else { return }
         let run = restarting ? active[id] : active.removeValue(forKey: id)
         run?.restartAfterInterruption = restarting
         run?.retainsMCPForInterrupt = retainingMCP
@@ -407,11 +422,13 @@ import Foundation
         store.update(id) { record in
             record.hookSession = nil
             record.status = restarting ? .ready : .stopped
-            Self.skipPending(&record, reason: "用户中断了执行。操作可能部分执行，继续前先检查真实状态。")
+            record.queuedRun = nil
+            record.skipPendingCalls(reason: "用户中断了执行。操作可能部分执行，继续前先检查真实状态。")
             record.flushQueuedInputs()
             record.interruptResponses()
             for i in record.events.indices where ["running", "waiting"].contains(record.events[i].status) { record.events[i].status = "stopped" }
         }
+        queued.removeAll { $0 == id }
         notifyChange(id)
         if run == nil { drainQueue() }
     }
@@ -647,14 +664,6 @@ import Foundation
             catch { store.update(task.id, persist: false) { $0 = task }; throw error }
             questionSkipErrors[request.approvalID] = nil; start(task.id, continuingGoal: true); return true
         } catch { questionSkipErrors[request.approvalID] = "无法静默跳过，问题仍等待答复：" + error.localizedDescription; notifyChange(task.id); return false }
-    }
-    private static func skipPending(_ record: inout AgentTaskRecord, reason: String) {
-        for call in record.pendingCalls {
-            record.messages.append(AgentMessage(role: "tool", content: reason, toolCallID: call.id))
-            if let i = record.events.lastIndex(where: { $0.toolCallID == call.id }) { record.events[i].status = "stopped"; record.events[i].detail += "\n" + reason }
-            else { record.events.append(AgentEvent(kind: "tool", title: call.name, detail: reason, status: "stopped", toolCallID: call.id)) }
-        }
-        record.pendingCalls = []
     }
     private func hook(_ event: AgentHookEvent, id: String, trigger: String, value: String = "", fields: [String: Any] = [:], secret: String) async throws -> AgentHookEffect {
         let effect: AgentHookEffect
@@ -923,7 +932,7 @@ import Foundation
                 while var call = task.pendingCalls.first {
                     try Task.checkCancellation()
                     if task.queuedCount > 0 {
-                        store.update(id) { Self.skipPending(&$0, reason: "用户更新了要求，此操作尚未执行。") }
+                        store.update(id) { $0.skipPendingCalls(reason: "用户更新了要求，此操作尚未执行。") }
                         task = store.task(id)!; notifyChange(id); break
                     }
                     if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
@@ -998,9 +1007,9 @@ import Foundation
                     store.update(id) { record in
                         let message = AgentMessage(role: "tool", content: result.text, toolCallID: call.id, attachmentIDs: result.failed ? nil : result.attachmentIDs, visuals: result.failed ? nil : result.visuals, visualsDelivered: !result.failed && result.visuals?.isEmpty == false ? false : nil, extensionReferences: result.failed ? nil : result.extensionReferences)
                         record.messages.append(message); record.activateExtensions(message); record.pendingCalls.removeFirst()
-                        if questionSkipped { Self.skipPending(&record, reason: "问题未获答复，后续操作需重新规划。") }
+                        if questionSkipped { record.skipPendingCalls(reason: "问题未获答复，后续操作需重新规划。") }
                         if let humanAnswer {
-                            Self.skipPending(&record, reason: "已收到用户答复，后续操作重新规划。")
+                            record.skipPendingCalls(reason: "已收到用户答复，后续操作重新规划。")
                             let message = answerMessage ?? AgentMessage(role: "user", content: humanAnswer, attachmentIDs: answerAttachments)
                             record.messages.append(message); record.activateExtensions(message); record.goalAccepted = nil; record.completionEvidence = nil
                         }
@@ -1127,7 +1136,7 @@ import Foundation
             }
             store.update(id) { record in
                 record.hookSession = nil
-                Self.skipPending(&record, reason: "执行已停止，未继续此操作；恢复后先核对真实状态。")
+                record.skipPendingCalls(reason: "执行已停止，未继续此操作；恢复后先核对真实状态。")
                 record.flushQueuedInputs()
                 record.status = cancelled ? .stopped : .failed
                 record.interruptResponses()

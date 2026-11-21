@@ -119,6 +119,62 @@ import Darwin
         runtime.modelRequestCheck = { /* Empty isolated credential fails AgentModel preflight before network access. */ }
         runtime.start(counter); _ = await until { !runtime.isExecuting(counter) }
         checks["GoalCounterPersistsBeforeModelPreflight"] = tasks.task(counter)?.goalExecution?.usedTurns == 1 && tasks.task(counter)?.status == .failed && (tasks.task(counter)?.modelReceipts ?? []).isEmpty && tasks.task(counter)?.events.last?.detail == "请先填写对话 Token"
+
+        runtime.modelRequestCheck = { blocked += 1; throw PetError("并发位检查禁止模型请求") }
+        let (slotA, pidA, _) = try await startSleeping("slot-a")
+        let (slotB, pidB, _) = try await startSleeping("slot-b")
+        let manual = seed("排队后手动续跑", mode: .goal)
+        tasks.update(manual) { $0.status = .stopped; $0.goalExecution = AgentGoalExecution(maximumTurns: 5, usedTurns: 5) }
+        runtime.start(manual)
+        checks["SlotQueuePersistsManualContinuationIntent"] = tasks.task(manual)?.statusTitle == "排队中" &&
+            tasks.task(manual)?.queuedRun?.previousStatus == .stopped && tasks.task(manual)?.queuedRun?.continuingGoal == false &&
+            tasks.task(manual)?.goalExecution?.usedTurns == 5 && (try? tasks.recordIsPersisted(manual)) == true
+
+        let reviewed = seed("排队的最后一轮授权", mode: .goal)
+        let reviewedCall = command("queued-review", "/usr/bin/uname")
+        pending(reviewed, call: reviewedCall, waiting: true)
+        tasks.update(reviewed) { $0.goalExecution = AgentGoalExecution(maximumTurns: 5, usedTurns: 5) }
+        runtime.decide(taskID: reviewed, callID: reviewedCall.id, decision: "allow")
+        checks["SlotQueuePersistsApprovalContinuationIntent"] = tasks.task(reviewed)?.queuedRun?.continuingGoal == true &&
+            tasks.task(reviewed)?.pendingCalls.first?.id == reviewedCall.id && (try? tasks.recordIsPersisted(reviewed)) == true
+
+        let superseded = seed("排队的授权收到补充")
+        let oldCall = command("queued-superseded", "/usr/bin/touch queued-superseded.txt")
+        pending(superseded, call: oldCall, waiting: true)
+        runtime.decide(taskID: superseded, callID: oldCall.id, decision: "allow")
+        let accepted = runtime.submit("取消刚才的操作，按这条新要求继续", taskID: superseded)
+        let supplement = tasks.task(superseded)?.queuedMessages?.first
+        let recovery = root.appendingPathComponent("queued-record-recovery")
+        let recoveryTasks = recovery.appendingPathComponent("agent")
+        try FileManager.default.createDirectory(at: recoveryTasks, withIntermediateDirectories: true)
+        let queuedFile = superseded + ".json"
+        try FileManager.default.copyItem(at: tasks.directory.appendingPathComponent(queuedFile), to: recoveryTasks.appendingPathComponent(queuedFile))
+        let recovered = AgentStore(directory: recovery, legacy: [], extensionHome: home, mcpKeychain: keychain, hookKeychain: keychain)
+        let paused = recovered.task(superseded)
+        checks["ColdQueueRecoveryKeepsOriginalSupplementID"] = accepted && supplement != nil &&
+            paused?.status == .stopped && paused?.statusTitle == "排队已暂停" && paused?.queuedCount == 0 &&
+            paused?.unansweredQueuedMessageID == supplement?.id && paused?.messages.last?.id == supplement?.id
+        checks["ColdQueueRecoverySkipsSupersededApprovalBeforeFlushing"] = paused?.queuedRun?.continuingGoal == true &&
+            paused?.pendingCalls.isEmpty == true && paused?.messages.filter { $0.toolCallID == oldCall.id }.count == 1 &&
+            paused?.events.contains { $0.toolCallID == oldCall.id && $0.status == "stopped" } == true &&
+            !FileManager.default.fileExists(atPath: workspace.appendingPathComponent("queued-superseded.txt").path)
+        runtime.cancel(superseded)
+        checks["CancelClearsSlotQueueAndKeepsSupplement"] = !runtime.isExecuting(superseded) &&
+            tasks.task(superseded)?.queuedRun == nil && tasks.task(superseded)?.messages.last?.id == supplement?.id
+
+        let beforeSlot = blocked
+        runtime.cancel(slotA)
+        _ = await until { !runtime.isExecuting(manual) && !runtime.isExecuting(reviewed) }
+        checks["SlotHandoffHonorsManualContinuationBudgetAndHistory"] = tasks.task(manual)?.goalExecution?.maximumTurns == 100 &&
+            tasks.task(manual)?.goalExecution?.usedTurns == 0 && blocked == beforeSlot + 1 &&
+            tasks.task(manual)?.queuedRun == nil && tasks.task(manual)?.messages.last?.content == "继续完成原任务，保留之前的约束。"
+        checks["SlotHandoffHonorsApprovalBudgetAndRetainsToolResult"] = tasks.task(reviewed)?.goalExecution?.usedTurns == 5 &&
+            tasks.task(reviewed)?.goalExecution?.maximumTurns == 5 && tasks.task(reviewed)?.status == .stopped &&
+            tasks.task(reviewed)?.queuedRun == nil && tasks.task(reviewed)?.events.contains {
+                $0.toolCallID == reviewedCall.id && $0.status == "completed" && $0.detail.contains("Darwin")
+            } == true
+        runtime.cancel(slotB)
+        _ = await until { !alive(pidA) && !alive(pidB) }
         checks["RuntimeFixturesCreateNoModelRepliesOrUsage"] = tasks.tasks.allSatisfy { !$0.messages.contains(where: \.isReply) && ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
         return checks
     }

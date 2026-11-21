@@ -52,7 +52,7 @@ import Foundation
             value.updated = value.versions.last(where: { $0.hash == observed.hash })?.created ?? original.created
             value.draft = nil; value.draftHash = nil; return value
         }
-        task.branchMessageID = nil; task.pinned = false; task.pendingCalls = []; task.queuedInputs = nil; task.queuedMessages = nil
+        task.branchMessageID = nil; task.pinned = false; task.pendingCalls = []; task.queuedInputs = nil; task.queuedMessages = nil; task.queuedRun = nil
         task.contextSummary = nil; task.contextThroughID = nil; task.contextManualThroughID = nil; task.contextSize = nil; task.contextSnapshot = nil
         task.plan = []; task.artifacts = []; task.sources = []; task.resultHistory = nil; task.importOrigin = nil; task.automation = nil
         task.wikiJob = nil; task.wikiRevision = nil; task.wikiLanguage = nil; task.knowledgeJob = nil; task.wikiEditReads = nil; task.knowledgeReads = nil
