@@ -338,7 +338,7 @@ import Darwin
             }
         }
         if file.pathExtension.lowercased() == "xlsx", let edits = result["threadEdits"] {
-            let fields: Set<String> = ["id", "sheet", "cell", "version", "resolved", "replies"]
+            let fields: Set<String> = ["id", "sheet", "cell", "version", "opening", "resolved", "replies"]
             guard let changes = edits as? [[String: Any]], changes.count <= 5_000,
                   changes.allSatisfy({ Set($0.keys) == fields }) else { throw PetError("评论修改无法读取，草稿已保留") }
             if !changes.isEmpty {
@@ -370,7 +370,7 @@ import Darwin
     func saveDocument() async throws {
         guard ready, !working else { throw PetError("办公文件正在处理") }
         if hasReviewDraft && !documentDirty {
-            throw PetError(file.pathExtension.lowercased() == "xlsx" ? "先添加回复，再保存工作簿" : "先提交批注，再保存 Word 文件")
+            throw PetError(file.pathExtension.lowercased() == "xlsx" ? "先添加回复或评论，再保存工作簿" : "先提交批注，再保存 Word 文件")
         }
         _ = try office.task(taskID, root: files.root, manualWrite: true)
         working = true; state.stringValue = "正在保存…"; updateAvailability()
@@ -414,7 +414,7 @@ import Darwin
         do { catalog = try await AgentSpreadsheetNotes.threadCatalog(pinned.file) }
         catch is CancellationError { throw CancellationError() }
         catch {
-            catalog = .init(threads: [], incomplete: true, author: "")
+            catalog = .init(threads: [], incomplete: true, author: "", creation: [:])
             spreadsheetThreads.toolTip = error.localizedDescription
         }
         let payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(catalog))
@@ -662,7 +662,8 @@ import Darwin
               let png = bits.representation(using: .png, properties: [:]) else { throw PetError("备注窗口图像无法编码") }
         try png.write(to: file, options: .atomic)
     }
-    func checkSpreadsheetThread(show: Bool = false, address: String? = nil, text: String? = nil, action: String? = nil) async throws -> [String: Any] {
+    func checkSpreadsheetThread(show: Bool = false, address: String? = nil, text: String? = nil, action: String? = nil,
+                                newAddress: String? = nil, blocked: Bool = false) async throws -> [String: Any] {
         guard CommandLine.arguments.contains("--spreadsheet-threads-check"), AgentTaskWorkspace.readbackEnabled,
               file.pathExtension.lowercased() == "xlsx" else { throw PetError("仅限评论验收") }
         if show {
@@ -670,16 +671,28 @@ import Darwin
             await uiTask?.value
         }
         let args: [String: Any] = ["address": address as Any? ?? NSNull(), "text": text as Any? ?? NSNull(),
-                                   "action": action as Any? ?? NSNull()]
+                                   "action": action as Any? ?? NSNull(), "newAddress": newAddress as Any? ?? NSNull(), "blocked": blocked]
         guard let value = try await evaluate("""
             const pane = document.querySelector('.spreadsheet-threads');
             if (!pane || pane.hidden) throw new Error('评论栏没有显示');
-            const rows = [...pane.querySelectorAll('.spreadsheet-thread-list button')];
+            const rows = () => [...pane.querySelectorAll('.spreadsheet-thread-list button')];
+            const active = () => rows().find(item => item.getAttribute('aria-pressed') === 'true');
             const reply = pane.querySelector('textarea');
             const resolve = pane.querySelector('.spreadsheet-thread-resolve');
             const send = pane.querySelector('.spreadsheet-thread-reply');
+            const status = pane.querySelector('[role=status]');
+            if (newAddress !== null) {
+                const create = pane.querySelector('.spreadsheet-thread-add');
+                if (create.disabled) throw new Error('新建评论不可用');
+                create.click();
+                const reached = () => blocked ? status.textContent === '此单元格已有备注'
+                  : active()?.title === newAddress && document.activeElement === reply;
+                const deadline = Date.now() + 5000;
+                while (!reached() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+                if (!reached()) throw new Error(status.textContent || '新评论未定位至原单元格');
+            }
             if (address !== null) {
-                const row = rows.find(item => item.title === address);
+                const row = rows().find(item => item.title === address);
                 if (!row) throw new Error('评论位置没有显示');
                 row.click();
             }
@@ -689,18 +702,21 @@ import Darwin
                 reply.dispatchEvent(new InputEvent('input', {bubbles: true}));
             }
             if (action !== null) {
-                const button = action === 'submit' ? send : resolve;
+                const button = action === 'cancel' ? pane.querySelector('.spreadsheet-thread-cancel') : action === 'resolve' ? resolve : send;
                 if (button.disabled || button.closest('[hidden]')) throw new Error('评论操作不可用');
-                button.click();
+                if (action === 'key') {
+                    reply.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', metaKey: true, bubbles: true, cancelable: true }));
+                } else button.click();
             }
             const frame = pane.getBoundingClientRect(), grid = document.getElementById('office-root').getBoundingClientRect();
             const articles = [...pane.querySelectorAll('.spreadsheet-thread-message')];
-            return { entries: rows.map(item => item.title), resolved: rows.filter(item => item.dataset.resolved === 'true').map(item => item.title),
-              selected: rows.find(item => item.getAttribute('aria-pressed') === 'true')?.title ?? '', status: pane.querySelector('[role=status]').textContent,
+            return { entries: rows().map(item => item.title), resolved: rows().filter(item => item.dataset.resolved === 'true').map(item => item.title),
+              selected: active()?.title ?? '', threadID: active()?.dataset.thread ?? '', status: status.textContent,
               messages: articles.map(item => ({ id: item.dataset.id, parent: item.dataset.parent ?? '', author: item.querySelector('strong').textContent,
                 text: item.querySelector('p').textContent, time: item.querySelector('time').dateTime })),
               draft: reply.value, selection: [reply.selectionStart, reply.selectionEnd], focused: document.activeElement === reply,
-              canReply: !reply.readOnly && !reply.closest('[hidden]'), canResolve: !resolve.disabled, canSubmit: !send.disabled,
+              canReply: !reply.readOnly && !reply.closest('[hidden]'), canResolve: !resolve.disabled && !resolve.closest('[hidden]'),
+              canSubmit: !send.disabled, composerAction: send.textContent,
               showingNotes: !document.querySelector('.spreadsheet-notes').hidden,
               grid: grid.width, left: frame.left, right: frame.right, width: innerWidth };
             """, args: args) as? [String: Any] else { throw PetError("无法读取当前评论栏") }

@@ -1,6 +1,6 @@
 import { createNoteEditor, type NoteRun, type NoteRunEdit } from './spreadsheet-note-editor';
 
-type Cell = { sheet: string; cell: string };
+export type Cell = { sheet: string; cell: string };
 type Note = Cell & { author: string; text: string; editable: boolean; runs?: NoteRun[]; formatVersion?: string; created?: true };
 type NoteCatalog = { notes: Note[]; author: string; creationUnavailable: string[] };
 type NoteSelection = Cell & { start: number; end: number; focused: boolean };
@@ -38,7 +38,7 @@ export function validSpreadsheetNotesLocation(value: any): value is SpreadsheetN
 }
 
 export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) => Promise<void>,
-  activeCell: () => Promise<Cell | null>, edited: () => void, viewed: () => void) {
+  activeCell: () => Promise<Cell | null>, edited: () => void, viewed: () => void, threadAt: (cell: Cell) => boolean) {
   const panel = document.createElement('aside');
   panel.className = 'spreadsheet-annotation spreadsheet-notes'; panel.hidden = true; panel.setAttribute('aria-label', '单元格备注');
   const heading = document.createElement('header');
@@ -98,6 +98,10 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
         editor.focus();
         return;
       }
+      if (threadAt(target)) {
+        status.textContent = '此单元格已有评论';
+        return;
+      }
       if (unavailable.has(target.sheet)) {
         status.textContent = '当前工作表暂不支持新建备注';
         return;
@@ -154,6 +158,7 @@ export function createSpreadsheetNotes(root: HTMLElement, locate: (cell: Cell) =
     },
     get loaded() { return loaded; },
     visible() { return !panel.hidden; },
+    hasNote(cell: Cell) { return notes.some(note => note.sheet === cell.sheet && note.cell === cell.cell); },
     hide,
     setLocked(value: boolean) { locked = value; updateControls(); },
     toggle() {

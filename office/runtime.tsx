@@ -32,12 +32,18 @@ async function locateSheetAnnotation({ sheet, cell }: { sheet: string; cell: str
   return selected;
 }
 function spreadsheetViewChanged() { if (ready && currentFormat === 'xlsx') notify('view-change'); }
-const sheetNotes = createSpreadsheetNotes(rootElement, locateSheetAnnotation, async () => {
-  if (!ready || currentFormat !== 'xlsx' || !workspaceView) return null;
-  return await perform(() => workspaceView!.activeSpreadsheetNoteCell());
-}, changed, spreadsheetViewChanged);
-const sheetThreads = createSpreadsheetThreads(rootElement, locateSheetAnnotation, changed, spreadsheetViewChanged,
-  hasReviewDraft => { if (ready && currentFormat === 'xlsx') notify('review-draft', { hasReviewDraft }); });
+async function activeAnnotationCell() {
+  const view = workspaceView;
+  if (!ready || currentFormat !== 'xlsx' || !view) return null;
+  await annotationNavigation;
+  if (!ready || view !== workspaceView) return null;
+  return await perform(() => view.activeSpreadsheetNoteCell());
+}
+const sheetNotes = createSpreadsheetNotes(rootElement, locateSheetAnnotation, activeAnnotationCell, changed, spreadsheetViewChanged,
+  cell => sheetThreads.hasThread(cell));
+const sheetThreads = createSpreadsheetThreads(rootElement, locateSheetAnnotation, activeAnnotationCell, changed, spreadsheetViewChanged,
+  hasReviewDraft => { if (ready && currentFormat === 'xlsx') notify('review-draft', { hasReviewDraft }); },
+  cell => sheetNotes.hasNote(cell));
 function updateInteraction() {
   rootElement.inert = !ready || readOnly || operationBusy > 0;
   sheetNotes.setLocked(rootElement.inert);

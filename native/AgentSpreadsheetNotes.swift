@@ -49,6 +49,17 @@ enum AgentSpreadsheetNotes {
     struct Sheet {
         let name: String, part: String, visible: Bool, supportsCreation: Bool
     }
+    enum CommentAddition {
+        case note(AgentSpreadsheetNoteEdit)
+        case thread(cell: String, id: String, text: String)
+
+        var cell: String {
+            switch self {
+            case .note(let edit): return edit.cell
+            case .thread(let cell, _, _): return cell
+            }
+        }
+    }
     fileprivate struct Note {
         let value: AgentSpreadsheetNote
         let content: XMLElement
@@ -78,6 +89,17 @@ enum AgentSpreadsheetNotes {
         func relationshipPart(_ source: String) -> String {
             let pieces = source.split(separator: "/").map(String.init)
             return (Array(pieces.dropLast()) + ["_rels", (pieces.last ?? "") + ".rels"]).joined(separator: "/")
+        }
+
+        func relationshipDocument(_ source: String) async throws -> XMLDocument {
+            let path = relationshipPart(source)
+            let document: XMLDocument
+            if entries.contains(path) { document = try await xml(path) }
+            else { document = try XMLDocument(xmlString: "<Relationships xmlns=\"\(packageRelationshipURI)\"/>", options: []) }
+            guard let root = document.rootElement(), root.localName == "Relationships", root.uri == packageRelationshipURI else {
+                throw PetError("工作簿关联文件无效，草稿已保留")
+            }
+            return document
         }
 
         func relationships(_ source: String) async throws -> [Relation] {
@@ -218,23 +240,26 @@ enum AgentSpreadsheetNotes {
                   notes.count + additions.count <= limit, additions.allSatisfy({ notes[$0.cell] == nil }) else {
                 throw PetError("该位置已有备注或工作表暂不支持新建，草稿已保留")
             }
-            try await addNotes(additions, on: sheet, sheets: sheets, package: package, links: links,
-                               existing: existing.map { ($0.part, $0.document) }, documents: &documents,
-                               contentTypes: &contentTypes, usedNames: &usedNames)
+            try await addLegacyComments(additions.map(CommentAddition.note), on: sheet, sheets: sheets, package: package, links: links,
+                                        existing: existing.map { ($0.part, $0.document) }, documents: &documents,
+                                        contentTypes: &contentTypes, usedNames: &usedNames)
         }
-        if !contentTypes.isEmpty {
-            let types = try await package.xml(contentTypesPart)
-            guard let root = types.rootElement(), root.localName == "Types", root.uri == contentTypeURI else {
-                throw PetError("工作簿内容类型无法读取")
-            }
-            for part in contentTypes.keys.sorted() {
-                let item = append("Override", to: root)
-                set("PartName", "/" + part, on: item)
-                set("ContentType", contentTypes[part]!, on: item)
-            }
-            documents[contentTypesPart] = types
-        }
+        try await appendContentTypes(contentTypes, to: &documents, package: package)
         try await write(documents, to: package)
+    }
+
+    static func appendContentTypes(_ contentTypes: [String: String], to documents: inout [String: XMLDocument], package: Package) async throws {
+        guard !contentTypes.isEmpty else { return }
+        let types = try await package.xml(contentTypesPart)
+        guard let root = types.rootElement(), root.localName == "Types", root.uri == contentTypeURI else {
+            throw PetError("工作簿内容类型无法读取")
+        }
+        for (path, contentType) in contentTypes.sorted(by: { $0.key < $1.key }) {
+            let item = append("Override", to: root)
+            set("PartName", "/" + path, on: item)
+            set("ContentType", contentType, on: item)
+        }
+        documents[contentTypesPart] = types
     }
 
     static func write(_ documents: [String: XMLDocument], to package: Package) async throws {
@@ -255,20 +280,17 @@ enum AgentSpreadsheetNotes {
         _ = try await command("/usr/bin/zip", ["-q", "-X", "-nw", package.archive.path] + paths, in: folder, scratch: package.scratch, writable: true)
     }
 
-    private static func addNotes(_ edits: [AgentSpreadsheetNoteEdit], on sheet: Sheet, sheets: [Sheet], package: Package,
-                                 links: [Relation], existing: (part: String, document: XMLDocument)?,
-                                 documents: inout [String: XMLDocument], contentTypes: inout [String: String],
-                                 usedNames: inout Set<String>) async throws {
+    static func addLegacyComments(_ additions: [CommentAddition], on sheet: Sheet, sheets: [Sheet], package: Package,
+                                  links: [Relation], existing: (part: String, document: XMLDocument)?,
+                                  documents: inout [String: XMLDocument], contentTypes: inout [String: String],
+                                  usedNames: inout Set<String>) async throws {
         let worksheet = try await package.xml(sheet.part)
         guard let root = worksheet.rootElement(), root.localName == "worksheet", root.uri == sheetURI else {
             throw PetError("原工作表无法读取，备注草稿已保留")
         }
         let relationshipPart = package.relationshipPart(sheet.part)
-        let relationships: XMLDocument
-        if package.entries.contains(relationshipPart) { relationships = try await package.xml(relationshipPart) }
-        else { relationships = try XMLDocument(xmlString: "<Relationships xmlns=\"\(packageRelationshipURI)\"/>", options: []) }
-        guard let relationshipRoot = relationships.rootElement(), relationshipRoot.localName == "Relationships",
-              relationshipRoot.uri == packageRelationshipURI else { throw PetError("工作表关联文件无效，备注草稿已保留") }
+        let relationships = try await package.relationshipDocument(sheet.part)
+        guard let relationshipRoot = relationships.rootElement() else { throw PetError("工作表关联无法读取") }
 
         let key = String(AgentFiles.hash(Data(sheet.part.utf8)).prefix(16))
         let commentsPath: String, comments: XMLDocument
@@ -284,7 +306,7 @@ enum AgentSpreadsheetNotes {
             changedLinks = true
         }
         guard documents[commentsPath] == nil else { throw PetError("多张工作表共用备注文件，原件已保留") }
-        try appendComments(edits, to: comments)
+        try appendComments(additions, to: comments)
         documents[commentsPath] = comments
 
         let legacy = children(root, "legacyDrawing")
@@ -317,7 +339,7 @@ enum AgentSpreadsheetNotes {
             changedLinks = true
         }
         guard documents[drawingPath] == nil else { throw PetError("多张工作表共用备注绘图，原件已保留") }
-        try appendShapes(edits, to: drawing)
+        try appendShapes(additions.map(\.cell), to: drawing)
         documents[drawingPath] = drawing
         if changedLinks { documents[relationshipPart] = relationships }
     }
@@ -333,16 +355,16 @@ enum AgentSpreadsheetNotes {
         }
     }
 
-    private static func addRelationship(_ type: String, to path: String, in root: XMLElement) -> String {
+    static func addRelationship(_ type: String, to path: String, in root: XMLElement, namespace: String = relationshipURI) -> String {
         let ids = Set(children(root, "Relationship").compactMap { attribute($0, "Id") })
         let id = (1...(ids.count + 1)).lazy.map { "rId" + String($0) }.first { !ids.contains($0) }!
         let link = append("Relationship", to: root)
-        set("Id", id, on: link); set("Type", relationshipURI + "/" + type, on: link)
+        set("Id", id, on: link); set("Type", namespace + "/" + type, on: link)
         set("Target", "/" + path, on: link)
         return id
     }
 
-    private static func unusedPart(_ prefix: String, extension suffix: String, used: inout Set<String>) -> String {
+    static func unusedPart(_ prefix: String, extension suffix: String, used: inout Set<String>) -> String {
         var name = prefix + "." + suffix, index = 0
         while !used.insert(name.lowercased()).inserted {
             index += 1
@@ -351,18 +373,35 @@ enum AgentSpreadsheetNotes {
         return name
     }
 
-    private static func appendComments(_ edits: [AgentSpreadsheetNoteEdit], to document: XMLDocument) throws {
+    private static func appendComments(_ additions: [CommentAddition], to document: XMLDocument) throws {
         guard let root = document.rootElement(), root.uri == sheetURI,
               let authors = children(root, "authors").first, let list = children(root, "commentList").first else {
             throw PetError("备注作者或列表无法读取，原件已保留")
         }
-        let values = children(authors, "author")
-        let authorID = values.firstIndex { $0.stringValue == noteAuthor } ?? values.count
-        if authorID == values.count { append("author", to: authors).stringValue = noteAuthor }
-        for edit in edits {
+        let current = children(list, "comment")
+        var occupied = Set(current.compactMap { attribute($0, "ref") })
+        guard occupied.count == current.count, current.count + additions.count <= limit else {
+            throw PetError("原工作簿的备注位置无法读取，草稿已保留")
+        }
+        var names = children(authors, "author").map { $0.stringValue ?? "" }
+        for item in additions {
+            guard occupied.insert(item.cell).inserted else { throw PetError("该单元格已有备注或评论，草稿已保留") }
+            let name: String
+            switch item {
+            case .note: name = noteAuthor
+            case .thread(_, let id, _): name = "tc=" + id
+            }
+            let authorID = names.firstIndex(of: name) ?? names.count
+            if authorID == names.count { append("author", to: authors).stringValue = name; names.append(name) }
             let note = append("comment", to: list)
-            set("ref", edit.cell, on: note); set("authorId", String(authorID), on: note)
-            try writeBody(edit, to: append("text", to: note))
+            set("ref", item.cell, on: note); set("authorId", String(authorID), on: note)
+            let content = append("text", to: note)
+            switch item {
+            case .note(let edit): try writeBody(edit, to: content)
+            case .thread(_, let id, let text):
+                set("guid", id, on: note); set("shapeId", "0", on: note)
+                writeText(text, to: append("t", to: content))
+            }
         }
     }
 
@@ -456,7 +495,7 @@ enum AgentSpreadsheetNotes {
         let row: Int, column: Int
     }
 
-    private static func appendShapes(_ edits: [AgentSpreadsheetNoteEdit], to document: XMLDocument) throws {
+    private static func appendShapes(_ cells: [String], to document: XMLDocument) throws {
         guard let root = document.rootElement(), root.localName == "xml" else { throw PetError("原备注绘图无法读取") }
         var occupied: Set<String> = []
         var anchors: Set<CellPosition> = []
@@ -479,8 +518,8 @@ enum AgentSpreadsheetNotes {
             }
         }
         var positions: [CellPosition] = []
-        for edit in edits {
-            guard let position = cellPosition(edit.cell) else { throw PetError("无效的备注位置") }
+        for cell in cells {
+            guard let position = cellPosition(cell) else { throw PetError("无效的备注位置") }
             if !anchors.contains(position) { positions.append(position) }
         }
         guard !positions.isEmpty else { return }

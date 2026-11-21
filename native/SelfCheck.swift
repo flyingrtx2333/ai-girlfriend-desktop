@@ -107,7 +107,11 @@ import WebKit
         if CommandLine.arguments.contains("--workspace-video-recovery-ui") { await runVideoRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--workspace-browser-recovery-check") { await runBrowserRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-browser-recovery-ui") { await runBrowserRecoveryCheck(output, interactive: true); return }
-        if CommandLine.arguments.contains("--spreadsheet-threads-check") { await runSpreadsheetThreadsCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--spreadsheet-threads-check") {
+            if CommandLine.arguments.contains("--spreadsheet-threads-create") { await runSpreadsheetThreadCreationCheck(output) }
+            else { await runSpreadsheetThreadsCheck(output) }
+            NSApp.terminate(nil); return
+        }
         if CommandLine.arguments.contains("--spreadsheet-notes-check") {
             if CommandLine.arguments.contains("--spreadsheet-notes-create") { await runSpreadsheetNoteCreationCheck(output) }
             else if CommandLine.arguments.contains("--spreadsheet-notes-rich") { await runSpreadsheetRichNoteCheck(output) }

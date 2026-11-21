@@ -13,19 +13,22 @@ struct AgentSpreadsheetThreadCatalog: Encodable, Sendable {
     let threads: [AgentSpreadsheetThread]
     let incomplete: Bool
     let author: String
+    let creation: [String: [String]]
 }
 
 struct AgentSpreadsheetThreadEdit: Decodable, Sendable {
     struct Reply: Decodable, Sendable {
         let id: String, time: String, text: String
     }
-    let id: String, sheet: String, cell: String, version: String
+    let id: String, sheet: String, cell: String, version: String?
+    let opening: Reply?
     let resolved: Bool
     let replies: [Reply]
 }
 
 extension AgentSpreadsheetNotes {
     private static let threadURI = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments"
+    private static let threadRelationshipURI = "http://schemas.microsoft.com/office/2017/10/relationships"
     private static let localThreadAuthor = "{2FC87B65-B203-4D68-B084-A0A6F4B69611}"
     private static let escapedText = try! NSRegularExpression(pattern: "_x([0-9a-fA-F]{4})_")
 
@@ -63,16 +66,22 @@ extension AgentSpreadsheetNotes {
     }
 
     static func threadCatalog(_ archive: URL) async throws -> AgentSpreadsheetThreadCatalog {
-        let package = try await Package(archive)
+        let package = try await Package(archive), workbook = try await package.workbookPart()
+        let people = try await readPeople(package, workbook: workbook)
         var threads: [AgentSpreadsheetThread] = [], rootIDs: Set<String> = [], bytes = 0, messageCount = 0, incomplete = false
-        var people: People?
-        for sheet in try await package.sheets() where sheet.visible {
+        var creation: [String: [String]] = [:], hasThreadsWithoutPeople = false
+        for sheet in try await package.sheets() where sheet.visible || people == nil {
             try Task.checkCancellation()
             do {
                 let links = try await package.relationships(sheet.part)
-                guard hasThreadedComments(links) else { continue }
-                if people == nil { people = try await readPeople(package) }
-                let entries = try await readThreadSheet(sheet, links: links, people: people?.names ?? [:], package: package).entries.map(\.value)
+                let threaded = hasThreadedComments(links)
+                if threaded && people == nil { hasThreadsWithoutPeople = true }
+                guard sheet.visible else { continue }
+                let legacy = try await package.legacyComments(on: sheet, relations: links)?.document
+                let occupied = try legacyCommentCells(legacy)
+                let entries = threaded
+                    ? try await readThreadSheet(sheet, links: links, people: people?.names ?? [:], legacy: legacy, package: package).entries.map(\.value)
+                    : []
                 let ids = Set(entries.map(\.id))
                 let count = entries.reduce(0) { $0 + $1.messages.count }
                 let size = entries.reduce(0) { result, thread in
@@ -83,56 +92,113 @@ extension AgentSpreadsheetNotes {
                     throw PetError("工作簿评论过多或编号重复")
                 }
                 threads.append(contentsOf: entries); rootIDs.formUnion(ids); bytes += size; messageCount += count
+                if sheet.supportsCreation { creation[sheet.name] = occupied.sorted() }
             } catch is CancellationError { throw CancellationError() }
             catch { incomplete = true }
         }
-        return .init(threads: threads, incomplete: incomplete, author: noteAuthor)
+        return .init(threads: threads, incomplete: incomplete, author: noteAuthor, creation: hasThreadsWithoutPeople ? [:] : creation)
     }
 
     static func applyThreads(_ edits: [AgentSpreadsheetThreadEdit], to archive: URL) async throws {
         guard !edits.isEmpty else { return }
         let invalid = PetError("评论修改无效，草稿已保留")
-        guard edits.count <= limit, Set(edits.map(\.id)).count == edits.count else { throw invalid }
-        let replies = edits.flatMap(\.replies)
-        guard replies.count <= limit, Set(replies.map(\.id)).count == replies.count,
-              replies.allSatisfy({ reply in
+        guard edits.count <= limit, Set(edits.map(\.id)).count == edits.count, edits.allSatisfy({ edit in
+            threadID(edit.id) == edit.id && validCell(edit.cell) &&
+                (edit.opening.map { $0.id == edit.id && edit.version == nil } ?? (edit.version != nil))
+        }) else { throw invalid }
+        let messages = edits.flatMap { edit in (edit.opening.map { [$0] } ?? []) + edit.replies }
+        guard messages.count <= limit, Set(messages.map(\.id)).count == messages.count,
+              messages.allSatisfy({ reply in
                   threadID(reply.id) == reply.id && reply.time.range(of: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
                                                                    options: .regularExpression) != nil &&
                   validText(reply.text) && !reply.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
               }) else { throw invalid }
-        let package = try await Package(archive), people = try await readPeople(package)
+        let package = try await Package(archive), workbook = try await package.workbookPart()
         let sheets = try await package.sheets()
         guard Set(sheets.map(\.name)).count == sheets.count, Set(sheets.map(\.part)).count == sheets.count else { throw invalid }
-        var documents: [String: XMLDocument] = [:]
+        var documents: [String: XMLDocument] = [:], contentTypes: [String: String] = [:]
+        var usedNames = Set(package.entries.map { $0.lowercased() })
+        let people: People
+        if let existing = try await readPeople(package, workbook: workbook) { people = existing }
+        else {
+            guard edits.allSatisfy({ $0.opening != nil }) else { throw invalid }
+            for sheet in sheets {
+                if hasThreadedComments(try await package.relationships(sheet.part)) {
+                    throw PetError("原工作簿缺少评论作者，草稿已保留")
+                }
+            }
+            let path = unusedPart("xl/persons/person", extension: "xml", used: &usedNames)
+            let document = try XMLDocument(xmlString: "<personList xmlns=\"\(threadURI)\"/>", options: [])
+            let relations = try await package.relationshipDocument(workbook)
+            guard let root = document.rootElement(), let relationshipRoot = relations.rootElement() else { throw invalid }
+            _ = addRelationship("person", to: path, in: relationshipRoot, namespace: threadRelationshipURI)
+            documents[package.relationshipPart(workbook)] = relations
+            contentTypes[path] = "application/vnd.ms-excel.person+xml"
+            people = .init(part: path, document: document, root: root, names: [:])
+        }
         let grouped = Dictionary(grouping: edits, by: \.sheet)
-        for (name, changes) in grouped {
+        for name in grouped.keys.sorted() {
+            guard let changes = grouped[name] else { continue }
             guard let sheet = sheets.first(where: { $0.name == name && $0.visible }) else {
                 throw PetError("评论的工作表已变化，草稿已保留")
             }
             let links = try await package.relationships(sheet.part)
-            let source = try await readThreadSheet(sheet, links: links, people: people.names, package: package)
-            try await requireUnshared(source.part, kind: source.kind, on: sheet, sheets: sheets, package: package)
+            let legacy = try await package.legacyComments(on: sheet, relations: links)
+            let createPart = !hasThreadedComments(links)
+            let source: ThreadSheet
+            if createPart {
+                guard changes.allSatisfy({ $0.opening != nil }) else { throw invalid }
+                let key = String(AgentFiles.hash(Data(sheet.part.utf8)).prefix(16))
+                let path = unusedPart("xl/threadedComments/threadedComment-" + key, extension: "xml", used: &usedNames)
+                let document = try XMLDocument(xmlString: "<ThreadedComments xmlns=\"\(threadURI)\"/>", options: [])
+                guard let root = document.rootElement() else { throw invalid }
+                source = .init(part: path, kind: "threadedComment", document: document, root: root, entries: [], ids: [])
+                contentTypes[path] = "application/vnd.ms-excel.threadedcomments+xml"
+            } else {
+                source = try await readThreadSheet(sheet, links: links, people: people.names, legacy: legacy?.document, package: package)
+                try await requireUnshared(source.part, kind: source.kind, on: sheet, sheets: sheets, package: package)
+            }
             guard documents[source.part] == nil else { throw invalid }
             let entries = Dictionary(uniqueKeysWithValues: source.entries.map { ($0.value.id, $0) })
             var ids = source.ids
+            var occupied = try legacyCommentCells(legacy?.document)
+            occupied.formUnion(source.entries.map { $0.value.cell })
+            var placeholders: [CommentAddition] = []
             for edit in changes {
-                guard let entry = entries[edit.id], entry.value.editable, entry.value.cell == edit.cell,
-                      entry.value.version == edit.version else { throw PetError("原评论或单元格已变化，草稿已保留") }
-                if edit.resolved != entry.value.resolved { set("done", edit.resolved ? "1" : "0", on: entry.root) }
+                if let opening = edit.opening {
+                    guard sheet.supportsCreation, occupied.insert(edit.cell).inserted,
+                          ids.insert(edit.id).inserted, ids.count <= limit else {
+                        throw PetError("该单元格已有备注或评论，或工作表暂不可新增，草稿已保留")
+                    }
+                    let element = addMessage(opening, parent: nil, cell: edit.cell, to: source.root)
+                    if edit.resolved { set("done", "1", on: element) }
+                    placeholders.append(.thread(cell: edit.cell, id: edit.id, text: encodeThreadText(opening.text)))
+                } else {
+                    guard let entry = entries[edit.id], entry.value.editable, entry.value.cell == edit.cell,
+                          entry.value.version == edit.version else { throw PetError("原评论或单元格已变化，草稿已保留") }
+                    if edit.resolved != entry.value.resolved { set("done", edit.resolved ? "1" : "0", on: entry.root) }
+                }
                 for reply in edit.replies {
                     guard ids.insert(reply.id).inserted, ids.count <= limit else { throw invalid }
-                    let element = appendThreadItem("threadedComment", to: source.root)
-                    set("id", reply.id, on: element)
-                    set("parentId", edit.id, on: element)
-                    set("ref", entry.value.cell, on: element)
-                    set("personId", localThreadAuthor, on: element)
-                    set("dT", reply.time, on: element)
-                    append("text", to: element).stringValue = encodeThreadText(reply.text)
+                    _ = addMessage(reply, parent: edit.id, cell: edit.cell, to: source.root)
                 }
+            }
+            if !placeholders.isEmpty {
+                try await addLegacyComments(placeholders, on: sheet, sheets: sheets, package: package, links: links,
+                                            existing: legacy, documents: &documents, contentTypes: &contentTypes, usedNames: &usedNames)
+            }
+            if createPart {
+                let path = package.relationshipPart(sheet.part)
+                let relations: XMLDocument
+                if let staged = documents[path] { relations = staged }
+                else { relations = try await package.relationshipDocument(sheet.part) }
+                guard let root = relations.rootElement() else { throw invalid }
+                _ = addRelationship("threadedComment", to: source.part, in: root, namespace: threadRelationshipURI)
+                documents[path] = relations
             }
             documents[source.part] = source.document
         }
-        if !replies.isEmpty {
+        if !messages.isEmpty {
             if let person = children(people.root, "person").first(where: { threadID(attribute($0, "id")) == localThreadAuthor }) {
                 guard people.names[localThreadAuthor] == noteAuthor, attribute(person, "providerId") == "None",
                       attribute(person, "userId") == noteAuthor else { throw invalid }
@@ -143,15 +209,16 @@ extension AgentSpreadsheetNotes {
                 documents[people.part] = people.document
             }
         }
+        try await appendContentTypes(contentTypes, to: &documents, package: package)
         guard documents.values.allSatisfy({ $0.xmlData(options: [.nodePreserveAll]).count <= 2_000_000 }) else {
             throw PetError("评论文件过大，草稿已保留")
         }
         try await write(documents, to: package)
     }
 
-    private static func readPeople(_ package: Package) async throws -> People {
-        let workbook = try await package.workbookPart()
+    private static func readPeople(_ package: Package, workbook: String) async throws -> People? {
         let links = try await package.relationships(workbook).filter { $0.kind == "person" }
+        if links.isEmpty { return nil }
         guard links.count == 1, let link = links.first else { throw PetError("工作簿的评论作者关联无法读取") }
         let path = try part(link.target, from: workbook)
         let document = try await package.xml(path)
@@ -168,7 +235,7 @@ extension AgentSpreadsheetNotes {
     }
 
     private static func readThreadSheet(_ sheet: Sheet, links: [Relation], people: [String: String],
-                                        package: Package) async throws -> ThreadSheet {
+                                        legacy: XMLDocument?, package: Package) async throws -> ThreadSheet {
         let linksToComments = links.filter { isThreadRelationship($0) }
         let invalid = PetError("工作表的评论关系无法读取")
         guard linksToComments.count == 1, let link = linksToComments.first else { throw invalid }
@@ -189,7 +256,7 @@ extension AgentSpreadsheetNotes {
             return .init(message: message, xml: node, knownAuthor: name != nil)
         }
         let replies = Dictionary(grouping: messages, by: \.message.parent)
-        let placeholders = try await threadPlaceholders(sheet, links: links, package: package)
+        let placeholders = threadPlaceholders(legacy)
         var visited = 0
         let entries = try (replies[nil] ?? []).map { entry -> ThreadSheet.Entry in
             let id = entry.message.id
@@ -214,9 +281,17 @@ extension AgentSpreadsheetNotes {
         return .init(part: path, kind: link.kind, document: document, root: root, entries: entries, ids: seen)
     }
 
-    private static func threadPlaceholders(_ sheet: Sheet, links: [Relation], package: Package) async throws -> [String: [String]] {
-        guard let legacy = try await package.legacyComments(on: sheet, relations: links) else { return [:] }
-        let root = legacy.document.rootElement()
+    private static func legacyCommentCells(_ legacy: XMLDocument?) throws -> Set<String> {
+        let comments = children(children(legacy?.rootElement(), "commentList").first, "comment")
+        let addresses = Set(comments.compactMap { attribute($0, "ref") })
+        guard addresses.count == comments.count, comments.count <= limit, addresses.allSatisfy(validCell) else {
+            throw PetError("原工作簿的备注位置无法读取")
+        }
+        return addresses
+    }
+
+    private static func threadPlaceholders(_ legacy: XMLDocument?) -> [String: [String]] {
+        let root = legacy?.rootElement()
         let authors = children(children(root, "authors").first, "author").map { threadPlaceholderID($0.stringValue ?? "") }
         var anchors: [String: [String]] = [:]
         for node in children(children(root, "commentList").first, "comment") {
@@ -225,6 +300,18 @@ extension AgentSpreadsheetNotes {
             anchors[id, default: []].append(cell)
         }
         return anchors
+    }
+
+    private static func addMessage(_ message: AgentSpreadsheetThreadEdit.Reply, parent: String?, cell: String,
+                                   to root: XMLElement) -> XMLElement {
+        let element = appendThreadItem("threadedComment", to: root)
+        set("id", message.id, on: element)
+        if let parent { set("parentId", parent, on: element) }
+        set("ref", cell, on: element)
+        set("personId", localThreadAuthor, on: element)
+        set("dT", message.time, on: element)
+        append("text", to: element).stringValue = encodeThreadText(message.text)
+        return element
     }
 
     private static func appendThreadItem(_ name: String, to root: XMLElement) -> XMLElement {

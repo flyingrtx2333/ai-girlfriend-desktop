@@ -28,7 +28,7 @@ body { display: flex; }
 .spreadsheet-annotation h2 { margin: 0; font-size: 14px; font-weight: 600; }
 .spreadsheet-annotation button { font: inherit; color: inherit; cursor: pointer; background: var(--note-input); border: 1px solid var(--note-stroke); border-radius: 6px; }
 .spreadsheet-annotation header button { padding: 3px 8px; }
-.spreadsheet-notes .spreadsheet-note-add { align-self: flex-start; padding: 5px 10px; }
+.spreadsheet-annotation .spreadsheet-note-add { align-self: flex-start; padding: 5px 10px; }
 .spreadsheet-annotation button:disabled { color: var(--note-secondary); opacity: .65; cursor: default; }
 .spreadsheet-notes-list { display: grid; gap: 4px; max-height: 40%; overflow: auto; padding: 2px; }
 .spreadsheet-notes-list button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 9px; }
