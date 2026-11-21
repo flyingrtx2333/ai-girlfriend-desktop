@@ -85,6 +85,7 @@ struct AgentWorkspaceRecovery: Sendable {
         var marketReviewCopy: Asset? = nil
         var settingsNavigation: AgentSettingsRecovery.Navigation? = nil
         var automation: Automation? = nil
+        var conversationPositions: [String: AgentConversationPosition]? = nil
         var closed = false
     }
     struct Asset: Codable, Equatable, Sendable {
@@ -157,6 +158,7 @@ struct AgentWorkspaceRecovery: Sendable {
     private func validate(_ value: Window) throws {
         guard value.version == 1, Self.uuid(value.id), value.number > 0,
               value.taskID.map({ UUID(uuidString: $0) != nil }) ?? true, value.frame?.valid != false,
+              value.conversationPositions?.allSatisfy({ Self.uuid($0.key) && $0.value.valid }) != false,
               Set(value.tasks.map(\.taskID)).count == value.tasks.count else { throw PetError("工作区窗口恢复格式无效或版本不受支持") }
         var ids = Set<String>()
         func tab(_ value: Tab) throws {
@@ -202,10 +204,13 @@ struct AgentWorkspaceRecovery: Sendable {
         return object
     }
     private func decodeWindow(_ data: Data) throws -> Window {
-        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "settings", "marketReviewCopy", "settingsNavigation", "automation", "closed"])
+        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "settings", "marketReviewCopy", "settingsNavigation", "automation", "conversationPositions", "closed"])
         func frame(_ value: Any?) throws { if let value, !(value is NSNull) { _ = try keys(value, ["x", "y", "width", "height"]) } }
         func tab(_ value: Any) throws { _ = try keys(value, ["id", "root", "title", "hasIndependentChild"]) }
         try frame(object["frame"])
+        if let positions = object["conversationPositions"] as? [String: Any] {
+            for position in positions.values { _ = try keys(position, ["row", "offset", "rowHeight", "y"]) }
+        }
         for value in object["tasks"] as? [Any] ?? [] {
             let task = try keys(value, ["taskID", "tabs", "selected", "opened", "expanded"])
             try (task["tabs"] as? [Any] ?? []).forEach(tab)

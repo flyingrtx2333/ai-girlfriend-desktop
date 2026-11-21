@@ -346,6 +346,7 @@ private actor AgentWorkspaceJournal {
                 if let coldSettings { layout.settings = coldSettings }
                 else { layout.settings = try owner.captureSettingsRecovery() }
                 layout.settingsNavigation = coldSettingsNavigation ?? owner.captureSettingsNavigation()
+                layout.conversationPositions = owner.captureConversationPositions()
                 layout.automation = try coldAutomation ?? owner.captureAutomationRecovery()
                 let marketCopy = coldSettings == nil ? (owner.settingsRecoveryControllers.last as? AgentPluginReviewPage)?.marketCopy : nil
                 let expected = layoutHash, capturedLayout = layout

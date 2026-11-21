@@ -138,6 +138,8 @@ final class FormDocumentView: NSView {
     private var messageRows: [String: ChatMessageRow] = [:], renderedIDs: [String] = []
     private var reasoningRows: [String: ChatMessageRow] = [:], processRows: [String: AgentReplyProcessRow] = [:]
     private var readingTaskID: String?, lastHumanMessageID: String?, readingAnchorID: String?, readingSpace: NSLayoutConstraint?
+    private var conversationPositions: [String: AgentConversationPosition] = [:]
+    private let latestMessageButton = AgentDialogButton(title: "回到最新", target: nil, action: nil)
     private struct MessageSearch {
         var taskID: String, messageID: String, query: String
         var displayRange: NSRange? = nil, displayText: String? = nil
@@ -281,6 +283,7 @@ final class FormDocumentView: NSView {
         self.companion = companion
         let recovered = recovery ?? (windowNumber == 1 ? companion.workspaceRecoveryWindows.first(where: { $0.value.number == 1 }) : nil)
         taskWindowNumber = windowNumber; displayedTask = taskID ?? recovered?.value.taskID
+        conversationPositions = recovered?.value.conversationPositions ?? [:]
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: companion.usesAgent ? 1200 : 980, height: companion.usesAgent ? 774 : 700),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "蓝色大肥鱼"; window.minSize = NSSize(width: 780, height: 540)
@@ -1045,6 +1048,8 @@ final class FormDocumentView: NSView {
         history.onUserScroll = { [weak self] in
             guard let self, readingAnchorID != nil else { return }; readingAnchorID = nil; readingSpace?.constant = 0; window?.contentView?.layoutSubtreeIfNeeded()
         }
+        history.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(conversationViewportChanged), name: NSView.boundsDidChangeNotification, object: history.contentView)
         composer.font = .systemFont(ofSize: 14); composer.textContainerInset = NSSize(width: 2, height: 8); composer.drawsBackground = false; composer.isRichText = false; composer.allowsUndo = true
         composer.isAutomaticQuoteSubstitutionEnabled = false; composer.isAutomaticTextReplacementEnabled = false; composer.autoresizingMask = [.width]; composer.setAccessibilityLabel("消息")
         composer.onSend = { [weak self] in self?.send() }; composer.onInputChanged = { [weak self] in self?.composerChanged() }; composer.onEditingEnded = { [weak self] in self?.dismissExtensionCandidates() }
@@ -1126,10 +1131,12 @@ final class FormDocumentView: NSView {
         emptyAfter.setContentHuggingPriority(.defaultLow, for: .vertical)
         modelCaption.font = .systemFont(ofSize: 10); modelCaption.textColor = .tertiaryLabelColor; modelCaption.alignment = .right; modelCaption.lineBreakMode = .byTruncatingTail
         resumeButton.target = self; resumeButton.action = #selector(resumeAgentTask); AgentDialogStyle.action(resumeButton)
+        latestMessageButton.target = self; latestMessageButton.action = #selector(jumpToLatestMessage); AgentDialogStyle.action(latestMessageButton)
+        latestMessageButton.isHidden = true
         taskContext.title = ""; taskContext.isBordered = false; taskContext.font = .systemFont(ofSize: 11); taskContext.contentTintColor = AgentWorkbenchTheme.secondaryText; taskContext.image = NSImage(systemSymbolName: "chart.pie", accessibilityDescription: nil); taskContext.image?.size = NSSize(width: 15, height: 15); taskContext.imagePosition = .imageOnly; taskContext.target = self; taskContext.action = #selector(showTaskContext)
         taskContext.heightAnchor.constraint(equalToConstant: 28).isActive = true; taskContext.widthAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true; taskContext.setContentHuggingPriority(.required, for: .horizontal)
         workbenchFeedback.orientation = .horizontal; workbenchFeedback.alignment = .centerY; workbenchFeedback.spacing = 8; workbenchFeedback.isHidden = true
-        for view in [status, NSView(), resumeButton] { workbenchFeedback.addArrangedSubview(view) }
+        for view in [status, NSView(), latestMessageButton, resumeButton] { workbenchFeedback.addArrangedSubview(view) }
         status.font = .systemFont(ofSize: 12); status.lineBreakMode = .byTruncatingTail; status.isHidden = true
         status.usesSingleLineMode = false; status.cell?.wraps = true; status.maximumNumberOfLines = 2; status.isSelectable = true
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -2586,6 +2593,8 @@ final class FormDocumentView: NSView {
 
     func show(tab: String) {
         if selectedTab != tab, !canLeaveMainPage() { return }
+        let returningToConversation = selectedTab != "chat" && tab == "chat"
+        if selectedTab == "chat", tab != "chat" { rememberConversationPosition() }
         let revealingKnowledge = tab == "knowledge" && (selectedTab != tab || window?.isVisible != true)
         if window?.isVisible != true { refreshPreferences() }
         if tab == "settings", selectedTab != "settings" {
@@ -2594,6 +2603,7 @@ final class FormDocumentView: NSView {
         if tab != "settings" { pendingSettingsNavigation = nil }
         selectedTab = ["settings", "attention", "automation", "knowledge"].contains(tab) ? tab : "chat"; changeTab(); workspaceSession?.changed()
         renderMessages()
+        if returningToConversation { restoreActiveConversationPosition() }
         if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { focusTaskInput() }; return }
         showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         if selectedTab == "chat" { focusTaskInput() }
@@ -3059,14 +3069,14 @@ final class FormDocumentView: NSView {
         status.stringValue = text; status.textColor = error ? AgentDialogStyle.error : AgentWorkbenchTheme.secondaryText
         status.toolTip = text.isEmpty ? nil : text
         status.isHidden = text.isEmpty
-        workbenchFeedback.isHidden = status.isHidden && resumeButton.isHidden
+        updateConversationFooter()
         if settings.isHidden == false {
             savedStatus.stringValue = text; savedStatus.textColor = error ? .systemRed : AgentWorkbenchTheme.secondaryText
         }
     }
     func clearWorkspaceRecoveryStatus(_ failure: String, prefix: String = "工作区恢复未保存：") {
         let message = prefix + failure
-        if status.stringValue == message { status.stringValue = ""; status.toolTip = nil; status.isHidden = true; workbenchFeedback.isHidden = resumeButton.isHidden }
+        if status.stringValue == message { status.stringValue = ""; status.toolTip = nil; status.isHidden = true; updateConversationFooter() }
         if savedStatus.stringValue == message { savedStatus.stringValue = "" }
     }
     func scheduleRender() {
@@ -3097,6 +3107,7 @@ final class FormDocumentView: NSView {
         }
         clearButton.title = companion.undoMessages == nil ? "清空" : "撤销清空"
     }
+    func windowWillStartLiveResize(_ notification: Notification) { rememberConversationPosition() }
     func windowDidResize(_ notification: Notification) {
         workspaceSession?.changed()
         dismissExtensionCandidates()
@@ -3104,6 +3115,7 @@ final class FormDocumentView: NSView {
         if selectedTab == "chat", sidebarRequested { taskSidebar.revealCurrentSelection() }
         let width = companion?.usesAgent == true ? history.contentView.bounds.width - 40 : (window?.contentView?.bounds.width ?? 980) - 272
         messageRows.values.forEach { $0.fit(width: width) }
+        restoreActiveConversationPosition()
     }
     func windowDidMove(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion(); workspaceSession?.changed() }
     func windowDidMiniaturize(_ notification: Notification) { monitorPanel?.orderOut(nil); companion?.updatePetWorkspaceOcclusion() }
@@ -3828,6 +3840,61 @@ final class FormDocumentView: NSView {
         }
         windowDraft = value; composer.delegate = self; composer.needsDisplay = true
     }
+    private var conversationRows: [String: NSView] {
+        var rows: [String: NSView] = [:]
+        for (id, row) in messageRows { rows["message:" + id] = row }
+        for (id, row) in reasoningRows { rows["reasoning:" + id] = row }
+        for (id, row) in toolRows { rows["tool:" + id] = row }
+        for (id, row) in processRows { rows["process:" + id] = row }
+        return rows
+    }
+    private var conversationVisible: Bool {
+        companion?.usesAgent == true && selectedTab == "chat" && !history.isHiddenOrHasHiddenAncestor &&
+            !renderedIDs.isEmpty && history.contentView.bounds.height > 0
+    }
+    private func currentConversationPosition() -> AgentConversationPosition? {
+        guard conversationVisible, !history.nearLatest else { return nil }
+        return history.readingPosition(rows: conversationRows)
+    }
+    private func rememberConversationPosition() {
+        guard conversationVisible, let id = readingTaskID, id == displayedTask else { return }
+        conversationPositions[id] = currentConversationPosition()
+    }
+    internal func captureConversationPositions() -> [String: AgentConversationPosition]? {
+        rememberConversationPosition()
+        if let tasks = companion?.agentStore {
+            let known = Set(tasks.tasks.map(\.id))
+            conversationPositions = conversationPositions.filter { known.contains($0.key) }
+        }
+        return conversationPositions.isEmpty ? nil : conversationPositions
+    }
+    private func restoreActiveConversationPosition() {
+        guard conversationVisible, let id = readingTaskID, id == agentTaskID,
+              readingAnchorID == nil, messageSearch == nil, taskFind.isHidden else { return }
+        window?.contentView?.layoutSubtreeIfNeeded()
+        let saved = conversationPositions[id]
+        history.restoreReadingPosition(saved, rows: saved == nil ? [:] : conversationRows)
+        updateConversationFooter()
+    }
+    private func updateConversationFooter() {
+        let latestHidden = !conversationVisible || history.nearLatest || !taskFind.isHidden
+        if latestMessageButton.isHidden != latestHidden { latestMessageButton.isHidden = latestHidden }
+        let footerHidden = status.isHidden && resumeButton.isHidden && latestHidden
+        if workbenchFeedback.isHidden != footerHidden { workbenchFeedback.isHidden = footerHidden }
+    }
+    @objc private func conversationViewportChanged() {
+        guard conversationVisible else { return }
+        updateConversationFooter()
+        workspaceSession?.changed()
+    }
+    @objc private func jumpToLatestMessage() {
+        guard conversationVisible, let id = readingTaskID else { return }
+        conversationPositions[id] = nil
+        readingAnchorID = nil; readingSpace?.constant = 0
+        clearMessageSearchHighlight()
+        restoreActiveConversationPosition(); focusTaskInput()
+        workspaceSession?.changed()
+    }
     private func clearMessageSearchHighlight() {
         if let messageSearch { messageRows[messageSearch.messageID]?.clearSearchHighlight() }
         messageSearch = nil; pendingMessageReveal = false
@@ -3852,6 +3919,7 @@ final class FormDocumentView: NSView {
             if record.sideTask != nil && record.parentID == sideTaskTabID { self.sideTaskTabID = id }
             else { companion?.showTaskInMainWindow(id); return }
         } else if sideTaskTabID == nil, record.sideTask != nil { companion?.openSideTask(id, from: self); return }
+        rememberConversationPosition()
         if taskFind.isHidden || id != agentTaskID || searchQuery != nil { clearMessageSearchHighlight() }
         if id != agentTaskID || searchQuery != nil { taskFind.reset() }
         if let searchQuery, let message = AgentTaskSearch.message(in: record, query: searchQuery, preferredID: messageID) {
@@ -3869,7 +3937,7 @@ final class FormDocumentView: NSView {
         messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
         renderedIDs = []; messageRows = [:]; toolRows = [:]; reasoningRows = [:]; processRows = [:]
         readingTaskID = nil; lastHumanMessageID = nil; readingAnchorID = nil; readingSpace?.constant = 0
-        selectedTab = "chat"; changeTab(); renderAgentMessages(); focusTaskInput()
+        selectedTab = "chat"; changeTab(); renderAgentMessages(); focusTaskInput(); workspaceSession?.changed()
         if let readIssue { setStatus(readIssue, error: true) }
         companion?.refreshAgentAnimation(); companion?.refreshVoiceBusy(); companion?.startPendingVoiceListen()
     }
@@ -4991,6 +5059,8 @@ final class FormDocumentView: NSView {
         archivedTasksView?.refresh()
         refreshAutomationBadge()
         if displayedTask != task.id { selectAgentTask(task.id); return }
+        let restoringConversation = readingTaskID != task.id
+        let readingPosition = restoringConversation ? conversationPositions[task.id] : currentConversationPosition()
         let taskView = tasks.organization.taskView(task.organizationMode)
         let listing = taskView.grouping != .workspace || taskView.activity != .all ? tasks.taskViewMetadata() : tasks.tasks
         var hidden = Set(listing.filter { !tasks.sideTasks.sidebarVisible($0) }.map(\.id)), previous = Set<String>()
@@ -5026,7 +5096,7 @@ final class FormDocumentView: NSView {
         modelCaption.stringValue = task.agent.map { $0.profile.name + context } ?? (context.hasPrefix(" · ") ? String(context.dropFirst(3)) : context)
         modelCaption.isHidden = true
         updateWorkbenchLayout()
-        var follow = messageSearch == nil && taskFind.isHidden && (renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65)
+        var follow = readingPosition == nil && messageSearch == nil && taskFind.isHidden && (restoringConversation || renderedIDs.isEmpty || history.nearLatest)
         let messages = task.messages.filter { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
         let display = companion?.generalSettings.settings.conversationDisplay ?? .init()
         let latestHuman = messages.last(where: \.isHumanInput)?.id
@@ -5275,9 +5345,13 @@ final class FormDocumentView: NSView {
             } else { readingAnchorID = nil; follow = true }
         }
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
-        if follow, let document = history.documentView {
-            history.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - history.contentView.bounds.height))); history.reflectScrolledClipView(history.contentView)
+        if conversationVisible {
+            if follow { history.restoreReadingPosition(nil, rows: [:]) }
+            else if let readingPosition, !newInput, readingAnchorID == nil, messageSearch == nil, taskFind.isHidden {
+                history.restoreReadingPosition(readingPosition, rows: conversationRows)
+            }
         }
+        updateConversationFooter()
     }
 }
 
@@ -5333,6 +5407,7 @@ final class FormDocumentView: NSView {
         return ["settingsPageVisible": generalSettingsPanel?.conversationVisible == true && selectedTab == "settings", "heading": settingsHeading.stringValue,
                 "processes": processRows.mapValues { $0.readback() }, "tools": toolRows.mapValues { $0.readback() }, "messages": rows, "reasoning": reasoningRows.mapValues { $0.text },
                 "readingAnchor": readingAnchorID ?? "", "readingSpace": Double(readingSpace?.constant ?? 0), "viewport": NSStringFromRect(history.contentView.bounds), "documentHeight": Double(document?.bounds.height ?? 0),
+                "latestButtonVisible": !latestMessageButton.isHiddenOrHasHiddenAncestor,
                 "draft": composer.string, "modelRequests": currentAgentTask?.modelReceipts?.count ?? 0]
     }
     func checkConversationDisplay(_ action: String, id: String = "", query: String = "") {
@@ -5342,6 +5417,12 @@ final class FormDocumentView: NSView {
         case "expandProcess": processRows[id]?.setExpanded(true)
         case "cancelReading": history.onUserScroll?()
         case "scrollTop": history.contentView.scroll(to: .zero); history.reflectScrolledClipView(history.contentView)
+        case "scrollMiddle":
+            if let document = history.documentView {
+                history.contentView.scroll(to: NSPoint(x: 0, y: max(0, (document.bounds.height - history.contentView.bounds.height) / 2)))
+                history.reflectScrolledClipView(history.contentView)
+            }
+        case "jumpLatest": latestMessageButton.performClick(nil)
         case "search": if let taskID = agentTaskID { selectAgentTask(taskID, searchQuery: query, messageID: id) }
         default: break
         }

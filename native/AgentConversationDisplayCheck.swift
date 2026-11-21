@@ -125,6 +125,29 @@ import AppKit
             checks["filledViewportReturnsToFollowingActualBottom"] = state["readingAnchor"] as? String == "" && (state["readingSpace"] as? Double) == 0 && abs(NSRectFromString(state["viewport"] as? String ?? "").maxY - (state["documentHeight"] as? Double ?? 0)) < 1
             try conversationDisplayReadingStep("new-round", output: output); control.checkConversationDisplay("cancelReading"); state = control.conversationDisplayReadback()
             checks["manualScrollCancelsReadingAnchorAndSpace"] = state["readingAnchor"] as? String == "" && (state["readingSpace"] as? Double) == 0
+            let readingID = ids["reading"]!, readingMessages = try encoder.encode(tasks.task(readingID)!.messages)
+            control.checkConversationDisplay("scrollMiddle")
+            let middle = control.conversationDisplayReadback()
+            let position = control.captureConversationPositions()?[readingID]
+            let middleY = NSRectFromString(middle["viewport"] as? String ?? "").minY
+            checks["readingAwayFromLatestShowsReturnAction"] = middle["latestButtonVisible"] as? Bool == true && position?.row != nil && (position?.y ?? 0) > 0
+            control.showAgentTask(ids["completed"]!); control.showAgentTask(readingID)
+            let reopened = control.conversationDisplayReadback()
+            checks["switchingTasksRestoresOriginalConversationPosition"] = control.captureConversationPositions()?[readingID]?.row == position?.row && abs(NSRectFromString(reopened["viewport"] as? String ?? "").minY - middleY) < 1
+            control.show(tab: "settings"); control.show(tab: "chat")
+            checks["settingsReturnKeepsOriginalConversationPosition"] = abs(NSRectFromString(control.conversationDisplayReadback()["viewport"] as? String ?? "").minY - middleY) < 1
+            checks["readingPositionLeavesOriginalConversationUnedited"] = try encoder.encode(tasks.task(readingID)!.messages) == readingMessages && control.conversationDisplayReadback()["draft"] as? String == middle["draft"] as? String
+            let recovery = AgentWorkspaceRecovery(profile: store.directory)
+            var layout = AgentWorkspaceRecovery.Window(id: UUID().uuidString, number: 9, taskID: readingID, frame: nil, tasks: [])
+            let legacyLayout = try recovery.saveWindow(layout, expected: nil)
+            checks["legacyWindowWithoutReadingPositionLoads"] = try recovery.loadWindow(layout.id)?.value.conversationPositions == nil
+            layout.conversationPositions = control.captureConversationPositions()
+            _ = try recovery.saveWindow(layout, expected: legacyLayout.hash)
+            checks["journalPreservesTheTaskAndMessageAnchors"] = try recovery.loadWindow(layout.id)?.value.conversationPositions == layout.conversationPositions && layout.conversationPositions?[readingID]?.row != nil
+            try conversationDisplayReadingStep("long-reply", output: output)
+            checks["growingReplyKeepsAnEarlierReadingAnchor"] = control.captureConversationPositions()?[readingID]?.row == position?.row && abs(NSRectFromString(control.conversationDisplayReadback()["viewport"] as? String ?? "").minY - middleY) < 1
+            control.checkConversationDisplay("jumpLatest"); state = control.conversationDisplayReadback()
+            checks["returnToLatestClearsReadingPositionAndButton"] = control.captureConversationPositions()?[readingID] == nil && state["latestButtonVisible"] as? Bool == false && abs(NSRectFromString(state["viewport"] as? String ?? "").maxY - (state["documentHeight"] as? Double ?? 0)) < 1
             report["finalState"] = state; second.window?.orderOut(nil)
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["blockedModelAttempts"] = attempts; report["modelRequests"] = agentStore?.tasks.reduce(0) { $0 + ($1.modelReceipts?.count ?? 0) } ?? 0

@@ -68,8 +68,50 @@ enum AgentConversationDisplay {
     func readback() -> [String: Any] { ["expanded": expanded, "headerVisible": !header.isHiddenOrHasHiddenAncestor, "bodyVisible": !body.isHiddenOrHasHiddenAncestor, "caption": caption] }
 }
 
+struct AgentConversationPosition: Codable, Equatable, Sendable {
+    var row: String?
+    var offset: Double = 0, rowHeight: Double = 0
+    var y: Double
+
+    var valid: Bool {
+        row.map { !$0.isEmpty && $0.utf8.count <= 4096 && !$0.contains("\0") } != false &&
+            offset.isFinite && abs(offset) <= 1_000_000_000 && AgentSettingsRecovery.validScroll(rowHeight) &&
+            AgentSettingsRecovery.validScroll(y) && (row == nil ? rowHeight == 0 && offset == 0 : rowHeight > 0)
+    }
+}
+
 final class AgentConversationHistory: NSScrollView {
     var onUserScroll: (() -> Void)?
+
+    var nearLatest: Bool { (documentView?.bounds.maxY ?? 0) - contentView.bounds.maxY <= 65 }
+
+    func readingPosition(rows: [String: NSView]) -> AgentConversationPosition? {
+        guard !nearLatest, let documentView else { return nil }
+        let y = max(0, contentView.bounds.minY)
+        var nearest: (id: String, rect: NSRect, distance: CGFloat)?
+        for (id, row) in rows where !row.isHiddenOrHasHiddenAncestor && row.isDescendant(of: documentView) {
+            let rect = row.convert(row.bounds, to: documentView)
+            guard rect.height > 0 else { continue }
+            let distance = max(0, rect.minY - y, y - rect.maxY)
+            if let nearest, (distance, rect.height, id) >= (nearest.distance, nearest.rect.height, nearest.id) { continue }
+            nearest = (id, rect, distance)
+        }
+        let value = nearest.map { AgentConversationPosition(row: $0.id, offset: y - $0.rect.minY, rowHeight: $0.rect.height, y: y) }
+        return value?.valid == true ? value : AgentConversationPosition(row: nil, y: y)
+    }
+
+    func restoreReadingPosition(_ position: AgentConversationPosition?, rows: [String: NSView]) {
+        guard let documentView else { return }
+        let limit = max(0, documentView.bounds.maxY - contentView.bounds.height)
+        var y = position?.y ?? limit
+        if let position, let id = position.row, let row = rows[id], !row.isHiddenOrHasHiddenAncestor, row.isDescendant(of: documentView) {
+            let rect = row.convert(row.bounds, to: documentView)
+            if rect.height > 0 { y = rect.minY + (position.offset < 0 ? position.offset : position.offset / position.rowHeight * rect.height) }
+        }
+        contentView.scroll(to: NSPoint(x: 0, y: min(limit, max(0, y))))
+        reflectScrolledClipView(contentView)
+    }
+
     override func scrollWheel(with event: NSEvent) {
         if event.scrollingDeltaY != 0 { onUserScroll?() }
         super.scrollWheel(with: event)
