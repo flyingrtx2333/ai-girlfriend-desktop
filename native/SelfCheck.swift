@@ -34,6 +34,7 @@ import WebKit
         if CommandLine.arguments.contains("--settings-import-recovery-ui") { await runSettingsImportRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--automation-recovery-check") { await runAutomationRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--automation-recovery-ui") { await runAutomationRecoveryCheck(output, interactive: true); return }
+        if CommandLine.arguments.contains("--automation-monthly-check") { await runAutomationMonthlyCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-navigation-recovery-check") { await runSettingsNavigationRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-navigation-recovery-ui") { await runSettingsNavigationRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--settings-mcp-recovery-check") { await runMCPSettingsRecoveryCheck(output); NSApp.terminate(nil); return }

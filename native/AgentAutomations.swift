@@ -2,9 +2,9 @@ import AppKit
 import Darwin
 
 enum AgentAutomationFrequency: String, Codable, CaseIterable {
-    case once, daily, weekly, interval, cron
+    case once, daily, weekly, interval, cron, monthly
     var title: String { switch self {
-    case .once: return "仅一次"; case .daily: return "每天"; case .weekly: return "每周"; case .interval: return "固定间隔"; case .cron: return "Cron"
+    case .once: return "仅一次"; case .daily: return "每天"; case .weekly: return "每周"; case .interval: return "固定间隔"; case .cron: return "Cron"; case .monthly: return "每月"
     } }
 }
 enum AgentAutomationOutput: String, Codable, CaseIterable {
@@ -19,6 +19,7 @@ struct AgentAutomationSchedule: Codable {
     var expiration: Date?
     var cronExpression: String?
     var cronRepeatLocalTimes: Bool?
+    var monthlyRule: String?
     func next(after now: Date) -> Date? {
         if frequency != .once, let expiration, expiration <= now { return nil }
         guard let zone = TimeZone(identifier: timeZone) else { return nil }
@@ -34,6 +35,8 @@ struct AgentAutomationSchedule: Codable {
             let beforeStart = Date(timeIntervalSinceReferenceDate: date.timeIntervalSinceReferenceDate.nextDown)
             value = cronExpression.flatMap { try? AgentCronSchedule($0) }?.next(after: max(now, beforeStart), calendar: calendar,
                                                                               repeatLocalTimes: cronRepeatLocalTimes ?? true)
+        case .monthly:
+            return monthlyRule.flatMap { try? AgentAutomationRecurrence.monthly($0, start: self.date, zone: zone) }?.next(after: now, through: expiration)
         case .daily, .weekly:
             var match: Date?
             for offset in 0...7 {
@@ -103,18 +106,36 @@ struct AgentAutomationAssignment: Codable {
     private weak var runtime: AgentRuntime?
     private var timer: Timer?, ownerFD: Int32 = -1, activity: NSObjectProtocol?
     private var firing = false
-    private var revisions: [Bool: String] = [:]
+    private enum Partition: String, CaseIterable {
+        case standard = "definitions", cron = "cron-definitions", monthly = "monthly-definitions"
+
+        init(_ schedule: AgentAutomationSchedule) {
+            switch schedule.frequency {
+            case .cron: self = .cron
+            case .monthly: self = .monthly
+            default: self = .standard
+            }
+        }
+    }
+    private var revisions: [Partition: String] = [:]
     private struct Document: Codable { var version = 1; var keepAwake = false; var automations: [AgentAutomation] }
     private struct ScheduleTransition: Codable {
         let cron: Bool
+        let monthly: Bool?
         let previous: String?
         let contents: Data
+
+        var partition: Partition { monthly == true ? .monthly : cron ? .cron : .standard }
+        init(partition: Partition, previous: String?, contents: Data) {
+            cron = partition == .cron; monthly = partition == .monthly ? true : nil
+            self.previous = previous; self.contents = contents
+        }
     }
     private static let configLimit = 2_000_000
     private let encoder: JSONEncoder = { let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]; return e }()
     init(profile: URL) { directory = profile.appendingPathComponent("automations", isDirectory: true) }
     deinit { timer?.invalidate(); if ownerFD >= 0 { close(ownerFD) }; if let activity { ProcessInfo.processInfo.endActivity(activity) } }
-    private func config(cron: Bool) -> URL { directory.appendingPathComponent(cron ? "cron-definitions.json" : "definitions.json") }
+    private func config(_ partition: Partition) -> URL { directory.appendingPathComponent(partition.rawValue + ".json") }
     private var runsDirectory: URL { directory.appendingPathComponent("runs", isDirectory: true) }
     private func files() throws -> AgentFiles {
         let parent = try AgentFiles(workspace: directory.deletingLastPathComponent().path)
@@ -138,34 +159,39 @@ struct AgentAutomationAssignment: Codable {
     private func changed() { NotificationCenter.default.post(name: Self.changed, object: self) }
     private func load() throws {
         let files = try files()
-        try finishTransition(files)
-        var loaded: [AgentAutomation] = [], hashes: [Bool: String] = [:], awake = false
-        for cron in [false, true] {
-            let url = try files.literalURL(config(cron: cron).path), entry = try files.entryMetadata(url)
+        try finishTransition(files, journalName: "schedule-transition.json")
+        try finishTransition(files, journalName: "monthly-transition.json")
+        var loaded: [AgentAutomation] = [], hashes: [Partition: String] = [:], awake = false
+        for partition in Partition.allCases {
+            let url = try files.literalURL(config(partition).path), entry = try files.entryMetadata(url)
             if entry.kind == "missing" { continue }
             guard try files.resolve(url.path) == url, entry.kind == "file" else { throw PetError("自动化配置必须是普通文件") }
             let data = try files.readData(url, maximum: Self.configLimit)
             guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(raw.keys) == ["version", "keepAwake", "automations"],
                   let entries = raw["automations"] as? [[String: Any]], entries.allSatisfy({ Set($0.keys).isSubset(of: ["id", "name", "prompt", "workspace", "workMode", "schedule", "output", "executor", "model", "permission", "readOnly", "network", "notify", "enabled", "archived", "nextRun", "mergedTaskID", "current"]) }) else { throw PetError("自动化配置包含不支持的字段") }
             let document = try JSONDecoder().decode(Document.self, from: data)
-            guard document.version == 1, document.automations.allSatisfy({ ($0.schedule.frequency == .cron) == cron }) else {
+            guard document.version == 1, document.automations.allSatisfy({ Partition($0.schedule) == partition }) else {
                 throw PetError("自动化配置版本或计划类型无效")
             }
             for value in document.automations { try validate(value, runnable: false) }
-            if !cron { awake = document.keepAwake }
-            loaded += document.automations; hashes[cron] = AgentFiles.hash(data)
+            if partition == .standard { awake = document.keepAwake }
+            loaded += document.automations; hashes[partition] = AgentFiles.hash(data)
         }
         guard loaded.count <= 64, Set(loaded.map(\.id)).count == loaded.count else { throw PetError("自动化编号重复或数量无效") }
         values = loaded; keepAwake = awake; revisions = hashes
     }
-    private func finishTransition(_ files: AgentFiles) throws {
-        let journal = try files.literalURL("schedule-transition.json"), marker = try files.entryMetadata(journal)
+    private func finishTransition(_ files: AgentFiles, journalName: String) throws {
+        let journal = try files.literalURL(journalName), marker = try files.entryMetadata(journal)
         guard marker.kind != "missing" else { return }
-        let parts = try JSONDecoder().decode([ScheduleTransition].self, from: files.readData(journal, maximum: 6_000_000))
-        guard parts.count == 2, Set(parts.map(\.cron)) == [true, false],
-              parts.allSatisfy({ $0.contents.count <= Self.configLimit }) else { throw PetError("自动化计划转换记录无效") }
+        let parts = try JSONDecoder().decode([ScheduleTransition].self, from: files.readData(journal, maximum: 9_000_000))
+        let partitions = Set(parts.map(\.partition))
+        guard (2...3).contains(parts.count), partitions.count == parts.count,
+              partitions.contains(.monthly) == (journalName == "monthly-transition.json"),
+              parts.allSatisfy({ $0.contents.count <= Self.configLimit && !($0.cron && $0.monthly == true) }) else {
+            throw PetError("自动化计划转换记录无效")
+        }
         let writes = try parts.compactMap { part -> AgentKnowledgeFileWrite? in
-            let url = config(cron: part.cron), entry = try files.entryMetadata(url)
+            let url = config(part.partition), entry = try files.entryMetadata(url)
             if entry.kind == "file", try files.fileHash(url, maximum: Self.configLimit) == AgentFiles.hash(part.contents) { return nil }
             return try AgentKnowledgeFileWrite(files: files, path: url.path, data: part.contents, expectedHash: part.previous,
                                                 missing: part.previous == nil, permissions: 0o600, label: "自动化计划转换")
@@ -178,23 +204,25 @@ struct AgentAutomationAssignment: Codable {
     private func persist() throws {
         let files = try files()
         var hashes = revisions, writes: [AgentKnowledgeFileWrite] = [], parts: [ScheduleTransition] = []
-        for cron in [false, true] {
-            let entries = values.filter { ($0.schedule.frequency == .cron) == cron }
-            if entries.isEmpty && revisions[cron] == nil && (cron || !keepAwake) { continue }
-            let data = try encoder.encode(Document(keepAwake: !cron && keepAwake, automations: entries))
+        for partition in Partition.allCases {
+            let entries = values.filter { Partition($0.schedule) == partition }
+            let awake = partition == .standard && keepAwake
+            if entries.isEmpty && revisions[partition] == nil && !awake { continue }
+            let data = try encoder.encode(Document(keepAwake: awake, automations: entries))
             let hash = AgentFiles.hash(data)
-            guard hash != revisions[cron] else { continue }
+            guard hash != revisions[partition] else { continue }
             guard data.count <= Self.configLimit else { throw PetError("自动化配置超过大小上限") }
-            writes.append(try AgentKnowledgeFileWrite(files: files, path: config(cron: cron).path, data: data, expectedHash: revisions[cron],
-                                                     missing: revisions[cron] == nil, permissions: 0o600, label: "自动化配置"))
-            parts.append(ScheduleTransition(cron: cron, previous: revisions[cron], contents: data))
-            hashes[cron] = hash
+            writes.append(try AgentKnowledgeFileWrite(files: files, path: config(partition).path, data: data, expectedHash: revisions[partition],
+                                                     missing: revisions[partition] == nil, permissions: 0o600, label: "自动化配置"))
+            parts.append(ScheduleTransition(partition: partition, previous: revisions[partition], contents: data))
+            hashes[partition] = hash
         }
         if writes.count > 1 {
             try writes.forEach { try $0.requireCurrent() }
-            let journal = try files.literalURL("schedule-transition.json")
+            let journalName = parts.contains(where: { $0.partition == .monthly }) ? "monthly-transition.json" : "schedule-transition.json"
+            let journal = try files.literalURL(journalName)
             try files.writeData(try encoder.encode(parts), to: journal, permissions: 0o600, expectedTarget: "missing")
-            do { try finishTransition(files) }
+            do { try finishTransition(files, journalName: journalName) }
             catch {
                 stop()
                 let issue = "计划转换已暂停，请重新打开应用继续：" + error.localizedDescription
@@ -218,6 +246,10 @@ struct AgentAutomationAssignment: Codable {
             guard let expression = value.schedule.cronExpression else { throw PetError("请填写 Cron 表达式") }
             _ = try AgentCronSchedule(expression)
         } else if value.schedule.cronExpression != nil || value.schedule.cronRepeatLocalTimes != nil { throw PetError("Cron 参数需要使用 Cron 计划") }
+        if value.schedule.frequency == .monthly {
+            guard let rule = value.schedule.monthlyRule, let zone = TimeZone(identifier: value.schedule.timeZone) else { throw PetError("请填写月内规则和时区") }
+            _ = try AgentAutomationRecurrence.monthly(rule, start: value.schedule.date, zone: zone)
+        } else if value.schedule.monthlyRule != nil { throw PetError("月内规则需要使用每月计划") }
         if runnable {
             let files = try AgentFiles(workspace: value.workspace)
             guard files.root.path == value.workspace else { throw PetError("项目目录已改变，请重新选择") }

@@ -9,12 +9,13 @@ import AppKit
         var original: AgentAutomation?
         var form: AgentAutomation
         var time: String, interval: String
+        var monthlyInput: String? = nil
         var expiryDate: Date
         var dateZone: String?
         var proposal: Proposal?
         var viewport: AgentSettingsDraftViewport.State
 
-        var fields: [String: String] { ["name":form.name, "model":form.model, "zone":form.schedule.timeZone, "time":time, "interval":interval, "cron":form.schedule.cronExpression ?? ""] }
+        var fields: [String: String] { ["name":form.name, "model":form.model, "zone":form.schedule.timeZone, "time":time, "interval":interval, "cron":form.schedule.cronExpression ?? "", "monthlyRule":monthlyInput ?? form.schedule.monthlyRule ?? ""] }
     }
     let store: AgentStore
     let service: AgentAutomations
@@ -28,8 +29,10 @@ import AppKit
     private let archived = NSPopUpButton(), awake = NSButton(checkboxWithTitle: "保持设备唤醒", target: nil, action: nil)
     private let name = AgentDialogTextField(), workspace = AgentDialogTextField(), model = AgentDialogTextField(), zone = AgentDialogTextField()
     private let time = AgentDialogTextField(), interval = AgentDialogTextField(), cron = AgentDialogTextField(), prompt = NSTextView()
+    private let monthlyRule = AgentDialogTextField(), monthlyPreset = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let setMonthlyStart = AgentDialogButton(title: "设置开始时间", target: nil, action: nil)
     private let executor = NSPopUpButton(), frequency = NSPopUpButton(), weekdays = NSPopUpButton(frame: .zero, pullsDown: true), output = NSPopUpButton(), permission = NSPopUpButton()
-    private var dateRow: NSView!, clockRow: NSView!, intervalRow: NSView!, cronRow: NSView!, expiryRow: NSView!
+    private var dateRow: NSView!, clockRow: NSView!, intervalRow: NSView!, cronRow: NSView!, monthlyRow: NSView!, expiryRow: NSView!
     private let once = NSDatePicker(), expiry = NSDatePicker(), expiring = NSSwitch()
     private let readOnly = NSSwitch(), network = NSSwitch(), notify = NSSwitch(), enabled = NSSwitch()
     private let next = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("自动化状态"), detail = NSTextField(wrappingLabelWithString: "")
@@ -53,7 +56,7 @@ import AppKit
     private var definitions: [AgentAutomation] = [], selectedID: String?, opened: AgentAutomation?, newValue: AgentAutomation?, dirty = false, loading = false, selectedDays = Set([2])
     private var editContext: AgentSettingsRecovery.Context?, proposal: Proposal?
     private lazy var draftViewport: AgentSettingsDraftViewport = {
-        let viewport = AgentSettingsDraftViewport(text: prompt, fields: ["name":name, "model":model, "zone":zone, "time":time, "interval":interval, "cron":cron], catalog: list,
+        let viewport = AgentSettingsDraftViewport(text: prompt, fields: ["name":name, "model":model, "zone":zone, "time":time, "interval":interval, "cron":cron, "monthlyRule":monthlyRule], catalog: list,
             host: { [weak self] in self?.presentingWindow })
         viewport.trackForm(formScroll)
         viewport.onChange = { [weak self] in if self?.dirty == true { self?.onRecoveryChange?() } }
@@ -81,7 +84,7 @@ import AppKit
         awake.state = service.keepAwake ? .on : .off; awake.target = self; awake.action = #selector(changeAwake)
         let notifications = AgentDialogButton(title: "桌面通知", target: self, action: #selector(requestNotifications))
         header = NSStackView(views: [sections, NSView(), awake, notifications]); header.alignment = .centerY; header.spacing = 10
-        for field in [name, workspace, model, zone, time, interval, cron] {
+        for field in [name, workspace, model, zone, time, interval, cron, monthlyRule] {
             field.delegate = self; field.outlined = true
             field.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
             field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -89,6 +92,14 @@ import AppKit
         for (field, label) in [(name, "自动化名称"), (workspace, "自动化项目目录"), (model, "自动化模型"), (zone, "计划时区"), (time, "计划时间"), (interval, "间隔分钟"), (cron, "Cron 表达式")] { field.setAccessibilityLabel(label) }
         name.placeholderString = "名称"; workspace.isEditable = false; workspace.isSelectable = true; workspace.lineBreakMode = .byTruncatingMiddle; model.placeholderString = "跟随已配置模型"; zone.placeholderString = "Asia/Shanghai"; time.placeholderString = "09:00"; interval.placeholderString = "60"
         cron.placeholderString = "0 9 * * 1-5"
+        monthlyRule.placeholderString = "FREQ=MONTHLY;BYMONTHDAY=1"
+        monthlyRule.setAccessibilityLabel("月内规则")
+        monthlyPreset.addItems(withTitles: ["预设", "每月 1 日", "每月最后一天", "每月最后一个工作日"])
+        monthlyPreset.setAccessibilityLabel("月内规则预设")
+        for (item, rule) in zip(monthlyPreset.itemArray.dropFirst(), ["BYMONTHDAY=1", "BYMONTHDAY=-1", "BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1"]) {
+            item.representedObject = "FREQ=MONTHLY;" + rule
+            item.target = self; item.action = #selector(applyMonthlyPreset(_:))
+        }
         workspaceButton.target = self; workspaceButton.action = #selector(chooseWorkspace)
         let project = NSStackView(views: [workspace, workspaceButton]); project.alignment = .centerY; project.spacing = 8
         for (popup, titles) in [(frequency, AgentAutomationFrequency.allCases.map(\.title)), (output, AgentAutomationOutput.allCases.map(\.title)), (permission, AgentPermissionMode.allCases.map(\.title))] { popup.addItems(withTitles: titles); popup.target = self; popup.action = #selector(changed) }
@@ -106,10 +117,16 @@ import AppKit
         func row(_ label: String, _ control: NSView, trailing: Bool = false) -> NSStackView {
             AgentSettingsStyle.formRow(label, control, trailing: trailing, showsIcon: false)
         }
-        dateRow = row("日期", once)
+        let startTime = NSStackView(views: [once, setMonthlyStart, NSView()]); startTime.alignment = .centerY
+        dateRow = row("日期", startTime)
+        setMonthlyStart.target = self; setMonthlyStart.action = #selector(chooseMonthlyStart)
+        next.setAccessibilityLabel("下次运行时间")
         clockRow = row("时间", clock)
         intervalRow = row("间隔分钟", interval)
         cronRow = row("Cron", cron)
+        let monthly = NSStackView(views: [monthlyRule, AgentSettingsPopupFrame(monthlyPreset)])
+        monthly.alignment = .centerY; monthly.spacing = 8
+        monthlyRow = row("月内规则", monthly)
         expiryRow = row("到期暂停", expiration)
         next.font = .systemFont(ofSize: 12); next.textColor = AgentWorkbenchTheme.secondaryText
         next.lineBreakMode = .byTruncatingTail; next.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -120,7 +137,7 @@ import AppKit
         NSLayoutConstraint.activate([editor.leadingAnchor.constraint(equalTo: promptField.leadingAnchor, constant: 1), editor.trailingAnchor.constraint(equalTo: promptField.trailingAnchor, constant: -1), editor.topAnchor.constraint(equalTo: promptField.topAnchor, constant: 1), editor.bottomAnchor.constraint(equalTo: promptField.bottomAnchor, constant: -1), promptField.heightAnchor.constraint(equalToConstant: 180)])
         formScroll = AgentSettingsStyle.form([
             AgentSettingsStyle.section("", id: "automation-details", rows: [row("名称", name), row("项目", project), row("执行者", executor), row("模型", model)]),
-            AgentSettingsStyle.section("运行计划", id: "automation-schedule", rows: [row("频率", frequency), dateRow, clockRow, intervalRow, cronRow, row("时区", zone), expiryRow, row("下次运行", next)], separatesRows: false),
+            AgentSettingsStyle.section("运行计划", id: "automation-schedule", rows: [row("频率", frequency), dateRow, clockRow, intervalRow, cronRow, monthlyRow, row("时区", zone), expiryRow, row("下次运行", next)], separatesRows: false),
             AgentSettingsStyle.section("任务指令", id: "automation-prompt", rows: [promptField]),
             AgentSettingsStyle.section("执行设置", id: "automation-options", rows: [
                 row("输出方式", output), row("执行授权", permission),
@@ -228,6 +245,7 @@ import AppKit
         name.stringValue = value?.name ?? ""; workspace.stringValue = value?.workspace ?? ""; model.stringValue = value?.model ?? ""; prompt.string = value?.prompt ?? ""
         let schedule = value?.schedule ?? AgentAutomationSchedule(); zone.stringValue = schedule.timeZone; time.stringValue = String(format: "%02d:%02d", schedule.hour, schedule.minute); interval.stringValue = String(schedule.intervalMinutes); selectedDays = Set(schedule.weekdays)
         cron.stringValue = schedule.cronExpression ?? ""
+        monthlyRule.stringValue = schedule.monthlyRule ?? ""
         frequency.selectItem(at: AgentAutomationFrequency.allCases.firstIndex(of: schedule.frequency) ?? 0); once.dateValue = schedule.date; once.timeZone = TimeZone(identifier: schedule.timeZone); expiry.dateValue = schedule.expiration ?? Date().addingTimeInterval(86_400 * 30); expiry.timeZone = once.timeZone; expiring.state = schedule.expiration == nil ? .off : .on
         output.selectItem(at: AgentAutomationOutput.allCases.firstIndex(of: value?.output ?? .independent) ?? 0); permission.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: value?.permission ?? .review) ?? 0)
         readOnly.state = value?.readOnly == false ? .off : .on; network.state = value?.network == true ? .on : .off; notify.state = value?.notify == false ? .off : .on; enabled.state = value?.enabled == true ? .on : .off
@@ -244,27 +262,49 @@ import AppKit
         for day in 1...7 { let item = NSMenuItem(title: "周" + ["日", "一", "二", "三", "四", "五", "六"][day - 1], action: #selector(toggleDay(_:)), keyEquivalent: ""); item.target = self; item.tag = day; item.state = selectedDays.contains(day) ? .on : .off; weekdays.menu?.addItem(item) }
     }
     @objc private func toggleDay(_ sender: NSMenuItem) { if selectedDays.contains(sender.tag) { selectedDays.remove(sender.tag) } else { selectedDays.insert(sender.tag) }; refreshDays(); changed() }
+    @objc private func applyMonthlyPreset(_ item: NSMenuItem) {
+        guard monthlyPreset.isEnabled, let value = item.representedObject as? String else { return }
+        monthlyRule.stringValue = value; changed()
+    }
+    @objc private func chooseMonthlyStart() {
+        once.dateValue = Date(timeIntervalSince1970: ceil(Date().timeIntervalSince1970 / 60) * 60)
+        changed()
+        presentingWindow?.makeFirstResponder(once)
+    }
+    private var monthlyStartIsUnbounded: Bool {
+        frequency.indexOfSelectedItem == AgentAutomationFrequency.allCases.firstIndex(of: .monthly)
+            && once.timeZone.flatMap { AgentAutomationRecurrence.unboundedMonthlyStart(in: $0) } == once.dateValue
+    }
     private func updateScheduleRows() {
         let kind = AgentAutomationFrequency.allCases[max(0, frequency.indexOfSelectedItem)]
-        dateRow.isHidden = ![.once, .interval, .cron].contains(kind)
+        dateRow.isHidden = ![.once, .interval, .cron, .monthly].contains(kind)
+        let unbounded = monthlyStartIsUnbounded
+        once.isHidden = unbounded
+        once.setAccessibilityLabel(kind == .monthly ? "计划起始日期和时间" : "运行日期")
+        setMonthlyStart.isHidden = !unbounded
         clockRow.isHidden = ![.daily, .weekly].contains(kind)
-        intervalRow.isHidden = kind != .interval; cronRow.isHidden = kind != .cron; expiryRow.isHidden = kind == .once
+        intervalRow.isHidden = kind != .interval; cronRow.isHidden = kind != .cron; monthlyRow.isHidden = kind != .monthly; expiryRow.isHidden = kind == .once
         weekdays.superview?.isHidden = kind != .weekly
         if selectedID == nil { next.stringValue = "" }
         else if opened?.archived == true { next.stringValue = "已归档" }
-        else if let value = try? capture() { next.stringValue = (value.schedule.next(after: Date()).map { AgentAutomations.dateText($0, zone: value.schedule.timeZone) } ?? "无有效运行时间") + (value.enabled ? "" : " · 未启用") }
-        else { next.stringValue = "请检查时间和时区" }
+        else {
+            do {
+                let value = try capture()
+                next.stringValue = (value.schedule.next(after: Date()).map { AgentAutomations.dateText($0, zone: value.schedule.timeZone) } ?? "无有效运行时间") + (value.enabled ? "" : " · 未启用")
+            } catch { next.stringValue = error.localizedDescription; next.toolTip = next.stringValue; return }
+        }
+        next.toolTip = next.stringValue
     }
     private func updateControls() {
         let selected = selectedID != nil, stored = opened != nil, archived = opened?.archived == true
-        for view in [name, workspace, workspaceButton, model, zone, time, interval, cron, executor, frequency, weekdays, output, permission, once, expiry, expiring, readOnly, network, notify, enabled] as [NSControl] { view.isEnabled = selected && !archived }
+        for view in [name, workspace, workspaceButton, model, zone, time, interval, cron, monthlyRule, monthlyPreset, setMonthlyStart, executor, frequency, weekdays, output, permission, once, expiry, expiring, readOnly, network, notify, enabled] as [NSControl] { view.isEnabled = selected && !archived }
         model.isEnabled = selected && !archived && executor.selectedItem?.representedObject as? String == "default"; prompt.isEditable = selected && !archived
         save.title = stored ? (dirty ? "保存" : "已保存") : "创建"; save.isEnabled = dirty
         run.isEnabled = stored && !dirty && !archived
         pause.title = opened?.enabled == true ? "暂停" : "启用"; pause.isEnabled = run.isEnabled
         archive.title = archived ? "恢复" : "归档"; archive.isEnabled = stored && !dirty
         expiry.isEnabled = selected && !archived && expiring.state == .on
-        for popup in [executor, frequency, weekdays, output, permission] { (popup.superview as? AgentSettingsPopupFrame)?.refreshEnabledState() }
+        for popup in [executor, frequency, weekdays, monthlyPreset, output, permission] { (popup.superview as? AgentSettingsPopupFrame)?.refreshEnabledState() }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { tableView === list ? definitions.count : rows.count }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
@@ -305,6 +345,7 @@ import AppKit
         result.name = name.stringValue; result.prompt = prompt.string; result.workspace = workspace.stringValue; result.model = model.stringValue; result.executor = executor.selectedItem?.representedObject as? String ?? "default"
         result.schedule.frequency = AgentAutomationFrequency.allCases[frequency.indexOfSelectedItem]; result.schedule.timeZone = zone.stringValue; result.schedule.date = once.dateValue; result.schedule.weekdays = selectedDays.sorted(); result.schedule.expiration = expiring.state == .on ? expiry.dateValue : nil
         result.schedule.cronExpression = result.schedule.frequency == .cron ? cron.stringValue : nil
+        result.schedule.monthlyRule = result.schedule.frequency == .monthly ? monthlyRule.stringValue : nil
         if result.schedule.frequency != .cron { result.schedule.cronRepeatLocalTimes = nil }
         result.output = AgentAutomationOutput.allCases[output.indexOfSelectedItem]; result.permission = AgentPermissionMode.allCases[permission.indexOfSelectedItem]; result.readOnly = readOnly.state == .on; result.network = network.state == .on; result.notify = notify.state == .on; result.enabled = enabled.state == .on
         return result
@@ -313,15 +354,30 @@ import AppKit
         var result = try readForm()
         result.name = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
         result.schedule.timeZone = result.schedule.timeZone.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let rule = result.schedule.monthlyRule {
+            guard let zone = TimeZone(identifier: result.schedule.timeZone) else { throw PetError("请检查时区") }
+            let normalized = rule.trimmingCharacters(in: .whitespacesAndNewlines)
+            _ = try AgentAutomationRecurrence.monthly(normalized, start: result.schedule.date, zone: zone)
+            result.schedule.monthlyRule = normalized
+            return result
+        }
         let parts = time.stringValue.split(separator: ":"); guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]), let interval = Int(interval.stringValue) else { throw PetError("时间使用 HH:mm，间隔使用整数分钟") }
         result.schedule.hour = hour; result.schedule.minute = minute; result.schedule.intervalMinutes = interval
         return result
     }
-    func controlTextDidChange(_ obj: Notification) { if obj.object as? NSTextField === zone, let value = TimeZone(identifier: zone.stringValue) { once.timeZone = value; expiry.timeZone = value }; changed() }
+    func controlTextDidChange(_ obj: Notification) {
+        if obj.object as? NSTextField === zone, let value = TimeZone(identifier: zone.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            if monthlyStartIsUnbounded, let start = AgentAutomationRecurrence.unboundedMonthlyStart(in: value) { once.dateValue = start }
+            once.timeZone = value; expiry.timeZone = value
+        }
+        changed()
+    }
     func textDidChange(_ notification: Notification) { changed() }
     @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateScheduleRows(); updateControls(); draftViewport.changed() }
     @objc private func frequencyChanged() {
-        if [.interval, .cron].contains(AgentAutomationFrequency.allCases[frequency.indexOfSelectedItem]) { once.dateValue = Date() }
+        let kind = AgentAutomationFrequency.allCases[frequency.indexOfSelectedItem]
+        if [.interval, .cron].contains(kind) { once.dateValue = Date() }
+        if kind == .monthly, monthlyRule.stringValue.isEmpty { monthlyRule.stringValue = "FREQ=MONTHLY;BYMONTHDAY=1" }
         changed()
     }
     @objc private func changeSection() { updatePresentation(); if !records.isHidden { loadHistory() } }
@@ -358,21 +414,29 @@ import AppKit
     }
     func captureRecovery() throws -> AgentWorkspaceRecovery.Automation? {
         guard dirty, editing else { return nil }
-        let snapshot = Recovery(original: opened.map(AgentAutomations.editableDefinition), form: try readForm(), time: time.stringValue,
-            interval: interval.stringValue, expiryDate: expiry.dateValue, dateZone: once.timeZone?.identifier, proposal: proposal, viewport: try draftViewport.capture())
+        let form = try readForm()
+        let hiddenMonthlyRule = form.schedule.frequency != .monthly && !monthlyRule.stringValue.isEmpty ? monthlyRule.stringValue : nil
+        var viewport = try draftViewport.capture()
+        if form.schedule.frequency != .monthly, hiddenMonthlyRule == nil {
+            viewport.fields.removeValue(forKey: "monthlyRule")
+            if viewport.focus == "monthlyRule" { viewport.focus = "body"; viewport.text.focused = true }
+        }
+        let snapshot = Recovery(original: opened.map(AgentAutomations.editableDefinition), form: form, time: time.stringValue,
+            interval: interval.stringValue, monthlyInput: hiddenMonthlyRule,
+            expiryDate: expiry.dateValue, dateZone: once.timeZone?.identifier, proposal: proposal, viewport: viewport)
         let page = try AgentSettingsRecovery.page("automation", snapshot)
         return .init(context: editContext ?? context(for: sourceTaskID), state: page.state)
     }
     private static func validateRecoveryDefinition(_ raw: Any) throws {
         let raw = try AgentSettingsRecovery.object(raw, keys: ["id", "name", "prompt", "workspace", "workMode", "schedule", "output", "executor", "model", "permission", "readOnly", "network", "notify", "enabled", "archived"])
         if let schedule = raw["schedule"] {
-            _ = try AgentSettingsRecovery.object(schedule, keys: ["frequency", "timeZone", "date", "hour", "minute", "weekdays", "intervalMinutes", "expiration", "cronExpression", "cronRepeatLocalTimes"])
+            _ = try AgentSettingsRecovery.object(schedule, keys: ["frequency", "timeZone", "date", "hour", "minute", "weekdays", "intervalMinutes", "expiration", "cronExpression", "cronRepeatLocalTimes", "monthlyRule"])
         }
     }
     func restoreRecovery(_ value: AgentWorkspaceRecovery.Automation) throws {
         guard !dirty else { throw PetError("请先处理当前自动化更改") }
         let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: value.state),
-            keys: ["version", "original", "form", "time", "interval", "expiryDate", "dateZone", "proposal", "viewport"])
+            keys: ["version", "original", "form", "time", "interval", "monthlyInput", "expiryDate", "dateZone", "proposal", "viewport"])
         for key in ["original", "form"] { if let entry = raw[key], !(entry is NSNull) { try Self.validateRecoveryDefinition(entry) } }
         if let origin = raw["proposal"], !(origin is NSNull) { _ = try AgentSettingsRecovery.object(origin, keys: ["id", "requestHash"]) }
         if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
@@ -380,6 +444,9 @@ import AppKit
         let form = snapshot.form
         if form.schedule.frequency != .cron, snapshot.viewport.fields["cron"] == nil {
             snapshot.viewport.fields["cron"] = .init(hash: AgentFiles.hash(Data()), count: 0, selection: nil)
+        }
+        if snapshot.fields["monthlyRule"] == "", snapshot.viewport.fields["monthlyRule"] == nil {
+            snapshot.viewport.fields["monthlyRule"] = .init(hash: AgentFiles.hash(Data()), count: 0, selection: nil)
         }
         guard snapshot.version == 1, UUID(uuidString: form.id) != nil, !form.archived,
               snapshot.original.map({ $0.id == form.id && !$0.archived }) != false,
@@ -399,6 +466,7 @@ import AppKit
         opened = snapshot.original; newValue = opened == nil ? form : nil; selectedID = form.id
         archived.selectItem(at: 0); sections.selectedSegment = 0
         fillForm(form)
+        if let text = snapshot.monthlyInput { monthlyRule.stringValue = text }
         time.stringValue = snapshot.time; interval.stringValue = snapshot.interval; expiry.dateValue = snapshot.expiryDate
         once.timeZone = snapshot.dateZone.flatMap(TimeZone.init(identifier:)); expiry.timeZone = once.timeZone
         editing = true; dirty = true; loading = false

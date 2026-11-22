@@ -42,6 +42,7 @@ enum AgentAutomationDataImport {
             formatter.timeZone = TimeZone(identifier: schedule.timeZone)
             var lines = [schedule.frequency.title + " · " + schedule.timeZone]
             if let cron = schedule.cronExpression ?? originalCron { lines.append(cron) }
+            if let monthly = schedule.monthlyRule { lines.append(monthly) }
             if schedule.frequency == .once { lines.append("执行时间 · " + formatter.string(from: schedule.date)) }
             if schedule.frequency == .interval { lines.append("每 \(schedule.intervalMinutes) 分钟") }
             if let end = schedule.expiration { lines.append("到期 · " + formatter.string(from: end)) }

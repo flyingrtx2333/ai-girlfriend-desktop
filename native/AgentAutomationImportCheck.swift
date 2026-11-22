@@ -11,6 +11,7 @@ import AppKit
         let automations = store.automations, imports = store.dataImport, fm = FileManager.default
         let original = automations.directory.appendingPathComponent("definitions.json")
         let cron = automations.directory.appendingPathComponent("cron-definitions.json")
+        let monthlyFile = automations.directory.appendingPathComponent("monthly-definitions.json")
         let harbor = output.appendingPathComponent("harbor"), other = output.appendingPathComponent("other")
         let qoder = harbor.appendingPathComponent(".qoder/scheduled_tasks.json")
         let offline = output.appendingPathComponent("temporarily-unavailable.json")
@@ -23,6 +24,11 @@ import AppKit
 
         func date(_ value: String) -> Date { ISO8601DateFormatter().date(from: value)! }
         func hash(_ url: URL) throws -> String { AgentFiles.hash(try Data(contentsOf: url)) }
+        func definitions(_ url: URL) throws -> Set<Data> {
+            let document = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+            guard let entries = document?["automations"] as? [[String: Any]] else { throw PetError("计划验收文件结构无效") }
+            return Set(try entries.map { try JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) })
+        }
         func save(_ data: Data, to url: URL) throws {
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
@@ -137,18 +143,20 @@ import AppKit
             let mutated = try codex("mutable", "Codex 来源改动", portable, workspaces: [harbor.path])
             _ = try codex("thread", "绑定任务", portable, workspaces: [harbor.path], extra: "target_thread_id = \"thread-fixture\"")
             _ = try codex("worktree", "工作树任务", portable, workspaces: [harbor.path], extra: "execution_environment = \"worktree\"")
-            _ = try codex("advanced", "月末工作日", "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1;BYHOUR=9;BYMINUTE=0", workspaces: [harbor.path])
-            let sourceHashes = try [hash(multi), hash(cadence)]
+            let lastWeekdayRule = "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1"
+            let advanced = try codex("advanced", "月末工作日", lastWeekdayRule + ";BYHOUR=9;BYMINUTE=0",
+                                     workspaces: [harbor.path], extra: "time_zone = \"Asia/Shanghai\"")
+            let sourceHashes = try [hash(multi), hash(cadence), hash(advanced)]
             await imports.detect(.codex, root: multi, category: .automations, workspace: other.path)
             checks["explicitTargetMapsStandaloneAutomationOnce"] = imports.preview.count == 1 && imports.preview.first?.automation?.workspace == other.path && imports.preview.first?.issue == nil
             await imports.detect(.codex, root: exported, category: .automations)
             let rows = imports.preview
             checks["codexPreviewSplitsRegisteredProjectsAndSkipsNonportablePlans"] = rows.count == 7
-                && rows.filter { $0.issue == nil }.count == 4 && rows.filter { $0.title.hasPrefix("Codex 多项目") }.count == 2
+                && rows.filter { $0.issue == nil }.count == 5 && rows.filter { $0.title.hasPrefix("Codex 多项目") }.count == 2
                 && rows.contains { $0.issue?.contains("绑定对话") == true } && rows.contains { $0.issue?.contains("本机项目") == true }
-                && rows.contains { $0.issue?.contains("暂不支持的条件") == true }
+                && rows.contains { $0.title == "月末工作日" && $0.issue == nil && $0.preview.contains("BYSETPOS=-1") }
             try save(Data(String(decoding: Data(contentsOf: mutated), as: UTF8.self).replacingOccurrences(of: "BYMINUTE=15", with: "BYMINUTE=22").utf8), to: mutated)
-            try imports.begin(.codex, root: exported, ids: Set(rows.filter { $0.issue == nil }.map(\.id)), category: .automations)
+            try imports.begin(.codex, root: exported, ids: Set(rows.filter { $0.issue == nil && $0.title != "月末工作日" }.map(\.id)), category: .automations)
             try await idle()
             checks["sourceChangesStopOnlyTheStaleSelection"] = imports.batch?.items.filter { $0.state == "imported" }.count == 3
                 && imports.batch?.items.contains { $0.record.title == "Codex 来源改动" && $0.state == "failed" && $0.detail.contains("已变化") } == true
@@ -161,8 +169,45 @@ import AppKit
                 && Set(weekly.map(\.workspace)) == [harbor.path, other.path]
                 && weekly.allSatisfy { $0.schedule.cronExpression == "15 9 * * 1,5" && $0.schedule.expiration == date("2036-01-01T00:00:00Z")
                     && $0.schedule.next(after: date("2027-01-01T01:16:00Z")) == date("2027-01-04T01:15:00Z") }
-            checks["codexSourceFilesAndExistingQoderPausedStateArePreserved"] = try [hash(multi), hash(cadence)] == sourceHashes
+            let oldPartitionHashes = try [hash(original), hash(cron)]
+            await imports.detect(.codex, root: advanced, category: .automations)
+            guard let monthly = imports.preview.first, monthly.issue == nil else { throw PetError("月度计划未进入导入预览") }
+            try imports.begin(.codex, root: advanced, ids: [monthly.id], category: .automations)
+            try await idle()
+            guard let monthlyValue = imported(monthly) else { throw PetError("月度计划未保存") }
+            checks["monthlyImportPreservesRuleZoneAndExactNextRun"] = monthlyValue.schedule.frequency == .monthly
+                && monthlyValue.schedule.timeZone == "Asia/Shanghai" && monthlyValue.schedule.monthlyRule?.contains("BYSETPOS=-1") == true
+                && monthlyValue.schedule.next(after: date("2027-01-01T00:00:00Z")) == date("2027-01-29T01:00:00Z")
+                && monthlyValue.schedule.next(after: date("2027-01-29T01:00:00Z")) == date("2027-02-26T01:00:00Z")
+            checks["monthlyImportLeavesLegacyPartitionsUnchanged"] = try [hash(original), hash(cron)] == oldPartitionHashes
+                && fm.fileExists(atPath: monthlyFile.path)
+            checks["codexSourceFilesAndExistingQoderPausedStateArePreserved"] = try [hash(multi), hash(cadence), hash(advanced)] == sourceHashes
                 && automations.values.allSatisfy { !$0.enabled && $0.nextRun == nil && $0.current == nil }
+
+            let counted = try AgentAutomationRecurrence.codex("DTSTART:20270129T090000Z\nRRULE:" + lastWeekdayRule + ";INTERVAL=2;COUNT=3", created: nil, zone: nil)
+            checks["monthlyIntervalAndCountIncludeStartAndStopAfterLastOccurrence"] = counted.next(after: date("2027-01-01T00:00:00Z")) == date("2027-01-29T09:00:00Z")
+                && counted.next(after: date("2027-01-29T09:00:00Z")) == date("2027-03-31T09:00:00Z")
+                && counted.next(after: date("2027-03-31T09:00:00Z")) == date("2027-05-31T09:00:00Z")
+                && counted.next(after: date("2027-05-31T09:00:00Z")) == nil
+            let ending = try AgentAutomationRecurrence.codex("FREQ=MONTHLY;BYMONTHDAY=-1;BYHOUR=9;BYMINUTE=0;UNTIL=20280229T090000Z", created: nil, zone: "UTC")
+            let every31st = try AgentAutomationRecurrence.codex("FREQ=MONTHLY;BYMONTHDAY=31;BYHOUR=9;BYMINUTE=0", created: nil, zone: "UTC")
+            checks["monthlyUsesLeapDayAndSkipsAbsentDaysWithInclusiveExpiry"] = ending.next(after: date("2028-01-31T09:00:00Z")) == date("2028-02-29T09:00:00Z")
+                && ending.next(after: date("2028-02-29T09:00:00Z")) == nil
+                && every31st.next(after: date("2027-01-31T09:00:00Z")) == date("2027-03-31T09:00:00Z")
+            let slots = try AgentAutomationRecurrence.codex("FREQ=MONTHLY;BYDAY=-1TU;BYMONTHDAY=-7,-6,-5,-4,-3,-2,-1;BYHOUR=9,12;BYMINUTE=0,30;BYSETPOS=-2", created: nil, zone: "UTC")
+            checks["monthlyIntersectsOrdinalWeekdaysAndDaysBeforeSelectingClockSlot"] = slots.next(after: date("2027-02-01T00:00:00Z")) == date("2027-02-23T12:00:00Z")
+            let springMonthly = try AgentAutomationRecurrence.codex("DTSTART;TZID=America/New_York:20260208T023000\nRRULE:FREQ=MONTHLY;BYDAY=2SU;COUNT=2", created: nil, zone: nil)
+            let autumnMonthly = try AgentAutomationRecurrence.codex("DTSTART;TZID=America/New_York:20261101T013000\nRRULE:FREQ=MONTHLY;BYDAY=1SU;COUNT=1", created: nil, zone: nil)
+            checks["monthlySkipsSpringGapWithoutCountingItAndStartsAtFirstFallTime"] = springMonthly.next(after: date("2026-02-08T07:30:00Z")) == date("2026-04-12T06:30:00Z")
+                && springMonthly.next(after: date("2026-04-12T06:30:00Z")) == nil
+                && autumnMonthly.next(after: date("2026-11-01T04:00:00Z")) == date("2026-11-01T05:30:00Z")
+                && autumnMonthly.next(after: date("2026-11-01T05:30:00Z")) == nil
+            let rejected = [lastWeekdayRule + ";COUNT=1;BYHOUR=9;BYMINUTE=0",
+                            "FREQ=MONTHLY;BYDAY=MO;BYSETPOS=0;BYHOUR=9;BYMINUTE=0",
+                            "FREQ=WEEKLY;BYDAY=MO;BYSETPOS=-1;BYHOUR=9;BYMINUTE=0"]
+            checks["invalidOrAmbiguousRulesAreNeverReinterpreted"] = rejected.allSatisfy { rule in
+                rejects { _ = try AgentAutomationRecurrence.codex(rule, created: nil, zone: "UTC") }
+            }
 
             var newYork = Calendar(identifier: .gregorian); newYork.timeZone = TimeZone(identifier: "America/New_York")!
             let spring = try AgentCronSchedule("30 2 * * *"), autumn = try AgentCronSchedule("30 1 * * *")
@@ -177,6 +222,7 @@ import AppKit
 
             guard let legacy = automations.values.first(where: { $0.name == "原有每日计划" }) else { throw PetError("缺少原有每日计划") }
             let cronBefore = try Data(contentsOf: cron), legacyBefore = try hash(original)
+            let originalDefinitions = try definitions(original)
             var converted = legacy
             converted.schedule = AgentAutomationSchedule(frequency: .cron, timeZone: "UTC", date: date("2030-01-01T00:00:00Z"), cronExpression: "0 0 * * *")
             try automations.save(converted, expected: legacy)
@@ -198,6 +244,30 @@ import AppKit
             try automations.setPaused(legacy.id, paused: false)
             checks["explicitEnableUsesFutureCronAnchorThenCanPause"] = automations.values.first { $0.id == legacy.id }?.nextRun == date("2030-01-01T00:00:00Z")
             try automations.setPaused(legacy.id, paused: true)
+            guard let oldCron = automations.values.first(where: { $0.id == legacy.id }) else { throw PetError("缺少转换后的 Cron 计划") }
+            let monthlyBefore = try Data(contentsOf: monthlyFile), previousCronHash = try hash(cron), previousOriginalHash = try hash(original)
+            var newMonthly = oldCron; newMonthly.schedule = monthlyValue.schedule
+            try automations.save(newMonthly, expected: oldCron)
+            let monthlyAfter = try Data(contentsOf: monthlyFile), convertedCron = try Data(contentsOf: cron)
+            let monthlyTransition = automations.directory.appendingPathComponent("monthly-transition.json")
+            automations.stop()
+            try save(monthlyBefore, to: monthlyFile)
+            let interruptedMonthly: [[String: Any]] = [
+                ["cron": true, "previous": previousCronHash, "contents": convertedCron.base64EncodedString()],
+                ["cron": false, "monthly": true, "previous": AgentFiles.hash(monthlyBefore), "contents": monthlyAfter.base64EncodedString()]
+            ]
+            try save(JSONSerialization.data(withJSONObject: interruptedMonthly), to: monthlyTransition)
+            automations.start(store: store, runtime: runtime)
+            guard let recovered = automations.values.first(where: { $0.id == legacy.id }), recovered.schedule.frequency == .monthly else {
+                throw PetError(automations.error ?? "月度转换记录未恢复")
+            }
+            checks["startupCompletesMonthlyTransitionWithoutDuplicatesOrLegacyRewrite"] = try hash(original) == previousOriginalHash
+                && hash(monthlyFile) == AgentFiles.hash(monthlyAfter) && !fm.fileExists(atPath: monthlyTransition.path)
+                && automations.values.filter { $0.id == legacy.id }.count == 1 && !recovered.enabled
+            try automations.save(legacy, expected: recovered)
+            checks["movingBackToDailyPreservesOtherMonthlyAndCronDefinitions"] = try hash(monthlyFile) == AgentFiles.hash(monthlyBefore)
+                && hash(cron) == AgentFiles.hash(convertedCron) && definitions(original) == originalDefinitions
+                && !fm.fileExists(atPath: monthlyTransition.path)
             checks["verificationLeavesOriginalTasksAndCreatesNoRunsOrModelRequests"] = try automations.history().runs.isEmpty
                 && store.tasks.map(\.id) == initialTaskIDs && initialTaskIDs == seed["taskIDs"] as? [String] && attempts == 0
             try write(["success": checks.values.allSatisfy { $0 }, "checks": checks, "pid": getpid(), "modelRequests": attempts], to: report)

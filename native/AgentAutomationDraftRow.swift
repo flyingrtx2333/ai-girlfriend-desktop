@@ -14,6 +14,7 @@ import AppKit
         case .once: clock = AgentAutomations.dateText(schedule.date, zone: schedule.timeZone)
         case .interval: clock = "每\(schedule.intervalMinutes)分钟 · 开始 " + AgentAutomations.dateText(schedule.date, zone: schedule.timeZone)
         case .cron: clock = schedule.cronExpression ?? "Cron"
+        case .monthly: clock = schedule.monthlyRule ?? "每月"
         case .daily, .weekly:
             let days = schedule.frequency == .daily ? "每天" : schedule.weekdays.prefix(7).sorted().filter { (1...7).contains($0) }.map { "周" + ["日", "一", "二", "三", "四", "五", "六"][$0 - 1] }.joined(separator: "、")
             clock = days + String(format: " %02d:%02d", schedule.hour, schedule.minute)
