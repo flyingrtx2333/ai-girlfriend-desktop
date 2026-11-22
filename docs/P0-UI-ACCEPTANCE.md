@@ -1,5 +1,11 @@
 # P0 逐页界面验收台账
 
+## 2026-11-22 PowerPoint 编辑区明暗外观
+
+- 候选 `d54eff0` 让工具栏、缩略图栏、幻灯片周边、演讲者备注和「更多」菜单跟随窗口明暗。深色使用统一分隔、选中态及焦点描边。沿用原编辑器的工具栏和菜单操作。[工具栏说明](https://docs.betteroffice.dev/docs/javascript#compose-the-pptx-toolbar)
+- 以同一份两页 PPTX 留存 780×540 深色改前和改后图。780×540 与 1320×800 两种窗口均验收明暗切换，单一尺寸下读取的幻灯片像素一致。实测窄窗批注草稿、选区和焦点保留，备注可辨认焦点和只读态，「更多」菜单可滚到末项。源 PPTX 哈希在外观流程前后一致。
+- 同包通过 **17 项外观检查**、**66 项 PowerPoint 批注检查**和 **51 项 Office 恢复回归**。模型请求 **0 次**，14 份正式资料前后校验一致。日用候选已本地签名并核对 229 份文件，当前日用版为 `02b91b9`。Qoder 同主题对照及日用换版待验。索引位于 `evidence/agent/pptx-editor-appearance-1PCKxBPO/acceptance-index.json`。
+
 ## 2026-11-22 旧版 PowerPoint 批注回复
 
 - 候选 `c5cbba3` 支持在旧版格式的 PPTX 直接回复。两条作者、时间及正文均相同的批注仍可分别选择。回复按原作者编号和批注编号挂接，保留旧版批注格式。[Microsoft 批注扩展](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-pptx/f1ad49e1-9f7d-404b-a295-6b02bedb7c36) · [父批注编号](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-pptx/db7e8969-80af-4891-bc49-4d2111bfd82c)
