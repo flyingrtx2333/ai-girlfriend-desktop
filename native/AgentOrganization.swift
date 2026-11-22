@@ -36,7 +36,7 @@ struct AgentCustomTaskGroup: Codable, Identifiable {
     var taskIDs: [String] = []
     var created = Date()
 }
-struct AgentDirectoryEntry: Codable, Equatable {
+struct AgentDirectoryEntry: Codable, Equatable, Sendable {
     var path: String
     var mode: AgentWorkMode
     var name: String?

@@ -8,17 +8,10 @@ struct AgentGitDraftRecovery: Codable {
         var workspace: String, identity: String
         var checkout: Checkout?
 
-        fileprivate static func identity(of directory: URL) throws -> String {
-            let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)
-            let volume = (try? directory.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? (attributes[.systemNumber] as? NSNumber)?.stringValue
-            guard let volume, let inode = attributes[.systemFileNumber] as? NSNumber else { throw PetError("无法确认 Git 草稿的原目录") }
-            return volume + ":" + inode.stringValue
-        }
-
         static func current(_ task: AgentTaskRecord?) throws -> Scope {
             guard let task else { throw PetError("Git 草稿所属任务不可用") }
             let files = try AgentFiles(workspace: task.workspace)
-            var value = Scope(workspace: files.root.path, identity: try identity(of: files.root), checkout: nil)
+            var value = Scope(workspace: files.root.path, identity: try AgentFiles.directoryIdentity(files.root), checkout: nil)
             guard try files.entryMetadata(files.literalURL(".git")).kind != "missing" else { return value }
             let shared = try AgentGit.metadata(workspace: files.root.path)
             guard shared.path.hasPrefix(files.root.path + "/") || shared == files.root || shared.path == task.gitDirectory else {
@@ -38,7 +31,7 @@ struct AgentGitDraftRecovery: Codable {
             } else {
                 head = String(decoding: try metadata.readData(headURL, maximum: 8192), as: UTF8.self).trimmingCharacters(in: .newlines)
             }
-            return Checkout(directory: metadata.root.path, identity: try identity(of: metadata.root), head: head)
+            return Checkout(directory: metadata.root.path, identity: try AgentFiles.directoryIdentity(metadata.root), head: head)
         }
 
         func matches(_ current: Scope?) -> Bool {
@@ -125,10 +118,10 @@ struct AgentGitDraftRecovery: Codable {
             static func current(_ root: String) throws -> Source {
                 let files = try AgentFiles(workspace: root)
                 let metadata = try AgentGit.metadata(workspace: files.root.path)
-                let scope = Scope(workspace: files.root.path, identity: try Scope.identity(of: files.root),
+                let scope = Scope(workspace: files.root.path, identity: try AgentFiles.directoryIdentity(files.root),
                                   checkout: try Scope.currentCheckout(workspace: files.root.path))
                 guard scope.valid else { throw PetError("无法确认工作树源的原分支") }
-                return Source(root: root, scope: scope, metadata: metadata.path, metadataIdentity: try Scope.identity(of: metadata))
+                return Source(root: root, scope: scope, metadata: metadata.path, metadataIdentity: try AgentFiles.directoryIdentity(metadata))
             }
 
             fileprivate var valid: Bool {

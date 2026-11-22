@@ -364,6 +364,32 @@ struct AgentWorkspaceRecovery: Sendable {
             return Saved(value: value, hash: AgentFiles.hash(data))
         }
     }
+    // Workspace forms have their own record so older builds can still open and
+    // save layout.json while a draft is waiting for the original task.
+    func loadWorkspaceEditorDrafts(windowID: String) throws -> Saved<AgentWorkspaceEditorDraft.Record>? {
+        let files = try files(), url = try literal(files, prefix(windowID) + "/workspace-editor.json")
+        let metadata = try files.entryMetadata(url)
+        if metadata.kind == "missing" { return nil }
+        guard metadata.kind == "file" else { throw PetError("工作区设置草稿不是普通文件") }
+        let data = try files.readData(url, maximum: Self.maximumState)
+        try AgentWorkspaceEditorDraft.Record.validateObject(JSONSerialization.jsonObject(with: data))
+        let value = try JSONDecoder().decode(AgentWorkspaceEditorDraft.Record.self, from: data)
+        guard value.windowID == windowID, value.valid else { throw PetError("工作区设置草稿无效，原记录已保留") }
+        return Saved(value: value, hash: AgentFiles.hash(data))
+    }
+    func saveWorkspaceEditorDrafts(_ value: AgentWorkspaceEditorDraft.Record, layoutHash: String, expected: String?) throws -> Saved<AgentWorkspaceEditorDraft.Record> {
+        guard value.valid else { throw PetError("工作区设置草稿无法保存，当前输入已保留") }
+        let data = try encoded(value)
+        return try locked(value.windowID) { files in
+            let directory = try prefix(value.windowID), layout = try literal(files, directory + "/layout.json")
+            guard try files.fileHash(layout, maximum: Self.maximumState) == layoutHash else { throw PetError("窗口布局已变化，请重新打开窗口") }
+            let change = try AgentKnowledgeFileWrite(files: files, path: directory + "/workspace-editor.json", data: data,
+                expectedHash: expected ?? AgentFiles.hash(Data()), missing: expected == nil, permissions: 0o600, label: "工作区设置草稿")
+            try change.requireCurrent()
+            try files.writeData(data, to: change.url, permissions: 0o600, expectedTarget: change.signature)
+            return Saved(value: value, hash: AgentFiles.hash(data))
+        }
+    }
     func loadTerminalLayout(windowID: String) throws -> Saved<AgentTerminalLayout>? {
         let files = try files(), path = try prefix(windowID) + "/terminal.json", url = try literal(files, path)
         let metadata = try files.entryMetadata(url)

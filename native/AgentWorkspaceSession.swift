@@ -38,6 +38,9 @@ private actor AgentWorkspaceJournal {
     func saveAttention(_ record: AgentAttentionRecovery.Record, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentAttentionRecovery.Record> {
         try storage.saveAttention(record, expected: expected)
     }
+    func saveWorkspaceEditorDrafts(_ record: AgentWorkspaceEditorDraft.Record, layoutHash: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentWorkspaceEditorDraft.Record> {
+        try storage.saveWorkspaceEditorDrafts(record, layoutHash: layoutHash, expected: expected)
+    }
     func saveTerminals(_ layout: AgentTerminalLayout, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTerminalLayout> {
         try storage.saveTerminalLayout(layout, expected: expected)
     }
@@ -70,6 +73,10 @@ private actor AgentWorkspaceJournal {
     private var coldAttention: AgentAttentionRecovery?
     private var savedAttention: AgentWorkspaceRecovery.Saved<AgentAttentionRecovery.Record>?
     private var attentionRecoveryError: String?
+    private var coldWorkspaceEditorDrafts: [String: AgentWorkspaceEditorDraft] = [:]
+    private var savedWorkspaceEditorDrafts: AgentWorkspaceRecovery.Saved<AgentWorkspaceEditorDraft.Record>?
+    private var workspaceEditorRecoveryReadOnly = false
+    private var workspaceEditorFailure: String?
     var pendingSettingsCategory: String? { coldSettings?.category }
     var hasPendingAutomation: Bool { coldAutomation != nil }
     private var knowledgeFailure: String?
@@ -124,6 +131,13 @@ private actor AgentWorkspaceJournal {
             } catch {
                 attentionRecoveryError = error.localizedDescription
                 owner.setStatus("需要我位置未恢复，原记录已保留：" + error.localizedDescription, error: true)
+            }
+            do {
+                savedWorkspaceEditorDrafts = try recovery.loadWorkspaceEditorDrafts(windowID: id)
+                coldWorkspaceEditorDrafts = savedWorkspaceEditorDrafts?.value.drafts ?? [:]
+            } catch {
+                workspaceEditorRecoveryReadOnly = true
+                owner.setStatus("工作区设置草稿未读取，原记录已保留：" + error.localizedDescription, error: true)
             }
             do {
                 savedTerminals = try recovery.loadTerminalLayout(windowID: id)
@@ -188,6 +202,7 @@ private actor AgentWorkspaceJournal {
         restoreSettings()
         if coldKnowledge?.active != true, coldSettings?.active != true, coldSettingsNavigation == nil { restoreAutomation() }
         restoreAttention()
+        restoreWorkspaceEditor()
         for task in owner?.taskWorkspace.recoveryLayouts ?? [] { for tab in task.tabs where tab.hasIndependentChild == true {
             guard let root = AgentTaskWorkspace.Root(key: tab.root), owner?.taskWorkspace.recoveryController(taskID: task.taskID, root: root) == nil else { continue }
             restore(task: task.taskID, tab: tab, activate: false)
@@ -274,6 +289,37 @@ private actor AgentWorkspaceJournal {
     func hasAutomationDraft(for ids: Set<String>) -> Bool {
         coldAutomation?.context.taskID.map(ids.contains) == true
     }
+    func hasWorkspaceEditorDraft(for ids: Set<String>) -> Bool {
+        !ids.isDisjoint(with: coldWorkspaceEditorDrafts.keys)
+    }
+    @discardableResult func restoreWorkspaceEditor() -> Bool {
+        guard !stopped, !disabled, let owner, owner.workspaceEditor == nil,
+              owner.agentTaskID.flatMap({ coldWorkspaceEditorDrafts[$0] }) != nil else { return false }
+        let key = "workspace-editor"
+        if roots[key] != nil { return true }
+        let parentRestores = ["knowledge", "settings", "automation", "attention"].compactMap { roots[$0] }
+        roots[key] = Task { @MainActor [weak self, weak owner] in
+            guard let self else { return }; defer { roots[key] = nil }
+            for parent in parentRestores { await parent.value }
+            guard !stopped, let owner, owner.workspaceEditor == nil, let taskID = owner.agentTaskID,
+                  let value = coldWorkspaceEditorDrafts[taskID] else { return }
+            do {
+                try owner.materializeWorkspaceEditorDraft(value)
+                coldWorkspaceEditorDrafts.removeValue(forKey: taskID)
+                if let workspaceEditorFailure { owner.clearWorkspaceRecoveryStatus(workspaceEditorFailure, prefix: "") }
+                workspaceEditorFailure = nil; changed()
+            } catch {
+                let message = "工作区设置草稿未恢复，原记录已保留：" + error.localizedDescription
+                workspaceEditorFailure = message; owner.setStatus(message, error: true)
+            }
+        }
+        return true
+    }
+    private func workspaceEditorDrafts(including active: AgentWorkspaceEditorDraft?) -> [String: AgentWorkspaceEditorDraft] {
+        var values = coldWorkspaceEditorDrafts
+        if let active, let id = active.context.taskID { values[id] = active }
+        return values
+    }
     private func restoreAttention() {
         guard !stopped, !disabled, let value = coldAttention, roots["attention"] == nil else { return }
         roots["attention"] = Task { @MainActor [weak self] in
@@ -300,6 +346,7 @@ private actor AgentWorkspaceJournal {
     }
     func removeFloatingTasks(_ ids: Set<String>) {
         coldFloating.removeAll { ids.contains($0.taskID) }
+        for id in ids { coldWorkspaceEditorDrafts.removeValue(forKey: id) }
         if var knowledge = coldKnowledge {
             knowledge.readers.removeAll { ids.contains($0.taskID) }
             coldKnowledge = ids.contains(knowledge.identity) || !knowledge.hasContent ? nil : knowledge
@@ -378,6 +425,8 @@ private actor AgentWorkspaceJournal {
                 layout.settingsNavigation = coldSettingsNavigation ?? owner.captureSettingsNavigation()
                 layout.conversationPositions = owner.captureConversationPositions()
                 layout.automation = try coldAutomation ?? owner.captureAutomationRecovery()
+                let workspaceEditor = owner.workspaceEditor, editorDraft = owner.captureWorkspaceEditorDraft()
+                let editorDrafts = workspaceEditorDrafts(including: editorDraft)
                 let attention = owner.captureAttentionRecovery() ?? coldAttention ?? previous?.attention
                 if let legacy = previous?.attention, let layoutHash {
                     if let attentionRecoveryError { throw PetError("需要我恢复记录无法迁移：" + attentionRecoveryError) }
@@ -388,6 +437,10 @@ private actor AgentWorkspaceJournal {
                 let expected = layoutHash, capturedLayout = layout
                 let saved = try await journal.saveWindow(capturedLayout, expected: expected, marketCopy: marketCopy)
                 layoutHash = saved.hash; previous = saved.value
+                if !workspaceEditorRecoveryReadOnly, editorDrafts != (savedWorkspaceEditorDrafts?.value.drafts ?? [:]) {
+                    let record = AgentWorkspaceEditorDraft.Record(windowID: id, drafts: editorDrafts)
+                    savedWorkspaceEditorDrafts = try await journal.saveWorkspaceEditorDrafts(record, layoutHash: saved.hash, expected: savedWorkspaceEditorDrafts?.hash)
+                }
                 if var attention, attentionRecoveryError == nil {
                     attention.active = attention.active && saved.value.permitsActiveAttention
                     try await persistAttention(attention, layoutHash: saved.hash)
@@ -417,6 +470,10 @@ private actor AgentWorkspaceJournal {
                 preservedEditors.formUnion(owner.knowledgePageHost.recoveryReaders.filter(\.canPreserveForQuit).map(ObjectIdentifier.init))
                 if coldSettings == nil, layout.settings != nil { preservedEditors.formUnion(owner.settingsRecoveryControllers.map(ObjectIdentifier.init)) }
                 if coldAutomation == nil, layout.automation != nil, let manager = owner.automationWindow { preservedEditors.insert(ObjectIdentifier(manager)) }
+                if let workspaceEditor, owner.workspaceEditor === workspaceEditor, workspaceEditor.canPreserveForQuit,
+                   let editorDraft, let taskID = editorDraft.context.taskID, savedWorkspaceEditorDrafts?.value.drafts[taskID] == editorDraft {
+                    preservedEditors.insert(ObjectIdentifier(workspaceEditor))
+                }
                 preservedEditors.formUnion(owner.knowledgePageHost.recoveryEditors.compactMap { editor in
                     if let cards = editor as? AgentKnowledgeCardWindow, cards.canPreserveForQuit { return ObjectIdentifier(cards) }
                     if let index = editor as? AgentKnowledgeWindow, index.canPreserveForQuit { return ObjectIdentifier(index) }
@@ -463,6 +520,8 @@ private actor AgentWorkspaceJournal {
         // Read the latest media position even between throttled time events.
         if editors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) || owner?.knowledgePageHost.recoveryReaders.contains(where: \.hasVideoPlayback) == true { revision &+= 1 }
         if editors.contains(where: { ($0.2 as? AgentGitWindow)?.recoveryWorktreeForm?.hasDraft == true }) { revision &+= 1 }
+        if !workspaceEditorRecoveryReadOnly, let owner,
+           workspaceEditorDrafts(including: owner.captureWorkspaceEditorDraft()) != (savedWorkspaceEditorDrafts?.value.drafts ?? [:]) { revision &+= 1 }
         if attentionRecoveryError == nil, let owner, let attention = owner.captureAttentionRecovery(),
            attention != savedAttention?.value.state { revision &+= 1 }
         if !terminalRecoveryReadOnly, let owner, let terminals = owner.captureTerminalLayout(windowID: id) {

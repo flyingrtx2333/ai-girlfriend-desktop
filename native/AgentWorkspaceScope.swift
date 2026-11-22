@@ -72,11 +72,11 @@ extension AgentTaskRecord {
     }
 }
 
-enum AgentWorkspaceIcon: String, Codable, CaseIterable {
+enum AgentWorkspaceIcon: String, Codable, CaseIterable, Sendable {
     case folder, cup = "cup.and.saucer", glass = "wineglass", cake = "birthday.cake", moon, sailboat, game = "gamecontroller", chip = "cpu", bug = "ladybug", flame, cat, paw = "pawprint", person, bell, flask, globe
     var title:String { switch self { case .folder:return "文件夹"; case .cup:return "咖啡"; case .glass:return "酒杯"; case .cake:return "蛋糕"; case .moon:return "月亮"; case .sailboat:return "帆船"; case .game:return "游戏"; case .chip:return "芯片"; case .bug:return "瓢虫"; case .flame:return "火焰"; case .cat:return "小猫"; case .paw:return "爪印"; case .person:return "人物"; case .bell:return "铃铛"; case .flask:return "烧瓶"; case .globe:return "地球" } }
 }
-enum AgentWorkspaceColor: String, Codable, CaseIterable {
+enum AgentWorkspaceColor: String, Codable, CaseIterable, Sendable {
     case forest, green, blue, amber, red, pink, purple, yellow, orange, teal, sky, gray, ink, lavender, sage, slate
     var hex:UInt32 { switch self { case .forest:return 0x537565; case .green:return 0x5b9c7b; case .blue:return 0x3b82f6; case .amber:return 0xf1b337; case .red:return 0xef5b5b; case .pink:return 0xd653a2; case .purple:return 0x7157e8; case .yellow:return 0xf4cd4f; case .orange:return 0xf08736; case .teal:return 0x60b8a8; case .sky:return 0x4b94f2; case .gray:return 0x90949c; case .ink:return 0x262835; case .lavender:return 0xb6a0f0; case .sage:return 0x84af9a; case .slate:return 0x6a8092 } }
     var title:String { switch self { case .forest:return "森林"; case .green:return "绿色"; case .blue:return "蓝色"; case .amber:return "琥珀"; case .red:return "红色"; case .pink:return "粉色"; case .purple:return "紫色"; case .yellow:return "黄色"; case .orange:return "橙色"; case .teal:return "青绿"; case .sky:return "天蓝"; case .gray:return "灰色"; case .ink:return "墨色"; case .lavender:return "淡紫"; case .sage:return "灰绿"; case .slate:return "灰蓝" } }

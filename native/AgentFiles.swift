@@ -172,6 +172,15 @@ struct AgentFiles: Sendable {
         guard fstat(fd, &after) == 0, Self.signature(before) == Self.signature(after) else { throw PetError("读取期间文件已变化") }
         return (data, before.st_size > data.count)
     }
+    static func directoryIdentity(_ directory: URL) throws -> String {
+        let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)
+        let volume = (try? directory.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString)
+            ?? (attributes[.systemNumber] as? NSNumber)?.stringValue
+        guard attributes[.type] as? FileAttributeType == .typeDirectory,
+              let volume, let inode = attributes[.systemFileNumber] as? NSNumber else { throw PetError("无法确认原目录") }
+        return volume + ":" + inode.stringValue
+    }
+
     func writeData(_ data: Data, to url: URL, permissions: Int = 0o644, expectedTarget: String? = nil) throws {
         let (parent, name) = try parentDescriptor(url, create: true); defer { close(parent) }
         let temporary = ".bluefatfish-\(UUID().uuidString).tmp", fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(permissions))

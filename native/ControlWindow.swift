@@ -2713,9 +2713,9 @@ final class FormDocumentView: NSView {
     }
 
     func reopen() {
-        guard let editor = workspaceEditor else { show(tab: selectedTab); return }
+        guard workspaceEditor != nil else { show(tab: selectedTab); return }
         showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
-        editor.focusName(); companion?.updatePetWorkspaceOcclusion()
+        companion?.updatePetWorkspaceOcclusion()
     }
 
     func show(tab: String) {
@@ -3541,7 +3541,10 @@ final class FormDocumentView: NSView {
         finishOwnedTaskPanels(); return true
     }
     func prepareOwnedTaskPanels(preservingRecovery: Bool = false) async -> Bool {
-        guard workspaceEditor?.prepareToLeave() != false else { return false }
+        if let editor = workspaceEditor,
+           !preservingRecovery || workspaceSession?.preservedEditors.contains(ObjectIdentifier(editor)) != true || !editor.canPreserveForQuit {
+            guard editor.prepareToLeave() else { return false }
+        }
         guard canLeaveBasicSettings(preservingRecovery: preservingRecovery) else { return false }
         guard settingsPageHost.prepareToQuit(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard generalSettingsPanel?.prepareToClose() != false else { return false }
@@ -3564,7 +3567,7 @@ final class FormDocumentView: NSView {
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         return true
     }
-    func finishOwnedTaskPanels() { detachWorkspaceEditor(); workspaceSession?.finish(); settingsPageHost.finish(); knowledgePageHost.finish(); taskWorkspace.finish() }
+    func finishOwnedTaskPanels() { workspaceSession?.finish(); detachWorkspaceEditor(); settingsPageHost.finish(); knowledgePageHost.finish(); taskWorkspace.finish() }
     private func currentSettingsNavigationInput() -> SettingsNavigationInput {
         let query = settingsSearch.stringValue
         let responder = window?.firstResponder
@@ -3715,6 +3718,29 @@ final class FormDocumentView: NSView {
     func captureAttentionRecovery() -> AgentAttentionRecovery? {
         attentionPageController?.captureRecovery(active: selectedTab == "attention")
     }
+    func captureWorkspaceEditorDraft() -> AgentWorkspaceEditorDraft? {
+        let page = selectedTab == "settings" ? "chat" : selectedTab
+        return workspaceEditor?.captureDraft(returnPage: page, knowledgeRoot: page == "knowledge" ? knowledgePageHost.selectedRoot : nil)
+    }
+    func materializeWorkspaceEditorDraft(_ value: AgentWorkspaceEditorDraft) throws {
+        guard value.valid, value.context.taskID == agentTaskID, let store = companion?.agentStore,
+              workspaceEditor == nil, nameEditor == nil, window?.hasBlockingDialog != true else {
+            throw PetError("请返回原任务并结束当前编辑")
+        }
+        switch value.returnPage {
+        case "automation":
+            let manager = preparedAutomationWindow(store); manager.sourceTaskID = agentTaskID; manager.refresh()
+        case "attention":
+            guard preparedAttentionPage() != nil else { throw PetError("原需要我页面暂不可用") }
+        case "knowledge":
+            if knowledgePageHost.selectedRoot != value.knowledgeRoot || knowledgePageHost.currentController == nil {
+                guard showKnowledgeCenter(root: value.knowledgeRoot ?? "library") else { throw PetError("原知识页面暂不可用") }
+            }
+        default: break
+        }
+        selectedTab = value.returnPage
+        try presentWorkspaceEditor(value.original, store: store, recovery: value)
+    }
     func materializeAttentionRecovery(_ value: AgentAttentionRecovery) -> Bool {
         guard let page = preparedAttentionPage() else { return false }
         let reveal = value.active && canLeaveMainPage()
@@ -3763,6 +3789,10 @@ final class FormDocumentView: NSView {
         if workspaceSession?.hasAutomationDraft(for: ids) == true || automationWindow?.hasDraft(for: ids) == true {
             throw PetError("请先保存或关闭这些任务的自动化草稿")
         }
+        if workspaceSession?.hasWorkspaceEditorDraft(for: ids) == true ||
+            (workspaceEditor?.hasChanges == true && workspaceEditor?.context.taskID.map(ids.contains) == true) {
+            throw PetError("请先保存或关闭这些任务的工作区设置草稿")
+        }
         for record in artifactDocuments { try record.requireDeletionAllowed(ids) }
         try taskWorkspace.requireDeletionAllowed(ids, ignoring: controller)
         if settingsPageHost.controllers.contains(where: { ($0 as? AgentWorktreeWindow)?.hasPendingOperation == true }) { throw PetError("请先完成工作树操作") }
@@ -3775,6 +3805,7 @@ final class FormDocumentView: NSView {
     }
     func closeDeletedTaskRecords(_ ids: Set<String>) {
         workspaceSession?.removeFloatingTasks(ids)
+        if workspaceEditor?.context.taskID.map(ids.contains) == true { detachWorkspaceEditor(); changeTab() }
         recordWindow?.closeDeletedTask(ids)
         for record in Array(artifactDocuments) { record.closeDeletedTask(ids) }
         taskWorkspace.finish(tasks: ids)
@@ -4304,6 +4335,7 @@ final class FormDocumentView: NSView {
         renderedIDs = []; messageRows = [:]; toolRows = [:]; reasoningRows = [:]; processRows = [:]
         readingTaskID = nil; lastHumanMessageID = nil; readingAnchorID = nil; readingSpace?.constant = 0
         selectedTab = "chat"; changeTab(); renderAgentMessages(); focusTaskInput(); workspaceSession?.changed()
+        workspaceSession?.restoreWorkspaceEditor()
         if let readIssue { setStatus(readIssue, error: true) }
         companion?.refreshAgentAnimation(); companion?.refreshVoiceBusy(); companion?.startPendingVoiceListen()
     }
@@ -4314,7 +4346,46 @@ final class FormDocumentView: NSView {
         nameEditor?.begin(in: window)
     }
     private func detachWorkspaceEditor() {
-        workspaceEditor?.view.removeFromSuperview(); workspaceEditor = nil; workspaceEditorContent.isHidden = true
+        guard let editor = workspaceEditor else { return }
+        editor.view.removeFromSuperview(); workspaceEditor = nil; workspaceEditorContent.isHidden = true
+        workspaceSession?.changed()
+    }
+    private func presentWorkspaceEditor(_ entry: AgentDirectoryEntry, store: AgentStore, recovery: AgentWorkspaceEditorDraft? = nil) throws {
+        guard let window, let task = currentAgentTask else { throw PetError("原任务窗口暂不可用") }
+        let context = recovery?.context ?? AgentSettingsRecovery.Context(task: task, workspace: nil)
+        func requireScope() throws {
+            guard let owner = context.taskID.flatMap(store.task), AgentSettingsRecovery.Context(task: owner, workspace: nil) == context else {
+                throw PetError("原任务范围已变化，工作区设置草稿已保留。")
+            }
+            guard store.organization.entry(entry.path, mode: entry.mode, tasks: store.tasks) == entry else {
+                throw PetError("工作区配置已变化。请核对原配置后重新编辑，当前草稿已保留。")
+            }
+        }
+        if selectedTab == "chat", recovery == nil { rememberConversationPosition() }
+        let focus = window.firstResponder as? NSView
+        let editor = AgentWorkspaceEditor(entry: entry, context: context, save: { name, icon, color, folders, primary in
+            try requireScope()
+            try store.organization.editWorkspace(entry, name: name, icon: icon, color: color, folders: folders, primary: primary, tasks: store.tasks)
+        }, archive: {
+            try requireScope()
+            try store.setWorkspaceArchived(entry.path, mode: entry.mode, archived: true)
+        }, onClose: { [weak self, weak focus] result in
+            guard let self else { return }
+            detachWorkspaceEditor(); changeTab()
+            if result == .archived { finishArchive(entry.mode) } else { renderAgentMessages() }
+            if selectedTab == "chat" { restoreActiveConversationPosition() }
+            if let focus, focus.window === self.window, !focus.isHiddenOrHasHiddenAncestor, self.window?.makeFirstResponder(focus) == true { return }
+            if selectedTab == "chat" { focusTaskInput() }
+        })
+        editor.onDraftChange = { [weak self] in self?.workspaceSession?.changed() }
+        workspaceEditor = editor
+        workspaceEditorContent.addSubview(editor.view); pin(editor.view, to: workspaceEditorContent)
+        changeTab(); window.contentView?.layoutSubtreeIfNeeded()
+        if let recovery {
+            let issue: Error?
+            do { try requireScope(); issue = nil } catch { issue = error }
+            editor.restoreDraft(recovery, scopeIssue: issue)
+        } else { editor.focusName(selectAll: true) }
     }
     private func directoryAction(_ path: String, mode: AgentWorkMode, action: String) {
         guard let tasks = companion?.agentStore else { return }
@@ -4337,27 +4408,10 @@ final class FormDocumentView: NSView {
                 guard NSWorkspace.shared.open(folder) else { throw PetError("主文件夹未能打开") }; return
             }
             else if action == "rename" {
-                guard let window, !window.hasBlockingDialog, nameEditor == nil, saveAgentDraft(), let entry = tasks.organization.entry(path,mode:mode,tasks:tasks.tasks) else { return }
-                if selectedTab == "chat" { rememberConversationPosition() }
-                let focus = window.firstResponder as? NSView
-                let revision = tasks.organization.revision
-                let editor = AgentWorkspaceEditor(entry:entry,save:{ name,icon,color,folders,primary in
-                    guard tasks.organization.revision == revision else { throw PetError("任务分组已变化，请重新打开后重试") }
-                    try tasks.organization.editWorkspace(entry,name:name,icon:icon,color:color,folders:folders,primary:primary,tasks:tasks.tasks)
-                },archive:{
-                    guard tasks.organization.revision == revision else { throw PetError("工作区已变化，请重新打开后重试") }
-                    try tasks.setWorkspaceArchived(path,mode:mode,archived:true)
-                },onClose:{ [weak self, weak focus] result in
-                    guard let self else { return }
-                    detachWorkspaceEditor(); changeTab()
-                    if result == .archived { finishArchive(mode) } else { renderAgentMessages() }
-                    if selectedTab == "chat" { restoreActiveConversationPosition() }
-                    if let focus, focus.window === self.window, !focus.isHiddenOrHasHiddenAncestor, self.window?.makeFirstResponder(focus) == true { return }
-                    if selectedTab == "chat" { focusTaskInput() }
-                })
-                workspaceEditor = editor
-                workspaceEditorContent.addSubview(editor.view); pin(editor.view, to: workspaceEditorContent)
-                changeTab(); window.contentView?.layoutSubtreeIfNeeded(); editor.focusName(selectAll: true)
+                if workspaceSession?.restoreWorkspaceEditor() == true { return }
+                guard window?.hasBlockingDialog == false, nameEditor == nil, saveAgentDraft(),
+                      let entry = tasks.organization.entry(path, mode: mode, tasks: tasks.tasks) else { return }
+                try presentWorkspaceEditor(entry, store: tasks)
                 return
             }
             renderAgentMessages()
@@ -6458,7 +6512,7 @@ extension ControlWindow {
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     func checkNameEditor(_ kind: String, id: String?, mode: AgentWorkMode = .coding) {
-        guard ["--name-editor-check","--workspace-editor-check"].contains(where:CommandLine.arguments.contains) else { return }
+        guard ["--name-editor-check", "--workspace-editor-check", "--workspace-editor-draft-check"].contains(where: CommandLine.arguments.contains) else { return }
         switch kind {
         case "task": if let id { agentTaskAction(id, action: "rename") }
         case "group": customTaskGroup(id, mode: mode, action: id == nil ? "new" : "rename")

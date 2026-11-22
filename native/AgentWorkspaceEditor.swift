@@ -8,6 +8,7 @@ extension AgentWorkspaceColor {
     enum Exit: Equatable { case returned, archived }
 
     let original: AgentDirectoryEntry
+    let context: AgentSettingsRecovery.Context
     private let input = AgentDialogTextField(frame: .zero)
     private let status = AgentSettingsStatusField("工作区保存状态")
     private let scopeNote = NSTextField(wrappingLabelWithString: "文件夹变更用于新任务。")
@@ -18,27 +19,34 @@ extension AgentWorkspaceColor {
     private var iconButtons: [NSButton] = [], colorButtons: [NSButton] = []
     private var primaryButtons: [NSButton] = []
     private var folders: [String], primary: String, icon: AgentWorkspaceIcon, color: AgentWorkspaceColor
+    private var folderIdentities: [String: String] = [:]
+    private var restoringViewport = false
     private let saveWorkspace: (String, AgentWorkspaceIcon, AgentWorkspaceColor, [String], String) throws -> Void
     private let archiveWorkspace: () throws -> Void
     private let onClose: (Exit) -> Void
+    var onDraftChange: (() -> Void)?
 
-    init(entry: AgentDirectoryEntry, save: @escaping (String, AgentWorkspaceIcon, AgentWorkspaceColor, [String], String) throws -> Void,
+    init(entry: AgentDirectoryEntry, context: AgentSettingsRecovery.Context,
+         save: @escaping (String, AgentWorkspaceIcon, AgentWorkspaceColor, [String], String) throws -> Void,
          archive: @escaping () throws -> Void, onClose: @escaping (Exit) -> Void) {
-        original = entry; folders = entry.sourceFolders; primary = entry.primary
+        original = entry; self.context = context; folders = entry.sourceFolders; primary = entry.primary
         icon = entry.icon ?? .folder; color = entry.color ?? .forest
         self.archive = AgentDialogButton(title: "归档" + entry.mode.directoryTitle, target: nil, action: nil)
         saveWorkspace = save; archiveWorkspace = archive; self.onClose = onClose
         super.init(nibName: nil, bundle: nil)
         title = entry.title
+        rememberFolders([entry.path] + entry.sourceFolders)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit { NotificationCenter.default.removeObserver(self) }
 
     var isPageVisible: Bool { view.window?.isVisible == true && !view.isHiddenOrHasHiddenAncestor }
     private var proposedName: String { input.stringValue }
-    private var changed: Bool {
+    var hasChanges: Bool {
         proposedName != original.title || icon != (original.icon ?? .folder) || color != (original.color ?? .forest)
             || folders != original.sourceFolders || primary != original.primary
     }
+    var canPreserveForQuit: Bool { (input.currentEditor() as? NSTextView)?.hasMarkedText() != true }
 
     override func loadView() {
         let root = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface)
@@ -86,6 +94,9 @@ extension AgentWorkspaceColor {
         scopeNote.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let sources = AgentSettingsStyle.section("", id: "workspace-folders", rows: [folderHeader, folderColumn, scopeNote], separatesRows: false)
         viewport = AgentSettingsStyle.form([details, sources], label: "工作区设置")
+        viewport.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: viewport.contentView)
+        NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         viewport.setContentHuggingPriority(.defaultLow, for: .vertical)
         viewport.heightAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
 
@@ -182,8 +193,61 @@ extension AgentWorkspaceColor {
         }
         for button in colorButtons { button.state = button.identifier?.rawValue == color.rawValue ? .on : .off }
         scopeNote.isHidden = folders == original.sourceFolders && primary == original.primary
-        archive.isEnabled = !changed
+        archive.isEnabled = !hasChanges
     }
+
+    private func rememberFolders(_ paths: [String]) {
+        for path in paths where folderIdentities[path] == nil {
+            if let files = try? AgentFiles(workspace: path), let identity = try? AgentFiles.directoryIdentity(files.root) {
+                folderIdentities[path] = identity
+            }
+        }
+    }
+    private func verifyFolders() throws {
+        for path in folders {
+            let identity: String
+            do { identity = try AgentFiles.directoryIdentity(AgentFiles(workspace: path).root) }
+            catch { throw PetError("源文件夹暂不可用。请连接原目录后重试。") }
+            if let expected = folderIdentities[path], expected != identity { throw PetError("源文件夹已被替换。请恢复原目录后重试。") }
+        }
+    }
+
+    func captureDraft(returnPage: String, knowledgeRoot: String?) -> AgentWorkspaceEditorDraft? {
+        guard hasChanges else { return nil }
+        let fieldEditor = input.currentEditor() as? NSTextView
+        let selection: AgentTextViewport.Selection? = fieldEditor.flatMap { editor in
+            let range = editor.selectedRange()
+            let value = AgentTextViewport.Selection(location: range.location, length: range.length)
+            return value.valid(in: proposedName.utf16.count) ? value : nil
+        }
+        return AgentWorkspaceEditorDraft(context: context, original: original, returnPage: returnPage, knowledgeRoot: knowledgeRoot,
+            name: proposedName, icon: icon, color: color, folders: folders, primary: primary,
+            folderIdentities: folderIdentities.filter { $0.key == original.path || folders.contains($0.key) },
+            scrollY: max(0, viewport.contentView.bounds.minY), nameFocused: fieldEditor.map { view.window?.firstResponder === $0 } == true,
+            selection: selection, feedback: status.stringValue.isEmpty ? nil : status.stringValue)
+    }
+    func restoreDraft(_ draft: AgentWorkspaceEditorDraft, scopeIssue: Error?) {
+        restoringViewport = true; defer { restoringViewport = false }
+        input.stringValue = draft.name; icon = draft.icon; color = draft.color
+        folders = draft.folders; primary = draft.primary; folderIdentities = draft.folderIdentities
+        renderFolders(); refreshSelection()
+        if let feedback = draft.feedback { status.stringValue = feedback; status.textColor = AgentDialogStyle.error }
+        do {
+            if let scopeIssue { throw scopeIssue }
+            try verifyFolders()
+        } catch { status.showSaveFailure(error) }
+        view.window?.contentView?.layoutSubtreeIfNeeded()
+        if draft.nameFocused {
+            focusName()
+            if let selection = draft.selection { (input.currentEditor() as? NSTextView)?.setSelectedRange(selection.range) }
+        } else { view.window?.makeFirstResponder(nil) }
+        AgentSettingsRecovery.restoreScroll(draft.scrollY, to: viewport)
+    }
+    @objc private func viewportChanged(_ notification: Notification) {
+        guard !restoringViewport, notification.object as? NSView === viewport.contentView || notification.object as? NSTextView === input.currentEditor() else { return }
+        if hasChanges { onDraftChange?() }
+    }
+    private func formChanged() { refreshSelection(); onDraftChange?() }
 
     func focusName(selectAll: Bool = false) {
         guard let window = view.window, !window.hasBlockingDialog, window.makeFirstResponder(input) else { return }
@@ -192,7 +256,7 @@ extension AgentWorkspaceColor {
     func prepareToLeave() -> Bool {
         guard let window = view.window, !window.hasBlockingDialog,
               (input.currentEditor() as? NSTextView)?.hasMarkedText() != true else { return false }
-        return !changed || AgentUnsavedChanges.discard("放弃" + original.mode.directoryTitle + "更改？", owner: window)
+        return !hasChanges || AgentUnsavedChanges.discard("放弃" + original.mode.directoryTitle + "更改？", owner: window)
     }
 
     @objc private func returnToWorkspace() { if prepareToLeave() { onClose(.returned) } }
@@ -202,21 +266,22 @@ extension AgentWorkspaceColor {
     }
     @objc private func selectIcon(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue, let value = AgentWorkspaceIcon(rawValue: id) else { return }
-        icon = value; refreshSelection()
+        icon = value; formChanged()
     }
     @objc private func selectColor(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue, let value = AgentWorkspaceColor(rawValue: id) else { return }
-        color = value; refreshSelection()
+        color = value; formChanged()
     }
     @objc private func selectPrimary(_ sender: NSButton) {
         guard folders.indices.contains(sender.tag) else { return }
-        primary = folders[sender.tag]; refreshSelection()
+        primary = folders[sender.tag]; formChanged()
     }
     @objc private func removeFolder(_ sender: NSButton) {
         guard folders.count > 1, folders.indices.contains(sender.tag) else { return }
         let removed = folders.remove(at: sender.tag)
         if removed == primary { primary = folders[0] }
-        renderFolders(); refreshSelection()
+        if removed != original.path { folderIdentities.removeValue(forKey: removed) }
+        renderFolders(); formChanged()
     }
     @objc private func addFolders() {
         guard let window = view.window, !window.hasBlockingDialog else { return }
@@ -228,21 +293,21 @@ extension AgentWorkspaceColor {
             do {
                 let paths = folders + picker.urls.map { $0.resolvingSymlinksInPath().path }
                 folders = try AgentWorkspaceScope.validateFolders(paths, primary: primary)
-                status.stringValue = ""; renderFolders(); refreshSelection()
-            } catch { status.showSaveFailure(error) }
+                rememberFolders(folders); status.stringValue = ""; renderFolders(); formChanged()
+            } catch { status.showSaveFailure(error); onDraftChange?() }
         }
     }
     @objc private func submit() {
         guard view.window?.hasBlockingDialog != true, (input.currentEditor() as? NSTextView)?.hasMarkedText() != true else { return }
-        do { try saveWorkspace(proposedName, icon, color, folders, primary); onClose(.returned) }
-        catch { status.showSaveFailure(error) }
+        do { try verifyFolders(); try saveWorkspace(proposedName, icon, color, folders, primary); onClose(.returned) }
+        catch { status.showSaveFailure(error); onDraftChange?() }
     }
     @objc private func archiveEntry() {
-        guard !changed, view.window?.hasBlockingDialog != true else { return }
+        guard !hasChanges, view.window?.hasBlockingDialog != true else { return }
         do { try archiveWorkspace(); onClose(.archived) }
         catch { status.showSaveFailure(error) }
     }
-    func controlTextDidChange(_ notification: Notification) { archive.isEnabled = !changed }
+    func controlTextDidChange(_ notification: Notification) { archive.isEnabled = !hasChanges; onDraftChange?() }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         guard !textView.hasMarkedText() else { return false }
         if selector == #selector(NSResponder.insertNewline(_:)) { submit(); return true }
@@ -250,7 +315,7 @@ extension AgentWorkspaceColor {
         return false
     }
     func checkState() -> [String: Any] {
-        guard ["--manual-ui", "--workspace-editor-check", "--name-editor-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
+        guard ["--manual-ui", "--workspace-editor-check", "--workspace-editor-draft-check", "--name-editor-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
         view.layoutSubtreeIfNeeded()
         return ["visible": isPageVisible, "title": original.title, "inWindow": view.window != nil, "nativeSheet": view.window?.attachedSheet != nil,
                 "pageSize": [view.bounds.width, view.bounds.height], "value": proposedName, "error": status.stringValue,
