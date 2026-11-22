@@ -95,11 +95,16 @@ import AppKit
             try service.setPaused(enabled.id, paused: true); await wait(0.3)
             checks["pausedDefinitionCreatesNoRunOrTask"] = try service.history().total == 0 && service.values.first { $0.id == enabled.id }?.nextRun == nil && attempts == 0
             let future = ISO8601DateFormatter().string(from: Date().addingTimeInterval(172_800))
-            for schedule: [String: Any] in [["frequency": "once", "time_zone": "Asia/Shanghai", "at": future], ["frequency": "daily", "time_zone": "America/New_York", "hour": 8, "minute": 15], ["frequency": "interval", "time_zone": "UTC", "interval_minutes": 37, "at": future, "expires_at": expires], ["frequency": "cron", "time_zone": "Asia/Shanghai", "cron_expression": "0,30 9-17 * * 1-5"], ["frequency": "monthly", "time_zone": "Asia/Shanghai", "at": future, "monthly_rule": "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1;BYHOUR=9;BYMINUTE=0"]] {
+            for schedule: [String: Any] in [["frequency": "once", "time_zone": "Asia/Shanghai", "at": future], ["frequency": "daily", "time_zone": "America/New_York", "hour": 8, "minute": 15], ["frequency": "interval", "time_zone": "UTC", "interval_minutes": 37, "at": future, "expires_at": expires], ["frequency": "cron", "time_zone": "Asia/Shanghai", "cron_expression": "0,30 9-17 * * 1-5"]] {
                 _ = try await invoke("frequency-" + (schedule["frequency"] as! String), arguments.merging(["schedule": schedule]) { _, n in n }, taskID: owner)
             }
             let frequencies = Set((tasks.task(owner)?.automationDrafts ?? []).map { $0.automation.schedule.frequency })
-            checks["allSchedulesUseProductionParserAndPersist"] = frequencies == Set(AgentAutomationFrequency.allCases)
+            checks["allConversationSchedulesUseProductionParserAndPersist"] = frequencies == Set([.once, .daily, .weekly, .interval, .cron])
+            let monthlyArgs = arguments.merging(["schedule": ["frequency": "monthly", "time_zone": "UTC", "at": future, "monthly_rule": "FREQ=MONTHLY;BYMONTHDAY=-1"]]) { _, n in n }
+            var monthlyError: String?
+            do { _ = try await invoke("frequency-monthly", monthlyArgs, taskID: owner) } catch { monthlyError = error.localizedDescription }
+            checks["monthlyRuleStaysInAutomationPageWithoutWritingAnOlderIncompatibleTaskDraft"] = monthlyError?.contains("自动化页面") == true
+                && tasks.task(owner)?.automationDrafts?.count == frequencies.count
             let intervalDraft = tasks.task(owner)!.automationDrafts!.first { $0.callID == "frequency-interval" }!
             let intervalArgs = arguments.merging(["schedule": ["frequency": "interval", "time_zone": "UTC", "interval_minutes": 37, "at": future, "expires_at": expires]]) { _, n in n }
             _ = try await invoke("frequency-interval", intervalArgs, taskID: owner)

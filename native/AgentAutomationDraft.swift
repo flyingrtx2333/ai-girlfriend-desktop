@@ -11,6 +11,8 @@ struct AgentAutomationDraft: Codable, Identifiable {
 }
 
 @MainActor enum AgentAutomationDrafts {
+    static let frequencies = AgentAutomationFrequency.allCases.filter { $0 != .monthly }
+
     static var instructions: String {
         "用户要求创建本机自动化时，载入 automations 工具组，用 draft_automation 起草名称、任务指令和时间计划。当前时间：" + ISO8601DateFormatter().string(from: Date()) + "，本机时区：" + TimeZone.current.identifier + "。指令应写清输入、范围、约束、完成核对与输出；缺少必要信息时先询问。草稿不创建或启用计划，不立即运行。请用户在会话卡片继续配置，核对项目、时区、下次时间、模型和执行授权后保存，并自行选择是否启用。"
     }
@@ -45,7 +47,6 @@ struct AgentAutomationDraft: Codable, Identifiable {
         var interval_minutes: Int?
         var expires_at: String?
         var cron_expression: String?
-        var monthly_rule: String?
     }
     private static func date(_ text: String) throws -> Date {
         guard text.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$", options: .regularExpression) != nil else { throw PetError("日期需要含时区的 ISO 8601 格式") }
@@ -70,12 +71,11 @@ struct AgentAutomationDraft: Codable, Identifiable {
         case .weekly: required.formUnion(["hour", "minute", "weekdays"]); allowed = required.union(["expires_at"])
         case .interval: required.insert("interval_minutes"); allowed = required.union(["at", "expires_at"])
         case .cron: required.insert("cron_expression"); allowed = required.union(["at", "expires_at"])
-        case .monthly: required.formUnion(["monthly_rule", "at"]); allowed = required.union(["expires_at"])
+        case .monthly: throw PetError("请在自动化页面设置每月计划")
         }
         guard required.isSubset(of: Set(object.keys)), Set(object.keys).isSubset(of: allowed) else { throw PetError("计划字段与所选频率不一致") }
         var value = AgentAutomationSchedule(); value.frequency = input.frequency; value.timeZone = input.time_zone
         if input.frequency == .cron { value.date = Date(); value.cronExpression = input.cron_expression }
-        value.monthlyRule = input.monthly_rule
         if let at = input.at { value.date = try date(at) }
         if let hour = input.hour { value.hour = hour }; if let minute = input.minute { value.minute = minute }
         if let days = input.weekdays { value.weekdays = days }; if let interval = input.interval_minutes { value.intervalMinutes = interval }
