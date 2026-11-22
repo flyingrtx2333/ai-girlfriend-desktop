@@ -1,5 +1,12 @@
 # P0 逐页界面验收台账
 
+## 2026-11-22 旧版 PowerPoint 批注回复
+
+- 候选 `c5cbba3` 支持在旧版格式的 PPTX 直接回复。两条作者、时间及正文均相同的批注仍可分别选择。回复按原作者编号和批注编号挂接，保留旧版批注格式。[Microsoft 批注扩展](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-pptx/f1ad49e1-9f7d-404b-a295-6b02bedb7c36) · [父批注编号](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-pptx/db7e8969-80af-4891-bc49-4d2111bfd82c)
+- 三次独立启动完成编辑、恢复、保存和读回。780×540 深色窗口先回复第二条批注，再留下未发送的草稿。退出时原件哈希一致，恢复附件已带有第一条回复。重开恢复第二条批注、页码、草稿选区及焦点。继续提交后，另在第 1 张幻灯片新建批注，并在首次保存前回复它。
+- 最终 PPTX 独立读回核对了三个新回复的父批注编号、中文多行、原回复、幻灯片正文和图片。恢复附件同样核对了第一条回复的挂接，未发送文字只在草稿中。同包通过 **66 项 PowerPoint 检查**，其中旧版回复流程 **24 项**，另通过 **51 项 Office 恢复回归**。
+- 模型请求 **0 次**，14 份正式资料前后校验一致。日用候选已本地签名并核对 229 份文件，当前日用版为 `02b91b9`。Microsoft PowerPoint 客户端交叉验证、日用换版及编辑区深色样式继续跟踪。索引位于 `evidence/agent/pptx-legacy-replies-sJiEMn7n/acceptance-index.json`。
+
 ## 2026-11-22 PowerPoint 幻灯片批注
 
 - 候选 `d8e31ee` 在任务内打开 PPTX 后，可从「批注」进入右侧面板。点击批注定位原幻灯片，也可在当前页新建批注。现代批注支持回复、解决和重新打开。旧版批注及已有回复可查看和保留，可在原格式新建批注。
