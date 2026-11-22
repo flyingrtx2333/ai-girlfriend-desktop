@@ -8,7 +8,7 @@ import { createDocxReview } from './docx-review';
 import { createSpreadsheetNotes, spreadsheetCell } from './spreadsheet-notes';
 import { createSpreadsheetThreads } from './spreadsheet-threads';
 import type { CommentReceipt, DeckSnapshot } from '@betteroffice/pptx';
-import { createPresentationComments, type PresentationCommentChange } from './presentation-comments';
+import { createPresentationComments, legacyReplyLinks, type PresentationCommentChange } from './presentation-comments';
 import './style.css';
 
 configureDefaultFonts({ fonts });
@@ -22,6 +22,7 @@ const pendingOperations = new Set<(error: Error) => void>();
 let pendingReady: { resolve: () => void; reject: (error: Error) => void } | null = null;
 let workspaceView: ReturnType<typeof createOfficeView> | null = null;
 let modernPresentationCommentsEdited = false;
+const legacyPresentationParents = new Map<string, string>();
 let annotationNavigation: Promise<void> = Promise.resolve();
 let annotationRequest = 0;
 async function locateSheetAnnotation({ sheet, cell }: { sheet: string; cell: string }) {
@@ -48,7 +49,14 @@ const sheetThreads = createSpreadsheetThreads(rootElement, locateSheetAnnotation
   hasReviewDraft => { if (ready && currentFormat === 'xlsx') notify('review-draft', { hasReviewDraft }); },
   cell => sheetNotes.hasNote(cell));
 const presentationComments = createPresentationComments(rootElement, {
-  read: () => perform(async () => (await editor.handleAsync()).snapshot() as Promise<DeckSnapshot>),
+  read: () => perform(async () => {
+    const deck = await (await editor.handleAsync()).snapshot() as DeckSnapshot;
+    if (legacyPresentationParents.size) deck.comments = deck.comments?.map(comment => {
+      const parentId = legacyPresentationParents.get(comment.id);
+      return parentId ? { ...comment, parentId } : comment;
+    });
+    return deck;
+  }),
   currentSlide: () => workspaceView?.activePresentationSlide() ?? null,
   navigate: async slide => {
     if (!ready || currentFormat !== 'pptx' || !workspaceView || operationBusy || exported) throw new Error('演示文稿正在处理，请稍候');
@@ -81,9 +89,17 @@ async function writePresentationComment(change: PresentationCommentChange): Prom
         const thread = deck.comments?.find(item => item.id === change.commentId && item.slideId === change.slideId && item.parentId === null);
         if (!thread) throw new Error('原批注已移除，草稿已保留');
         if (change.kind === 'reply') {
-          if (!modern) throw new Error('旧版批注暂不支持添加回复');
           if (thread.resolved) throw new Error('请先重新打开已解决的批注');
-          receipt = await access.replyToComment(thread.id, { author: '小鲸', initials: '鲸', text: change.text, created: new Date().toISOString() });
+          const input = { author: '小鲸', initials: '鲸', text: change.text, created: new Date().toISOString() };
+          if (modern) receipt = await access.replyToComment(thread.id, input);
+          else {
+            // The worker creates a valid legacy comment and author record.
+            // Its parent relationship is attached to the staged package on save.
+            if (legacyPresentationParents.has(thread.id)) throw new Error('请在原批注下添加回复');
+            receipt = await access.addComment(thread.slideId, { ...input, xEmu: thread.xEmu, yEmu: thread.yEmu });
+            legacyPresentationParents.set(receipt.commentId, thread.id);
+            receipt = { ...receipt, parentId: thread.id };
+          }
         } else {
           if (!modern) throw new Error('旧版批注不支持解决状态');
           receipt = await access.setCommentStatus(thread.id, change.resolved);
@@ -215,7 +231,7 @@ async function load(url: string, name: string, locked: boolean) {
   if (!['docx', 'xlsx', 'pptx'].includes(format)) throw new Error('不支持此办公文件格式');
   pendingReady?.reject(new Error('文档已切换')); pendingReady = null; rejectOperations(new Error('文档已切换'));
   workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); sheetThreads.reset(); presentationComments.reset();
-  modernPresentationCommentsEdited = false;
+  modernPresentationCommentsEdited = false; legacyPresentationParents.clear();
   annotationNavigation = Promise.resolve();
   ready = false; dirty = false; readOnly = locked; operationBusy = 0; lockGeneration += 1; fatal = null; editor = null; exported = null; currentFormat = format; updateInteraction(); root.render(null);
   const response = await fetch(url, { cache: 'no-store' });
@@ -257,6 +273,7 @@ async function load(url: string, name: string, locked: boolean) {
 async function beginExport() {
   if (!ready || !editor) throw new Error('文档尚未打开');
   if (exported) throw new Error('上一份文档导出尚未结束');
+  if (currentFormat === 'pptx' && operationBusy) throw new Error('演示文稿正在处理，请稍候');
   operationBusy += 1; updateInteraction();
   try {
     const bytes = await perform<any>(() => editor.save());
@@ -265,10 +282,12 @@ async function beginExport() {
     if (exported.length > 500 * 1024 * 1024) { exported = null; throw new Error('文档超过500MiB'); }
     exportedRevision = revision;
     workspaceView?.saved();
+    const legacyReplies = currentFormat === 'pptx' && legacyPresentationParents.size
+      ? await perform(async () => legacyReplyLinks(await (await editor.handleAsync()).snapshot(), legacyPresentationParents)) : [];
     const captured = await captureView();
     if (captured.revision !== exportedRevision) throw new Error('导出期间办公内容已变化，请重试');
     return { bytes: exported.length, revision: exportedRevision, view: captured.view,
-      ...(currentFormat === 'pptx' ? { modernPresentationCommentsEdited } : {}),
+      ...(currentFormat === 'pptx' ? { modernPresentationCommentsEdited, legacyReplies } : {}),
       ...(currentFormat === 'xlsx' ? { noteEdits: sheetNotes.edits(), threadEdits: sheetThreads.edits() } : {}) };
   } finally { operationBusy = Math.max(0, operationBusy - 1); updateInteraction(); }
 }
@@ -413,5 +432,5 @@ async function inspect(request: any = {}) { return await perform(() => inspectCo
   setSpreadsheetThreads: sheetThreads.configure, toggleSpreadsheetThreads: () => { sheetNotes.hide(); return sheetThreads.toggle(); },
   togglePresentationComments: () => presentationComments.toggle(),
   spreadsheetNoteVisible: (sheet: string, cell: string) => perform(() => workspaceView!.isSpreadsheetNoteVisible(sheet, cell)), state: editorState,
-  close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); sheetThreads.reset(); presentationComments.reset(); ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
+  close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); sheetThreads.reset(); presentationComments.reset(); legacyPresentationParents.clear(); ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
 notify('shell-ready');

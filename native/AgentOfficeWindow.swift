@@ -360,8 +360,21 @@ import Darwin
                 try await AgentSpreadsheetNotes.applyThreads(JSONDecoder().decode([AgentSpreadsheetThreadEdit].self, from: data), to: output)
             }
         }
-        if file.pathExtension.lowercased() == "pptx", result["modernPresentationCommentsEdited"] as? Bool == true {
-            try await AgentPowerPointComments.ensureSlideLinks(in: output)
+        if file.pathExtension.lowercased() == "pptx" {
+            if let edits = result["legacyReplies"] {
+                guard let changes = edits as? [[String: Any]], changes.count <= 5_000 else {
+                    throw PetError("旧版批注回复无法读取，原草稿已保留")
+                }
+                if !changes.isEmpty {
+                    let data = try JSONSerialization.data(withJSONObject: changes)
+                    guard data.count <= 2_000_000 else { throw PetError("旧版批注回复超过保存大小，原草稿已保留") }
+                    try await AgentPowerPointComments.attachLegacyReplies(
+                        JSONDecoder().decode([AgentPowerPointComments.LegacyReplyLink].self, from: data), in: output)
+                }
+            }
+            if result["modernPresentationCommentsEdited"] as? Bool == true {
+                try await AgentPowerPointComments.ensureSlideLinks(in: output)
+            }
         }
         return output
     }
@@ -711,7 +724,10 @@ import Darwin
             const [resolve, cancel] = heading.querySelectorAll('button');
             const rows = Array.from(panel.querySelectorAll('.spreadsheet-thread-list button'));
             if (action === 'new') add.click();
-            if (action === 'select') rows.find(row => row.querySelector('span').textContent.startsWith(text))?.click();
+            if (action === 'select' || action === 'select-last') {
+              const matches = rows.filter(row => row.querySelector('span').textContent.startsWith(text));
+              matches.at(action === 'select-last' ? -1 : 0)?.click();
+            }
             if (action === 'draft') {
               if (input.readOnly) throw new Error('Draft input is read-only');
               input.focus(); input.value = text; input.setSelectionRange(2, 6, 'backward');

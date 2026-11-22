@@ -9,10 +9,12 @@ import AppKit
         let args = CommandLine.arguments
         let stage = args.firstIndex(of: "--recovery-stage").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil } ?? "seed"
         let project = output.appendingPathComponent("project")
-        let file = project.appendingPathComponent(stage == "legacy" ? "legacy.pptx" : stage == "blank" ? "blank.pptx" : "sample.pptx")
+        let file = project.appendingPathComponent(stage.hasPrefix("legacy") ? "legacy.pptx" : stage == "blank" ? "blank.pptx" : "sample.pptx")
         let marker = output.appendingPathComponent("presentation-fixture.json")
         let old = "核对交付日期", reply = "负责同事已复核 🐋\n下周确认最终日期", new = "核对图表标题 🧭\n补上统计口径"
         let draft = "保留另一条未发送回复"
+        let legacyOld = "旧版交付批注", legacyEarlier = "旧版答复验收"
+        let legacyFirst = "回复第二条 & 核对 🐋\n下一步已确认", legacyDraft = "再次复核：已更新\n保留原内容"
         var checks: [String: Bool] = [:], observed: [String: Any] = [:], error: String?, requests = 0
 
         func open(_ path: URL) async throws -> AgentOfficeWindow {
@@ -41,8 +43,8 @@ import AppKit
         func texts(_ value: [String: Any]) -> [String] {
             (value["messages"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
         }
-        func select(_ editor: AgentOfficeWindow, _ text: String) async throws -> [String: Any] {
-            _ = try await editor.checkPresentationComments(action: "select", text: text)
+        func select(_ editor: AgentOfficeWindow, _ text: String, last: Bool = false) async throws -> [String: Any] {
+            _ = try await editor.checkPresentationComments(action: last ? "select-last" : "select", text: text)
             return try await poll(editor, "select") { texts($0).first?.hasPrefix(text) == true && $0["newEnabled"] as? Bool == true }
         }
         func fits(_ value: [String: Any], dark: Bool) -> Bool {
@@ -69,11 +71,11 @@ import AppKit
             }
             runtime.modelRequestCheck = { requests += 1; throw PetError("演示文稿批注验收禁止模型请求") }
             let files = try AgentFiles(workspace: project.path), journal = AgentWorkspaceRecovery(profile: store.directory)
-            let dark = stage == "apply" || stage == "legacy"
+            let dark = ["apply", "legacy", "legacy-seed", "legacy-reopen"].contains(stage)
             control.window?.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             control.show(tab: "chat")
             control.window?.setContentSize(NSSize(width: dark ? 780 : 1320, height: dark ? 540 : 800))
-            if stage == "seed" || stage == "blank" || stage == "legacy" {
+            if ["seed", "blank", "legacy", "legacy-seed"].contains(stage) {
                 let hash = try files.fileHash(file)
                 let task = tasks.create(title: "核对演示文稿批注", workspace: project.path, draft: "保留任务原输入")
                 control.showAgentTask(task); control.showTaskDocument(file.path)
@@ -108,11 +110,37 @@ import AppKit
                     checks["draftOnlyKeepsExactOriginalAndPrivateBytes"] = try state.documentDirty == false && state.dirty &&
                         files.fileHash(file) == hash && AgentFiles(workspace: asset.deletingLastPathComponent().path).fileHash(asset) == hash
                     try JSONEncoder().encode(PresentationFixture(task: task, window: window, tab: tab.id, hash: hash)).write(to: marker, options: .atomic)
+                } else if stage == "legacy-seed" {
+                    let selected = try await select(editor, legacyOld, last: true)
+                    checks["selectingSecondIdenticalCommentUsesDistinctThread"] = texts(selected) == [legacyOld] &&
+                        selected["slide"] as? String == "第 2 张" && selected["readOnly"] as? Bool == false
+                    _ = try await editor.checkPresentationComments(action: "draft", text: legacyFirst)
+                    _ = try await editor.checkPresentationComments(action: "submit")
+                    let replied = try await poll(editor, "legacyFirstReply") { texts($0) == [legacyOld, legacyFirst] && $0["newEnabled"] as? Bool == true }
+                    checks["legacyReplyIsNestedWithoutChangingFormatControls"] =
+                        (replied["messages"] as? [[String: Any]])?.last?["reply"] as? Bool == true &&
+                        replied["status"] as? String == ""
+                    let pending = try await editor.checkPresentationComments(action: "draft", text: legacyDraft)
+                    checks["legacyReplyFitsInDarkNarrowWindow"] = fits(pending, dark: true) &&
+                        measure("legacyNarrow", pending, width: 780, height: 540)
+                    _ = try await editor.checkPresentationComments(image: output.appendingPathComponent("legacy-review-dark.png"))
+                    guard await flushWorkspaceWindows(), let window = control.workspaceSession?.id,
+                          let tab = control.taskWorkspace.recoveryLayouts.first(where: { $0.taskID == task })?.tabs.first(where: { $0.root == "document:" + file.path }),
+                          let saved = try journal.loadPage(windowID: window, pageID: tab.id, taskID: task), let asset = saved.asset,
+                          let stagedHash = saved.saved.value.asset?.hash else { throw PetError("旧版批注回复未写入恢复附件") }
+                    let state = try AgentOfficeWindow.recoveryState(saved.saved.value)
+                    checks["legacyReplyAutosaveKeepsOriginalAndPersistsDirtyPackage"] = try state.documentDirty == true &&
+                        files.fileHash(file) == hash && stagedHash != hash
+                    let pinned = try AgentFiles(workspace: asset.deletingLastPathComponent().path)
+                    let results = try AgentFiles(workspace: output.path)
+                    try results.copyFile(asset, from: pinned, to: output.appendingPathComponent("legacy-recovery.pptx"),
+                                         permissions: 0o600, expectedHash: stagedHash, maximum: AgentOffice.maximum)
+                    try JSONEncoder().encode(PresentationFixture(task: task, window: window, tab: tab.id, hash: hash)).write(to: marker, options: .atomic)
                 } else {
                     if stage == "legacy" {
-                        let selected = try await select(editor, "旧版交付批注")
-                        checks["legacyReviewKeepsExistingReplyAndAllowsNewComment"] = texts(selected) == ["旧版交付批注", "旧版答复验收"] &&
-                            selected["status"] as? String == "" && selected["readOnly"] as? Bool == true && selected["newEnabled"] as? Bool == true
+                        let selected = try await select(editor, legacyOld)
+                        checks["legacyReviewKeepsExistingReplyAndAllowsNewComment"] = texts(selected) == [legacyOld, legacyEarlier] &&
+                            selected["status"] as? String == "" && selected["readOnly"] as? Bool == false && selected["newEnabled"] as? Bool == true
                     } else {
                         checks["blankDeckHasEmptyReview"] = pane["notice"] as? String == "暂无批注"
                     }
@@ -178,6 +206,43 @@ import AppKit
                     let state = try AgentOfficeWindow.recoveryState(saved.saved.value)
                     checks["saveKeepsOtherDraftAgainstSavedBytes"] = try state.documentDirty == false && state.openedHash == hash &&
                         AgentFiles(workspace: asset.deletingLastPathComponent().path).fileHash(asset) == hash
+                } else if stage == "legacy-resume" {
+                    let range = restored["range"] as? [Any], review = view["presentationReview"] as? [String: Any]
+                    let selected = review?["selected"] as? [String: Any], legacyID = selected?["legacyID"] as? [String: Int]
+                    checks["restoresDraftExactThreadSlideSelectionAndFocus"] = texts(restored) == [legacyOld, legacyFirst] &&
+                        legacyID == ["author": 0, "index": 5] && restored["draft"] as? String == legacyDraft &&
+                        restored["slide"] as? String == "第 2 张" && restored["focused"] as? Bool == true &&
+                        range?.first as? Int == 2 && range?.dropFirst().first as? Int == 6 && range?.last as? String == "backward"
+                    _ = try await editor.checkPresentationComments(action: "key")
+                    _ = try await poll(editor, "legacySecondReply") { texts($0) == [legacyOld, legacyFirst, legacyDraft] && $0["newEnabled"] as? Bool == true }
+                    var firstSlide = view
+                    firstSlide.removeValue(forKey: "presentationReview")
+                    firstSlide["selection"] = ["slide": 1, "part": NSNull(), "target": NSNull()]
+                    firstSlide["scroll"] = []
+                    _ = try await editor.checkWorkspaceView(firstSlide)
+                    _ = try await editor.checkPresentationComments(action: "new")
+                    _ = try await poll(editor, "firstSlideLegacyThread") { $0["slide"] as? String == "第 1 张" && $0["focused"] as? Bool == true }
+                    _ = try await editor.checkPresentationComments(action: "draft", text: new)
+                    _ = try await editor.checkPresentationComments(action: "submit")
+                    _ = try await poll(editor, "newLegacyThread") { texts($0) == [new] && $0["newEnabled"] as? Bool == true }
+                    _ = try await editor.checkPresentationComments(action: "draft", text: reply)
+                    _ = try await editor.checkPresentationComments(action: "submit")
+                    let fresh = try await poll(editor, "newLegacyThreadReply") { texts($0) == [new, reply] && $0["newEnabled"] as? Bool == true }
+                    checks["canReplyToThreadBeforeItsFirstSave"] = fresh["slide"] as? String == "第 1 张" && fresh["status"] as? String == ""
+                    try await editor.saveDocument()
+                    let hash = try files.fileHash(file)
+                    checks["legacySaveRecordsOneActualCheckpointAndClearsDirty"] = !editor.dirty && hash != fixture.hash &&
+                        tasks.task(fixture.task)?.changes.contains {
+                            $0.path == file.path && $0.beforeHash == fixture.hash && $0.afterHash == hash && $0.backup != nil
+                        } == true
+                } else if stage == "legacy-reopen" {
+                    checks["savedNewThreadAndReplyReopenOnOriginalSlide"] = texts(restored) == [new, reply] && restored["slide"] as? String == "第 1 张"
+                    let first = try await select(editor, legacyOld)
+                    checks["otherIdenticalCommentKeepsItsOriginalReply"] = texts(first) == [legacyOld, legacyEarlier]
+                    let last = try await select(editor, legacyOld, last: true)
+                    checks["bothSavedRepliesReopenUnderTheExactComment"] = texts(last) == [legacyOld, legacyFirst, legacyDraft] &&
+                        last["slide"] as? String == "第 2 张" && last["status"] as? String == ""
+                    checks["readingKeepsSavedFileClean"] = !editor.dirty
                 } else {
                     checks["restoresUnsavedReplyOnNewlySavedThread"] = restored["draft"] as? String == draft &&
                         texts(restored) == [new] && restored["slide"] as? String == "第 1 张"

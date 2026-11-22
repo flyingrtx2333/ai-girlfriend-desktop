@@ -1,7 +1,8 @@
 import type { CommentSnapshot, DeckSnapshot } from '@betteroffice/pptx';
 
 type SlideRef = { part: string | null; index: number };
-type Anchor = { slide: SlideRef; thread: string | null };
+type LegacyCommentID = { author: number; index: number };
+type Anchor = { slide: SlideRef; thread: string | null; legacyID?: LegacyCommentID };
 type Target = { slideId: string | null; commentId: string | null; anchor: Anchor };
 type Draft = { text: string; start: number; end: number; direction: 'none' | 'forward' | 'backward' };
 export type PresentationReview = {
@@ -29,11 +30,13 @@ const int = (v: unknown, max: number) => typeof v === 'number' && Number.isSafeI
 const keys = (v: any, names: string[]) => v && typeof v === 'object' && !Array.isArray(v) &&
   Object.keys(v).length === names.length && names.every(name => Object.hasOwn(v, name));
 const offset = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1e9;
-const validAnchor = (v: any): v is Anchor => keys(v, ['slide', 'thread']) && keys(v.slide, ['part', 'index']) &&
+const validAnchor = (v: any): v is Anchor => (keys(v, ['slide', 'thread']) ||
+  keys(v, ['slide', 'thread', 'legacyID']) && v.thread !== null && keys(v.legacyID, ['author', 'index']) &&
+  int(v.legacyID.author, 0xffffffff) && int(v.legacyID.index, 0xffffffff)) && keys(v.slide, ['part', 'index']) &&
   int(v.slide.index, 1_000_000) && v.slide.index > 0 &&
   (v.slide.part === null || typeof v.slide.part === 'string' && v.slide.part.length > 0 && v.slide.part.length <= 2048 && !v.slide.part.includes('\0')) &&
   (v.thread === null || typeof v.thread === 'string' && /^[a-f0-9]{64}$/.test(v.thread));
-const anchorKey = (anchor: Anchor) => JSON.stringify([anchor.slide.part ?? anchor.slide.index, anchor.thread]);
+const anchorKey = (anchor: Anchor) => JSON.stringify([anchor.slide.part ?? anchor.slide.index, anchor.thread, anchor.legacyID]);
 const targetKey = (target: Target) => target.slideId ? JSON.stringify([target.slideId, target.commentId]) : anchorKey(target.anchor);
 export function validPresentationReview(v: any): v is PresentationReview {
   return keys(v, ['open', 'selected', 'drafts', 'focused', 'listY', 'messageY']) &&
@@ -47,12 +50,43 @@ export function validPresentationReview(v: any): v is PresentationReview {
     new Set(v.drafts.map((d: Draft & { target: Anchor }) => anchorKey(d.target))).size === v.drafts.length;
 }
 
-async function fingerprint(comment: CommentSnapshot) {
+async function digest(value: string) {
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
+  return Array.from(hash, v => v.toString(16).padStart(2, '0')).join('');
+}
+function legacyCommentID(id: string): LegacyCommentID | undefined {
+  const match = /^comment:\d+:(\d+):(\d+)$/.exec(id);
+  if (!match) return;
+  const author = Number(match[1]), index = Number(match[2]);
+  if (int(author, 0xffffffff) && int(index, 0xffffffff)) return { author, index };
+}
+function fingerprint(comment: CommentSnapshot) {
   // The worker assigns new session IDs before save. Match the unchanged
   // opening message on the same slide after reopening the exported package.
-  const bytes = new TextEncoder().encode(JSON.stringify([comment.author, comment.created, comment.xEmu, comment.yEmu, comment.text]));
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(digest, v => v.toString(16).padStart(2, '0')).join('');
+  return digest(JSON.stringify([comment.author, comment.created, comment.xEmu, comment.yEmu, comment.text]));
+}
+
+export async function legacyReplyLinks(deck: DeckSnapshot, parents: ReadonlyMap<string, string>) {
+  const comments = new Map((deck.comments ?? []).map(comment => [comment.id, comment]));
+  const slides = new Map(deck.slides.map((slide, index) => [slide.id, index + 1]));
+  const identify = async (comment: CommentSnapshot) => {
+    const source = legacyCommentID(comment.id);
+    return { signature: await digest([comment.author, comment.created ?? '', comment.text].join('\0')), ...(source ? { source } : {}) };
+  };
+  const links = [];
+  for (const [replyID, parentID] of parents) {
+    const reply = comments.get(replyID), parent = comments.get(parentID);
+    // Slide deletion removes its comments from the document.
+    if (!reply && parent && slides.has(parent.slideId)) throw new Error('待保存的回复不可用，原文件及草稿已保留');
+    if (!reply) continue;
+    const slide = slides.get(reply.slideId);
+    if (slide === undefined) continue;
+    if (!parent || parent.slideId !== reply.slideId || parent.parentId !== null) {
+      throw new Error('旧版回复的原批注无法找到，原文件及草稿已保留');
+    }
+    links.push({ slide, reply: await identify(reply), parent: await identify(parent) });
+  }
+  return links;
 }
 function plainTarget(slide: Slide): Target {
   return { slideId: slide.id, commentId: null, anchor: { slide: slide.ref, thread: null } };
@@ -73,7 +107,9 @@ async function indexDeck(deck: DeckSnapshot): Promise<Catalog> {
   for (const opening of roots) {
     const slide = owners.get(opening.slideId);
     if (!slide) continue;
-    const target = { slideId: slide.id, commentId: opening.id, anchor: { slide: slide.ref, thread: await fingerprint(opening) } };
+    const legacyID = deck.commentFlavor === 'modern' ? undefined : legacyCommentID(opening.id);
+    const target = { slideId: slide.id, commentId: opening.id,
+      anchor: { slide: slide.ref, thread: await fingerprint(opening), ...(legacyID ? { legacyID } : {}) } };
     threads.push({ target, opening, replies: replies.get(opening.id) ?? [] });
   }
   return { slides, threads, modern: deck.commentFlavor === 'modern' };
@@ -83,7 +119,11 @@ function resolve(anchor: Anchor, catalog: Catalog): Target {
   const slide = catalog.slides.find(item => anchor.slide.part === null ? item.ref.index === anchor.slide.index : item.ref.part === anchor.slide.part);
   if (!slide) return missing;
   if (anchor.thread === null) return plainTarget(slide);
-  const matches = catalog.threads.filter(item => item.target.slideId === slide.id && item.target.anchor.thread === anchor.thread);
+  const matches = catalog.threads.filter(item => {
+    const candidate = item.target.anchor;
+    return item.target.slideId === slide.id && candidate.thread === anchor.thread &&
+      (!anchor.legacyID || candidate.legacyID?.author === anchor.legacyID.author && candidate.legacyID.index === anchor.legacyID.index);
+  });
   return matches.length === 1 ? matches[0].target : missing;
 }
 
@@ -154,12 +194,9 @@ export function createPresentationComments(root: HTMLElement, service: Services)
   function updateControls() {
     const thread = findThread(selected);
     const writable = !locked && !busy && available(selected);
-    const canReply = !thread || catalog.modern;
     add.disabled = locked || busy;
-    composer.hidden = !canReply && !input.value;
-    input.readOnly = !writable || !canReply || thread?.opening.resolved === true;
+    input.readOnly = !writable || thread?.opening.resolved === true;
     submit.disabled = input.readOnly || !input.value.trim();
-    submit.hidden = !canReply;
     resolveButton.hidden = !thread || !catalog.modern;
     resolveButton.disabled = !writable;
     cancel.hidden = !selected || !drafts.has(targetKey(selected)) && selected.anchor.thread !== null;
