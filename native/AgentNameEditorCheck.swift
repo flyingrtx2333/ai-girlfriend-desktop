@@ -28,10 +28,10 @@ import AppKit
             guard let view else { return nil }; if let value = view as? T, predicate(value) { return value }
             for child in view.subviews { if let value = find(type, in: child, matching: predicate) { return value } }; return nil
         }
-        func field(_ name: String, _ sheet: AgentDialogController) throws -> NSTextField {
+        func field(_ name: String, _ sheet: NSViewController) throws -> NSTextField {
             guard let value = find(NSTextField.self, in: sheet.view, matching: { $0.accessibilityLabel() == name }) else { throw PetError("缺少命名字段：" + name) }; return value
         }
-        func click(_ title: String, _ sheet: AgentDialogController) throws {
+        func click(_ title: String, _ sheet: NSViewController) throws {
             guard let value = find(NSButton.self, in: sheet.view, matching: { $0.title == title }) else { throw PetError("缺少命名操作：" + title) }; value.performClick(nil)
         }
         func closed(_ host: NSWindow) async throws {
@@ -161,11 +161,11 @@ import AppKit
             for (mode, directory, label, name) in [(AgentWorkMode.coding, path, "工作区名称", "审阅工作区"), (.general, folder, "文件夹名称", "审阅资料夹")] {
                 let readme = URL(fileURLWithPath: directory).appendingPathComponent("README.md"), projectBytes = try Data(contentsOf: readme)
                 control.checkNameEditor("directory", id: directory, mode: mode)
-                guard let directorySheet = host.agentDialog else { throw PetError("目录名称表单未打开") }
-                let directoryInput = try field(label, directorySheet); directoryInput.stringValue = String(repeating: "长", count: 81); try click("保存", directorySheet)
-                checks["directoryErrorRetainsInput-" + mode.rawValue] = try directoryInput.stringValue.count == 81 && field("工作区保存状态", directorySheet).stringValue.contains("80")
-                directoryInput.stringValue = name; try click("保存", directorySheet); try await closed(host)
-                checks["directoryRenameIsDisplayOnly-" + mode.rawValue] = try tasks.organization.name(directory, mode: mode) == name && Data(contentsOf: readme) == projectBytes && Data(contentsOf: taskFile) == taskBeforeGroups
+                guard let directoryPage = control.workspaceEditor, host.agentDialog == nil else { throw PetError("页内目录设置未打开") }
+                let directoryInput = try field(label, directoryPage); directoryInput.stringValue = String(repeating: "长", count: 81); try click("保存", directoryPage)
+                checks["directoryErrorRetainsInput-" + mode.rawValue] = try directoryInput.stringValue.count == 81 && field("工作区保存状态", directoryPage).stringValue.contains("80")
+                directoryInput.stringValue = name; try click("保存", directoryPage)
+                checks["directoryRenameIsDisplayOnly-" + mode.rawValue] = try control.workspaceEditor == nil && tasks.organization.name(directory, mode: mode) == name && Data(contentsOf: readme) == projectBytes && Data(contentsOf: taskFile) == taskBeforeGroups
             }
             control.showAgentTask(none); control.checkNameEditor("task", id: none)
             guard let noneSheet = host.agentDialog else { throw PetError("无工作区问答名称表单未打开") }

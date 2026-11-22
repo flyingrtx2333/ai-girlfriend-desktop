@@ -132,7 +132,13 @@ struct AgentDirectoryEntry: Codable, Equatable {
         let entry = try files.entryMetadata(file)
         guard entry.kind == "missing" || entry.kind == "file" && (entry.permissions ?? 0) & 0o222 != 0 else { throw PetError("任务组织记录只读，未保存修改") }
         do { try files.writeData(data, to: file, permissions: 0o600, expectedTarget: openedSignature) }
-        catch { throw PetError("任务组织记录未保存，请重新打开应用后重试：" + error.localizedDescription) }
+        catch {
+            let cause = error as NSError
+            throw NSError(domain: cause.domain, code: cause.code, userInfo: [
+                NSLocalizedDescriptionKey: "任务组织记录未保存，请重新打开应用后重试：" + cause.localizedDescription,
+                NSUnderlyingErrorKey: cause
+            ])
+        }
         openedSignature = try files.entryMetadata(file).signature
         document = value; unreadTasks = Set(value.unreadTasks ?? []); revision += 1; onChange?()
     }

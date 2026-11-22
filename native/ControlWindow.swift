@@ -80,7 +80,7 @@ final class FormDocumentView: NSView {
     weak var companion: AppDelegate?
     private var selectedTab = "chat"
     var isShowingKnowledge: Bool { selectedTab == "knowledge" }
-    var hasTaskFocus: Bool { selectedTab == "chat" && window?.isVisible == true && (window?.isKeyWindow == true || window?.childWindows?.contains(where: \.isKeyWindow) == true) }
+    var hasTaskFocus: Bool { selectedTab == "chat" && workspaceEditor == nil && window?.isVisible == true && (window?.isKeyWindow == true || window?.childWindows?.contains(where: \.isKeyWindow) == true) }
     private var settingsReturnTab = "chat", settingsBackButton: NSButton?
     private var settingsReturnKnowledgeRoot: String?
     private let chatNav = NSButton(title: "对话", target: nil, action: nil), settingsNav = NSButton(title: "设置", target: nil, action: nil)
@@ -88,6 +88,7 @@ final class FormDocumentView: NSView {
     private let sidebarWake = NSTextField(labelWithString: ""), listenButton = NSButton(title: "立即聆听", target: nil, action: nil)
     private let stopRecordingButton = NSButton(title: "停止录音", target: nil, action: nil), voiceStopButton = AgentDialogButton(title: "停止录音", target: nil, action: nil)
     private let chat = NSView(), settings = NSView(), attentionContent = NSView(), automationContent = NSView(), knowledgeContent = NSView()
+    private let workspaceEditorContent = NSView()
     private(set) var knowledgePageHost = AgentKnowledgePageHost()
     private let libraryButton = AgentWorkbenchButton(title: "知识库", target: nil, action: nil), projectKnowledgeButton = AgentWorkbenchButton(title: "项目知识", target: nil, action: nil)
     private(set) var attentionPageController: AgentAttentionWindow?
@@ -223,7 +224,7 @@ final class FormDocumentView: NSView {
     private var dataImportView: AgentDataImportView?
     private var taskSwitcher: AgentTaskSwitcher?
     private var nameEditor: AgentNameEditor?
-    private var workspaceEditor: AgentWorkspaceEditor?
+    private(set) var workspaceEditor: AgentWorkspaceEditor?
     private var archivedTasksView: AgentArchivedTasksView?
     private var generalSettingsSave: AgentDialogButton?
     private var generalSettingsPanel: AgentGeneralSettingsView?
@@ -936,7 +937,7 @@ final class FormDocumentView: NSView {
             main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 200), main.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8), main.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), main.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
             pageTitle.topAnchor.constraint(equalTo: main.topAnchor, constant: 22), titleLeading, pageTitle.trailingAnchor.constraint(lessThanOrEqualTo: main.trailingAnchor, constant: -28),
             panels.topAnchor.constraint(equalTo: pageTitle.bottomAnchor, constant: 18), panels.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), panels.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), panels.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
-        for panel in [chat, settings, attentionContent, automationContent, knowledgeContent] { panels.addSubview(panel); pin(panel, to: panels) }
+        for panel in [chat, settings, attentionContent, automationContent, knowledgeContent, workspaceEditorContent] { panels.addSubview(panel); pin(panel, to: panels) }
         knowledgeContent.addSubview(knowledgePageHost); pin(knowledgePageHost, to: knowledgeContent)
         buildChat(); buildSettingsSidebar(in: content); buildSettings(); changeTab()
     }
@@ -1038,6 +1039,7 @@ final class FormDocumentView: NSView {
         main.addSubview(attentionContent); pin(attentionContent, to: main)
         main.addSubview(automationContent); pin(automationContent, to: main)
         main.addSubview(knowledgeContent); pin(knowledgeContent, to: main)
+        main.addSubview(workspaceEditorContent); pin(workspaceEditorContent, to: main)
         knowledgeContent.addSubview(knowledgePageHost); pin(knowledgePageHost, to: knowledgeContent)
         knowledgePageHost.onRootChange = { [weak self] _ in self?.refreshKnowledgeNavigation() }
         buildWorkbenchConversation()
@@ -1235,7 +1237,8 @@ final class FormDocumentView: NSView {
         guard companion?.usesAgent == true, inspectorWidth != nil, let task = currentAgentTask else { return }
         taskSwitcher?.refresh()
         let keepSearchHitVisible = isMessageSearchVisible
-        let configuring = selectedTab == "settings", chatting = selectedTab == "chat", width = window?.contentView?.bounds.width ?? 1200
+        let configuring = workspaceEditor == nil && selectedTab == "settings", chatting = workspaceEditor == nil && selectedTab == "chat"
+        let width = window?.contentView?.bounds.width ?? 1200
         terminalPanel?.selectTask(chatting ? task : nil)
         terminalButton.isEnabled = AgentTerminalPanel.available(task) && companion?.agentStore?.organization.archiveID(task.organizationWorkspace, mode: task.organizationMode) == nil
         workbenchInspector.canOpenTerminal = terminalButton.isEnabled
@@ -1714,6 +1717,7 @@ final class FormDocumentView: NSView {
     private func showTaskSwitcher() {
         guard let tasks = companion?.agentStore, let window, !window.hasBlockingDialog, taskSwitcher == nil, saveAgentDraft() else { return }
         show(tab: "chat")
+        guard workspaceEditor == nil else { return }
         taskSwitcher = AgentTaskSwitcher(store: tasks, selected: agentTaskID, onSelect: { [weak self] id in self?.selectAgentTask(id) }, onClose: { [weak self] in self?.taskSwitcher = nil })
         taskSwitcher?.begin(in: window)
     }
@@ -1741,17 +1745,19 @@ final class FormDocumentView: NSView {
     }
     func canPerformShortcut(_ command: AgentShortcutCommand) -> Bool {
         guard companion?.usesAgent == true, window?.hasBlockingDialog != true else { return false }
+        let chatting = workspaceEditor == nil && selectedTab == "chat"
         switch command {
         case .settings: return true
-        case .newTask, .searchTasks: return true
+        case .newTask: return true
+        case .searchTasks: return workspaceEditor == nil
         case .switchTask: return currentAgentTask != nil
-        case .leftSidebar: return selectedTab == "chat"
-        case .findInTask: return selectedTab == "chat" && currentAgentTask != nil
+        case .leftSidebar: return chatting
+        case .findInTask: return chatting && currentAgentTask != nil
         case .newWindow: return currentAgentTask != nil
-        case .previousTask: return selectedTab == "chat" && sideTaskTabID == nil && taskNavigationIndex > 0
-        case .nextTask: return selectedTab == "chat" && sideTaskTabID == nil && taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
-        case .taskInspector: return selectedTab == "chat" && currentAgentTask != nil
-        case .planMode: return selectedTab == "chat" && currentAgentTask != nil && window?.firstResponder === composer && modePopup.isEnabled && currentAgentTask?.automation == nil && currentAgentTask?.status != .running && currentAgentTask?.status != .waiting
+        case .previousTask: return chatting && sideTaskTabID == nil && taskNavigationIndex > 0
+        case .nextTask: return chatting && sideTaskTabID == nil && taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
+        case .taskInspector: return chatting && currentAgentTask != nil
+        case .planMode: return chatting && currentAgentTask != nil && window?.firstResponder === composer && modePopup.isEnabled && currentAgentTask?.automation == nil && currentAgentTask?.status != .running && currentAgentTask?.status != .waiting
         }
     }
     func performShortcut(_ command: AgentShortcutCommand) {
@@ -1911,11 +1917,14 @@ final class FormDocumentView: NSView {
         return attentionPageController
     }
     private func canLeaveMainPage() -> Bool {
+        guard workspaceEditor?.prepareToLeave() != false else { return false }
         guard taskWorkspace.prepareToNavigate() else { return false }
         guard attentionPageController?.prepareToClose() != false else { return false }
         if selectedTab == "automation", automationWindow?.prepareToLeave() == false { return false }
         if selectedTab == "knowledge", !knowledgePageHost.prepareToLeave() { return false }
-        return leaveSettingsPage()
+        guard leaveSettingsPage() else { return false }
+        if workspaceEditor != nil { detachWorkspaceEditor(); changeTab() }
+        return true
     }
     private func leaveSettingsPage() -> Bool {
         if canLeaveBasicSettings(), settingsPageHost.leave() {
@@ -2703,10 +2712,14 @@ final class FormDocumentView: NSView {
         bottom.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
     }
 
-    func reopen() { show(tab: selectedTab) }
+    func reopen() {
+        guard let editor = workspaceEditor else { show(tab: selectedTab); return }
+        showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        editor.focusName(); companion?.updatePetWorkspaceOcclusion()
+    }
 
     func show(tab: String) {
-        if selectedTab != tab, !canLeaveMainPage() { return }
+        if selectedTab != tab || workspaceEditor != nil { guard canLeaveMainPage() else { return } }
         let enteringSettings = tab == "settings" && selectedTab != "settings"
         let returningToConversation = selectedTab != "chat" && tab == "chat"
         if selectedTab == "chat", tab != "chat" { rememberConversationPosition() }
@@ -2733,7 +2746,8 @@ final class FormDocumentView: NSView {
         companion?.updatePetWorkspaceOcclusion()
     }
     private func focusTaskInput() {
-        if !taskWorkspace.isHiddenOrHasHiddenAncestor, let page = taskWorkspace.currentController, page is AgentEditResendWindow || page is AgentRoundRollbackWindow || page is AgentMCPContentWindow { page.settingsDidAppear() }
+        if let workspaceEditor { workspaceEditor.focusName() }
+        else if !taskWorkspace.isHiddenOrHasHiddenAncestor, let page = taskWorkspace.currentController, page is AgentEditResendWindow || page is AgentRoundRollbackWindow || page is AgentMCPContentWindow { page.settingsDidAppear() }
         else if !workbenchInspector.isHiddenOrHasHiddenAncestor, terminalSplit.isHidden, let window {
             if !window.makeFirstResponder(resultsButton) { window.makeFirstResponder(nil) }
         }
@@ -2741,18 +2755,24 @@ final class FormDocumentView: NSView {
     }
     @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); show(tab: sender.tag == 0 ? "chat" : "settings") }
     private func changeTab() {
-        if selectedTab != "chat" { taskModelPopover?.close(); taskFind.close(notify: false); clearMessageSearchHighlight(); dismissExtensionCandidates() }
-        chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"; attentionContent.isHidden = selectedTab != "attention"; automationContent.isHidden = selectedTab != "automation"; knowledgeContent.isHidden = selectedTab != "knowledge"
+        let editingWorkspace = workspaceEditor != nil
+        let chatting = selectedTab == "chat" && !editingWorkspace, configuring = selectedTab == "settings" && !editingWorkspace
+        if selectedTab != "chat" { taskFind.close(notify: false); clearMessageSearchHighlight() }
+        if !chatting { taskModelPopover?.close(); dismissExtensionCandidates() }
+        chat.isHidden = !chatting; settings.isHidden = !configuring
+        attentionContent.isHidden = editingWorkspace || selectedTab != "attention"
+        automationContent.isHidden = editingWorkspace || selectedTab != "automation"
+        knowledgeContent.isHidden = editingWorkspace || selectedTab != "knowledge"
+        workspaceEditorContent.isHidden = !editingWorkspace
         taskSidebar.setMainPage(selectedTab)
         refreshKnowledgeNavigation()
         AgentWorkbenchTheme.color(automationButton.layer, selectedTab == "automation" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
-        let configuring = selectedTab == "settings"
         settingsSidebar.isHidden = !configuring; chatSidebarViews.forEach { $0.isHidden = configuring }
-        contentSurface.showsSettings = configuring; pageTitle.isHidden = configuring
+        contentSurface.showsSettings = configuring; pageTitle.isHidden = configuring || editingWorkspace
         titleLeading.constant = configuring ? 80 : companion?.usesAgent == true ? (sidebarRequested ? 126 : 190) : 28
         pageTitle.font = .systemFont(ofSize: configuring ? 22 : companion?.usesAgent == true ? 18 : 14, weight: .semibold)
         pageTitle.textColor = companion?.usesAgent == true || configuring ? .labelColor : AgentWorkbenchTheme.secondaryText
-        workbenchChrome.forEach { $0.isHidden = selectedTab != "chat" }
+        workbenchChrome.forEach { $0.isHidden = !chatting }
         if configuring { updateSettingsSections() } else { pageTitle.stringValue = currentAgentTask?.title ?? "对话" }
         updateSettingsActions()
         AgentWorkbenchTheme.color(chatNav.layer, selectedTab == "chat" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
@@ -3305,7 +3325,7 @@ final class FormDocumentView: NSView {
         } catch { savedStatus.showSaveFailure(error) }
     }
     @objc private func send() {
-        guard let companion else { return }
+        guard workspaceEditor == nil, let companion else { return }
         guard currentAgentTask?.archived != true else { setStatus("任务已归档，请先恢复", error: true); return }
         guard importTaskID != agentTaskID || attachmentImport == nil else { return }
         if let task = currentAgentTask, task.kind == "hook" { companion.agentRuntime?.cancel(task.id); return }
@@ -3501,7 +3521,7 @@ final class FormDocumentView: NSView {
         taskSwitcher?.cancel()
         taskModelPopover?.close()
         nameEditor?.cancel()
-        workspaceEditor?.cancel()
+        detachWorkspaceEditor()
         pendingRender?.cancel(); draftSave?.cancel(); branchTask?.cancel(); invalidateModelCheck(); dismissExtensionCandidates()
         if let manager = composer.layoutManager { manager.textStorage?.removeLayoutManager(manager) }
         composer.delegate = nil; windowDraft = nil
@@ -3521,6 +3541,7 @@ final class FormDocumentView: NSView {
         finishOwnedTaskPanels(); return true
     }
     func prepareOwnedTaskPanels(preservingRecovery: Bool = false) async -> Bool {
+        guard workspaceEditor?.prepareToLeave() != false else { return false }
         guard canLeaveBasicSettings(preservingRecovery: preservingRecovery) else { return false }
         guard settingsPageHost.prepareToQuit(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard generalSettingsPanel?.prepareToClose() != false else { return false }
@@ -3543,7 +3564,7 @@ final class FormDocumentView: NSView {
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         return true
     }
-    func finishOwnedTaskPanels() { workspaceSession?.finish(); settingsPageHost.finish(); knowledgePageHost.finish(); taskWorkspace.finish() }
+    func finishOwnedTaskPanels() { detachWorkspaceEditor(); workspaceSession?.finish(); settingsPageHost.finish(); knowledgePageHost.finish(); taskWorkspace.finish() }
     private func currentSettingsNavigationInput() -> SettingsNavigationInput {
         let query = settingsSearch.stringValue
         let responder = window?.firstResponder
@@ -4292,8 +4313,18 @@ final class FormDocumentView: NSView {
         nameEditor = AgentNameEditor(title: title, label: label, value: value, save: save, onClose: { [weak self] in self?.nameEditor = nil; self?.renderAgentMessages() })
         nameEditor?.begin(in: window)
     }
+    private func detachWorkspaceEditor() {
+        workspaceEditor?.view.removeFromSuperview(); workspaceEditor = nil; workspaceEditorContent.isHidden = true
+    }
     private func directoryAction(_ path: String, mode: AgentWorkMode, action: String) {
         guard let tasks = companion?.agentStore else { return }
+        if let editor = workspaceEditor {
+            if action == "rename", editor.original.path == path, editor.original.mode == mode { editor.focusName(); return }
+            if action != "open" {
+                guard editor.prepareToLeave() else { return }
+                detachWorkspaceEditor(); changeTab()
+            }
+        }
         do {
             if action == "archive" || action == "restore" {
                 saveAgentDraft(); try tasks.setWorkspaceArchived(path, mode: mode, archived: action == "archive")
@@ -4306,16 +4337,28 @@ final class FormDocumentView: NSView {
                 guard NSWorkspace.shared.open(folder) else { throw PetError("主文件夹未能打开") }; return
             }
             else if action == "rename" {
-                guard let window, !window.hasBlockingDialog, workspaceEditor == nil, nameEditor == nil, saveAgentDraft(), let entry = tasks.organization.entry(path,mode:mode,tasks:tasks.tasks) else { return }
+                guard let window, !window.hasBlockingDialog, nameEditor == nil, saveAgentDraft(), let entry = tasks.organization.entry(path,mode:mode,tasks:tasks.tasks) else { return }
+                if selectedTab == "chat" { rememberConversationPosition() }
+                let focus = window.firstResponder as? NSView
                 let revision = tasks.organization.revision
-                workspaceEditor = AgentWorkspaceEditor(entry:entry,save:{ name,icon,color,folders,primary in
+                let editor = AgentWorkspaceEditor(entry:entry,save:{ name,icon,color,folders,primary in
                     guard tasks.organization.revision == revision else { throw PetError("任务分组已变化，请重新打开后重试") }
                     try tasks.organization.editWorkspace(entry,name:name,icon:icon,color:color,folders:folders,primary:primary,tasks:tasks.tasks)
-                },archive:{ [weak self] in
+                },archive:{
                     guard tasks.organization.revision == revision else { throw PetError("工作区已变化，请重新打开后重试") }
-                    try tasks.setWorkspaceArchived(path,mode:mode,archived:true); self?.finishArchive(mode)
-                },onClose:{ [weak self] in self?.workspaceEditor = nil; self?.renderAgentMessages() })
-                workspaceEditor?.begin(in:window); return
+                    try tasks.setWorkspaceArchived(path,mode:mode,archived:true)
+                },onClose:{ [weak self, weak focus] result in
+                    guard let self else { return }
+                    detachWorkspaceEditor(); changeTab()
+                    if result == .archived { finishArchive(mode) } else { renderAgentMessages() }
+                    if selectedTab == "chat" { restoreActiveConversationPosition() }
+                    if let focus, focus.window === self.window, !focus.isHiddenOrHasHiddenAncestor, self.window?.makeFirstResponder(focus) == true { return }
+                    if selectedTab == "chat" { focusTaskInput() }
+                })
+                workspaceEditor = editor
+                workspaceEditorContent.addSubview(editor.view); pin(editor.view, to: workspaceEditorContent)
+                changeTab(); window.contentView?.layoutSubtreeIfNeeded(); editor.focusName(selectAll: true)
+                return
             }
             renderAgentMessages()
         } catch { setStatus(error.localizedDescription, error: true) }
