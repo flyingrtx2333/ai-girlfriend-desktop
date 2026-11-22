@@ -124,7 +124,11 @@ import WebKit
             else { await runSpreadsheetNotesCheck(output) }
             NSApp.terminate(nil); return
         }
-        if CommandLine.arguments.contains("--workspace-office-recovery-check") { await runOfficeRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--workspace-office-recovery-check") {
+            if CommandLine.arguments.contains("--presentation-comments") { await runPresentationCommentsCheck(output) }
+            else { await runOfficeRecoveryCheck(output) }
+            NSApp.terminate(nil); return
+        }
         if CommandLine.arguments.contains("--workspace-office-recovery-ui") { await runOfficeRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") { await runWorkspaceRecoveryLifecycleCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-recovery-ui") { await runWorkspaceRecoveryLifecycleCheck(output, interactive: true); return }

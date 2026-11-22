@@ -7,6 +7,8 @@ import { createOfficeView, validateOfficeView, type OfficeView } from './view-st
 import { createDocxReview } from './docx-review';
 import { createSpreadsheetNotes, spreadsheetCell } from './spreadsheet-notes';
 import { createSpreadsheetThreads } from './spreadsheet-threads';
+import type { CommentReceipt, DeckSnapshot } from '@betteroffice/pptx';
+import { createPresentationComments, type PresentationCommentChange } from './presentation-comments';
 import './style.css';
 
 configureDefaultFonts({ fonts });
@@ -19,6 +21,7 @@ let readOnly = true, operationBusy = 0, lockGeneration = 0, fatal: Error | null 
 const pendingOperations = new Set<(error: Error) => void>();
 let pendingReady: { resolve: () => void; reject: (error: Error) => void } | null = null;
 let workspaceView: ReturnType<typeof createOfficeView> | null = null;
+let modernPresentationCommentsEdited = false;
 let annotationNavigation: Promise<void> = Promise.resolve();
 let annotationRequest = 0;
 async function locateSheetAnnotation({ sheet, cell }: { sheet: string; cell: string }) {
@@ -44,10 +47,59 @@ const sheetNotes = createSpreadsheetNotes(rootElement, locateSheetAnnotation, ac
 const sheetThreads = createSpreadsheetThreads(rootElement, locateSheetAnnotation, activeAnnotationCell, changed, spreadsheetViewChanged,
   hasReviewDraft => { if (ready && currentFormat === 'xlsx') notify('review-draft', { hasReviewDraft }); },
   cell => sheetNotes.hasNote(cell));
+const presentationComments = createPresentationComments(rootElement, {
+  read: () => perform(async () => (await editor.handleAsync()).snapshot() as Promise<DeckSnapshot>),
+  currentSlide: () => workspaceView?.activePresentationSlide() ?? null,
+  navigate: async slide => {
+    if (!ready || currentFormat !== 'pptx' || !workspaceView || operationBusy || exported) throw new Error('演示文稿正在处理，请稍候');
+    const view = workspaceView;
+    await perform(() => view.locatePresentationSlide(slide));
+  },
+  write: writePresentationComment,
+  viewChanged: () => { if (ready && currentFormat === 'pptx') notify('view-change'); },
+  draftChanged: hasReviewDraft => { if (ready && currentFormat === 'pptx') notify('review-draft', { hasReviewDraft }); },
+});
+async function writePresentationComment(change: PresentationCommentChange): Promise<string> {
+  if (!ready || currentFormat !== 'pptx' || readOnly || exported || operationBusy) throw new Error('当前演示文稿暂不可编辑');
+  if (change.kind !== 'resolve' && (!change.text.trim() || change.text.length > 32_767 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/.test(change.text))) {
+    throw new Error('批注为空、过长或包含无效字符');
+  }
+  operationBusy += 1; updateInteraction();
+  try {
+    return await perform(async () => {
+      const access = await editor.handleAsync(), deck = await access.snapshot() as DeckSnapshot;
+      if (!deck.slides.some(slide => slide.id === change.slideId)) throw new Error('原幻灯片已移除，草稿已保留');
+      let modern = deck.commentFlavor === 'modern';
+      let receipt: CommentReceipt;
+      if (change.kind === 'add') {
+        if (!deck.commentFlavor && !deck.comments?.length) {
+          await access.setCommentFlavor('modern');
+          modern = true;
+        }
+        receipt = await access.addComment(change.slideId, { author: '小鲸', initials: '鲸', text: change.text, created: new Date().toISOString() });
+      } else {
+        const thread = deck.comments?.find(item => item.id === change.commentId && item.slideId === change.slideId && item.parentId === null);
+        if (!thread) throw new Error('原批注已移除，草稿已保留');
+        if (change.kind === 'reply') {
+          if (!modern) throw new Error('旧版批注暂不支持添加回复');
+          if (thread.resolved) throw new Error('请先重新打开已解决的批注');
+          receipt = await access.replyToComment(thread.id, { author: '小鲸', initials: '鲸', text: change.text, created: new Date().toISOString() });
+        } else {
+          if (!modern) throw new Error('旧版批注不支持解决状态');
+          receipt = await access.setCommentStatus(thread.id, change.resolved);
+        }
+      }
+      modernPresentationCommentsEdited ||= modern;
+      changed();
+      return receipt.parentId ?? receipt.commentId;
+    });
+  } finally { operationBusy = Math.max(0, operationBusy - 1); updateInteraction(); }
+}
 function updateInteraction() {
   rootElement.inert = !ready || readOnly || operationBusy > 0;
   sheetNotes.setLocked(rootElement.inert);
   sheetThreads.setLocked(rootElement.inert);
+  presentationComments.setLocked(rootElement.inert);
 }
 async function perform<T>(operation: () => Promise<T>): Promise<T> {
   if (fatal) throw fatal;
@@ -79,6 +131,7 @@ function changed() {
   revision += 1;
   dirty = true; notify('dirty', { value: true, revision });
   if (currentFormat === 'docx') docxReview.refresh();
+  if (currentFormat === 'pptx') presentationComments.invalidate();
 }
 async function presentationFonts() {
   const selected = fonts.BUNDLED_FONTS.filter(face => ['Carlito', 'Noto Sans SC'].includes(face.family));
@@ -161,7 +214,8 @@ async function load(url: string, name: string, locked: boolean) {
   const token = ++generation, format = name.split('.').pop()?.toLowerCase() ?? '';
   if (!['docx', 'xlsx', 'pptx'].includes(format)) throw new Error('不支持此办公文件格式');
   pendingReady?.reject(new Error('文档已切换')); pendingReady = null; rejectOperations(new Error('文档已切换'));
-  workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); sheetThreads.reset();
+  workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); sheetThreads.reset(); presentationComments.reset();
+  modernPresentationCommentsEdited = false;
   annotationNavigation = Promise.resolve();
   ready = false; dirty = false; readOnly = locked; operationBusy = 0; lockGeneration += 1; fatal = null; editor = null; exported = null; currentFormat = format; updateInteraction(); root.render(null);
   const response = await fetch(url, { cache: 'no-store' });
@@ -214,6 +268,7 @@ async function beginExport() {
     const captured = await captureView();
     if (captured.revision !== exportedRevision) throw new Error('导出期间办公内容已变化，请重试');
     return { bytes: exported.length, revision: exportedRevision, view: captured.view,
+      ...(currentFormat === 'pptx' ? { modernPresentationCommentsEdited } : {}),
       ...(currentFormat === 'xlsx' ? { noteEdits: sheetNotes.edits(), threadEdits: sheetThreads.edits() } : {}) };
   } finally { operationBusy = Math.max(0, operationBusy - 1); updateInteraction(); }
 }
@@ -255,13 +310,16 @@ async function verifyClean() {
   return editorState();
 }
 function editorState() { return { ready, dirty, format: currentFormat, revision, readOnly,
-  hasReviewDraft: currentFormat === 'xlsx' ? sheetThreads.hasDraft() : workspaceView?.hasReviewDraft() === true }; }
+  hasReviewDraft: currentFormat === 'xlsx' ? sheetThreads.hasDraft() :
+    currentFormat === 'pptx' ? presentationComments.hasDraft() : workspaceView?.hasReviewDraft() === true }; }
 async function captureView() {
   const controller = workspaceView;
   if (!ready || !controller) throw new Error('办公文件尚未打开');
   if (currentFormat === 'xlsx') await annotationNavigation;
   if (!ready || controller !== workspaceView) throw new Error('文档已切换');
   const before = revision, view = await perform(() => controller.capture());
+  const presentationReview = currentFormat === 'pptx' ? await presentationComments.capture() : undefined;
+  if (presentationReview) view.presentationReview = presentationReview;
   if (revision !== before) throw new Error('读取位置期间办公内容已变化，请重试');
   const notes = currentFormat === 'xlsx' ? sheetNotes.capture() : undefined;
   if (notes) view.notes = notes;
@@ -275,7 +333,10 @@ async function restoreView(view: OfficeView, focus = false) {
   if (view.notes && currentFormat === 'xlsx') sheetNotes.restore(view.notes, false);
   if (view.threads && currentFormat === 'xlsx') sheetThreads.restore(view.threads, false);
   operationBusy += 1; updateInteraction();
-  try { await perform(() => workspaceView!.restore(view)); }
+  try {
+    await perform(() => workspaceView!.restore(view));
+    if (view.presentationReview) await presentationComments.restore(view.presentationReview);
+  }
   finally { operationBusy = Math.max(0, operationBusy - 1); updateInteraction(); }
   if (focus) {
     await workspaceView.focus();
@@ -284,6 +345,7 @@ async function restoreView(view: OfficeView, focus = false) {
   }
   if (view.notes && focus) sheetNotes.restore(view.notes, true);
   if (view.threads && focus) sheetThreads.restore(view.threads, true);
+  if (focus && view.presentationReview?.focused) presentationComments.focusRestoredDraft();
   const note = view.notes?.selected?.focused ? view.notes.selected : sheetThreads.selectedCell(), grid = view.selection;
   if (note && grid?.sheetName === note.sheet) {
     const cell = spreadsheetCell(note.cell);
@@ -297,7 +359,10 @@ async function selectionInfo() {
   if (!ready || !editor || currentFormat !== 'docx') return null;
   return await perform(() => editor.readSelectionInfo());
 }
-async function focusEditor() { if (ready && !operationBusy && workspaceView) await workspaceView.focus(); }
+async function focusEditor() {
+  if (!ready || operationBusy || !workspaceView) return;
+  if (currentFormat !== 'pptx' || !presentationComments.focusRestoredDraft()) await workspaceView.focus();
+}
 async function navigateDocxReview(showComments: boolean) {
   if (!ready || !editor || currentFormat !== 'docx' || operationBusy) throw new Error('Word 文档尚未就绪');
   return await perform(async () => {
@@ -346,6 +411,7 @@ async function inspect(request: any = {}) { return await perform(() => inspectCo
 (window as any).BlueFatFishOffice = { load, beginExport, exportChunk, finishExport, read, inspect, edit, verifyClean, captureView, restoreView, selectionInfo, focusEditor, setInteractionLocked, navigateDocxReview, docxReviewGeometry: docxReview.geometry,
   setSpreadsheetNotes: sheetNotes.configure, toggleSpreadsheetNotes: () => { sheetThreads.hide(); return sheetNotes.toggle(); },
   setSpreadsheetThreads: sheetThreads.configure, toggleSpreadsheetThreads: () => { sheetNotes.hide(); return sheetThreads.toggle(); },
+  togglePresentationComments: () => presentationComments.toggle(),
   spreadsheetNoteVisible: (sheet: string, cell: string) => perform(() => workspaceView!.isSpreadsheetNoteVisible(sheet, cell)), state: editorState,
-  close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); sheetThreads.reset(); ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
+  close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); sheetThreads.reset(); presentationComments.reset(); ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
 notify('shell-ready');

@@ -13,6 +13,7 @@ import Darwin
     private let body = NSButton(title: "正文", target: nil, action: nil), comments = NSButton(title: "批注", target: nil, action: nil)
     private let spreadsheetNotes = NSButton(title: "备注", target: nil, action: nil)
     private let spreadsheetThreads = NSButton(title: "评论", target: nil, action: nil)
+    private let presentationComments = NSButton(title: "批注", target: nil, action: nil)
     private let state = NSTextField(labelWithString: ""), content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface)
     private var web: WKWebView!, server: AgentOfficeHTTP?, base: URL?, snapshot: AgentOfficeSnapshot?
     private var ready = false, closed = false, conflict = false, lastReadOnly: Bool?
@@ -32,7 +33,7 @@ import Darwin
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 800), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         window.title = file.lastPathComponent; window.minSize = NSSize(width: 760, height: 520); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self; window.contentView = content
-        for (button, action) in [(save, #selector(saveFile)), (reload, #selector(reloadFile)), (saveCopy, #selector(saveAs)), (body, #selector(reviewLocation(_:))), (comments, #selector(reviewLocation(_:))), (spreadsheetNotes, #selector(toggleSpreadsheetAnnotation(_:))), (spreadsheetThreads, #selector(toggleSpreadsheetAnnotation(_:)))] { button.target = self; button.action = action; button.bezelStyle = .texturedRounded; button.controlSize = .small }
+        for (button, action) in [(save, #selector(saveFile)), (reload, #selector(reloadFile)), (saveCopy, #selector(saveAs)), (body, #selector(reviewLocation(_:))), (comments, #selector(reviewLocation(_:))), (spreadsheetNotes, #selector(toggleSpreadsheetAnnotation(_:))), (spreadsheetThreads, #selector(toggleSpreadsheetAnnotation(_:))), (presentationComments, #selector(togglePresentationComments))] { button.target = self; button.action = action; button.bezelStyle = .texturedRounded; button.controlSize = .small }
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         reload.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "重新载入"); reload.title = ""; reload.toolTip = "重新载入"; reload.setAccessibilityLabel("重新载入办公文件")
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingMiddle
@@ -42,10 +43,12 @@ import Darwin
         comments.setAccessibilityLabel("查看 Word 批注")
         spreadsheetNotes.setAccessibilityLabel("查看 Excel 单元格备注")
         spreadsheetThreads.setAccessibilityLabel("查看 Excel 单元格评论")
+        presentationComments.setAccessibilityLabel("查看 PowerPoint 批注")
         let review: [NSView]
         switch file.pathExtension.lowercased() {
         case "docx": review = [body, comments]
         case "xlsx": review = [spreadsheetNotes, spreadsheetThreads]
+        case "pptx": review = [presentationComments]
         default: review = []
         }
         let heading = NSStackView(views: [name, NSView(), state])
@@ -76,6 +79,7 @@ import Darwin
         body.isEnabled = ready && !working; comments.isEnabled = body.isEnabled
         spreadsheetNotes.isEnabled = ready && !working && uiTask == nil
         spreadsheetThreads.isEnabled = spreadsheetNotes.isEnabled
+        presentationComments.isEnabled = spreadsheetNotes.isEnabled
         if ready, lastReadOnly != locked { lastReadOnly = locked; web.evaluateJavaScript("BlueFatFishOffice.setInteractionLocked(\(locked ? "true" : "false"))", in: nil, in: .page) { _ in } }
         if locked && !working && state.stringValue.isEmpty { state.stringValue = "只读" }
         else if !locked && state.stringValue == "只读" { state.stringValue = editingStatus }
@@ -90,13 +94,14 @@ import Darwin
     }
     private static func viewObject(_ value: String, format: String) throws -> [String: Any] {
         let fields: Set<String> = ["version", "format", "zoom", "selection", "scroll"]
-        guard value.utf8.count <= (format == "pptx" ? 65_536 : 1_200_000), let data = value.data(using: .utf8),
+        guard value.utf8.count <= 1_200_000, let data = value.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw PetError("办公位置格式不受支持，原草稿已保留")
         }
         let provided = Set(object.keys)
         guard provided == fields || format == "docx" && provided == fields.union(["review"]) ||
-                format == "xlsx" && fields.isSubset(of: provided) && provided.isSubset(of: fields.union(["notes", "threads"])),
+                format == "xlsx" && fields.isSubset(of: provided) && provided.isSubset(of: fields.union(["notes", "threads"])) ||
+                format == "pptx" && provided == fields.union(["presentationReview"]),
               object["version"] as? Int == 1, object["format"] as? String == format else { throw PetError("办公位置格式不受支持，原草稿已保留") }
         if let review = object["review"] {
             guard let values = review as? [[String: Any]], (1...2).contains(values.count) else { throw PetError("批注草稿格式无效，原记录已保留") }
@@ -106,12 +111,19 @@ import Darwin
                 throw PetError("评论草稿格式无效，原记录已保留")
             }
         }
+        if let review = object["presentationReview"] {
+            guard let review = review as? [String: Any], let drafts = review["drafts"] as? [[String: Any]], drafts.count <= 5_000 else {
+                throw PetError("演示文稿批注草稿无效，原记录已保留")
+            }
+        } else if format == "pptx", value.utf8.count > 65_536 { throw PetError("演示文稿位置过长，原草稿已保留") }
         return object
     }
     private static func containsReviewDraft(_ view: [String: Any]?) -> Bool {
         if view?["review"] != nil { return true }
-        let threads = view?["threads"] as? [String: Any]
-        return (threads?["drafts"] as? [[String: Any]])?.isEmpty == false
+        return ["threads", "presentationReview"].contains { key in
+            let review = view?[key] as? [String: Any]
+            return (review?["drafts"] as? [[String: Any]])?.isEmpty == false
+        }
     }
     private func encodedView(_ value: Any?) throws -> String {
         guard let value, JSONSerialization.isValidJSONObject(value) else { throw PetError("办公位置不可读") }
@@ -230,8 +242,9 @@ import Darwin
                 if recovery?.dirty == true || recovery?.openedHash == pinned.hash {
                     if view["notes"] != nil { try await loadSpreadsheetNotes(pinned) }
                     if view["threads"] != nil { try await loadSpreadsheetThreads(pinned) }
+                    if view["presentationReview"] != nil, isPageVisible { presentingWindow?.makeFirstResponder(web) }
                     _ = try await evaluate("return await BlueFatFishOffice.restoreView(view,focus)", args: ["view": view, "focus": isPageVisible])
-                    if isPageVisible { presentingWindow?.makeFirstResponder(web) }
+                    if view["presentationReview"] == nil, isPageVisible { presentingWindow?.makeFirstResponder(web) }
                 } else { state.stringValue = "原文件已变化，上次位置未恢复" }
             }
             ready = true; dirty = documentDirty || hasReviewDraft; lastReadOnly = nil; window?.isDocumentEdited = dirty; state.toolTip = state.stringValue; watch()
@@ -347,6 +360,9 @@ import Darwin
                 try await AgentSpreadsheetNotes.applyThreads(JSONDecoder().decode([AgentSpreadsheetThreadEdit].self, from: data), to: output)
             }
         }
+        if file.pathExtension.lowercased() == "pptx", result["modernPresentationCommentsEdited"] as? Bool == true {
+            try await AgentPowerPointComments.ensureSlideLinks(in: output)
+        }
         return output
     }
     private func acknowledge(_ saved: Bool) async {
@@ -370,7 +386,11 @@ import Darwin
     func saveDocument() async throws {
         guard ready, !working else { throw PetError("办公文件正在处理") }
         if hasReviewDraft && !documentDirty {
-            throw PetError(file.pathExtension.lowercased() == "xlsx" ? "先添加回复或评论，再保存工作簿" : "先提交批注，再保存 Word 文件")
+            switch file.pathExtension.lowercased() {
+            case "xlsx": throw PetError("先添加回复或评论，再保存工作簿")
+            case "pptx": throw PetError("先添加批注或回复，再保存演示文稿")
+            default: throw PetError("先提交批注，再保存 Word 文件")
+            }
         }
         _ = try office.task(taskID, root: files.root, manualWrite: true)
         working = true; state.stringValue = "正在保存…"; updateAvailability()
@@ -434,6 +454,18 @@ import Darwin
                 else { try await loadSpreadsheetNotes(snapshot) }
                 presentingWindow?.makeFirstResponder(web)
                 _ = try await evaluate(showThreads ? "return BlueFatFishOffice.toggleSpreadsheetThreads()" : "return BlueFatFishOffice.toggleSpreadsheetNotes()")
+            } catch { state.stringValue = error.localizedDescription }
+        }
+    }
+    @objc private func togglePresentationComments() {
+        guard ready, !working, uiTask == nil else { return }
+        uiTask = Task { [weak self] in
+            guard let self else { return }
+            updateAvailability()
+            defer { uiTask = nil; updateAvailability(); onWorkspaceChange?() }
+            do {
+                presentingWindow?.makeFirstResponder(web)
+                _ = try await evaluate("return await BlueFatFishOffice.togglePresentationComments()")
             } catch { state.stringValue = error.localizedDescription }
         }
     }
@@ -527,7 +559,7 @@ import Darwin
     override func settingsWillLeave() { finishClose() }
     func workspaceReadback() async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        let controls = [save, reload, saveCopy, body, comments, spreadsheetNotes, spreadsheetThreads].filter { $0.superview != nil && !$0.isHiddenOrHasHiddenAncestor }
+        let controls = [save, reload, saveCopy, body, comments, spreadsheetNotes, spreadsheetThreads, presentationComments].filter { $0.superview != nil && !$0.isHiddenOrHasHiddenAncestor }
         let frames = controls.map { content.convert($0.bounds, from: $0) }
         var value: [String: Any] = ["taskID": taskID, "file": file.path, "dirty": dirty, "working": working, "closed": closed, "ready": ready, "openedHash": openedHash, "state": state.stringValue,
             "loopbackURL": base?.absoluteString ?? "", "snapshot": snapshot?.folder.path ?? "", "saveEnabled": save.isEnabled,
@@ -652,15 +684,66 @@ import Darwin
     }
     func checkSpreadsheetNotesImage(_ file: URL) async throws {
         guard spreadsheetReadback else { throw PetError("仅限表格批注验收") }
+        try await checkEditorImage(file)
+    }
+    private func checkEditorImage(_ file: URL) async throws {
         let image: NSImage = try await withCheckedThrowingContinuation { done in
             web.takeSnapshot(with: nil) { image, error in
                 if let image { done.resume(returning: image) }
-                else { done.resume(throwing: error ?? PetError("无法取得备注窗口图像")) }
+                else { done.resume(throwing: error ?? PetError("无法取得办公编辑器图像")) }
             }
         }
         guard let tiff = image.tiffRepresentation, let bits = NSBitmapImageRep(data: tiff),
-              let png = bits.representation(using: .png, properties: [:]) else { throw PetError("备注窗口图像无法编码") }
+              let png = bits.representation(using: .png, properties: [:]) else { throw PetError("办公编辑器图像无法编码") }
         try png.write(to: file, options: .atomic)
+    }
+    func checkPresentationComments(action: String = "", text: String? = nil, image: URL? = nil) async throws -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled, CommandLine.arguments.contains("--presentation-comments"),
+              file.pathExtension.lowercased() == "pptx" else { throw PetError("仅限演示文稿批注验收") }
+        if action == "toggle" {
+            presentationComments.performClick(nil)
+            await uiTask?.value
+        }
+        let value = try await evaluate("""
+            const panel = document.getElementById('presentation-comments');
+            const input = panel.querySelector('textarea'), submit = panel.querySelector('.spreadsheet-thread-reply');
+            const add = panel.querySelector('.spreadsheet-note-add'), heading = panel.querySelector('.spreadsheet-thread-header');
+            const [resolve, cancel] = heading.querySelectorAll('button');
+            const rows = Array.from(panel.querySelectorAll('.spreadsheet-thread-list button'));
+            if (action === 'new') add.click();
+            if (action === 'select') rows.find(row => row.querySelector('span').textContent.startsWith(text))?.click();
+            if (action === 'draft') {
+              if (input.readOnly) throw new Error('Draft input is read-only');
+              input.focus(); input.value = text; input.setSelectionRange(2, 6, 'backward');
+              input.dispatchEvent(new InputEvent('input', {bubbles: true}));
+            }
+            if (action === 'submit') submit.click();
+            if (action === 'key') input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', metaKey:true, bubbles:true}));
+            if (action === 'status') resolve.click();
+            if (action === 'cancel') cancel.click();
+            const body = panel.querySelector('.spreadsheet-thread-messages');
+            return {
+              visible: !panel.hidden,
+              slide: heading.querySelector('strong').textContent,
+              draft: input.value, range: [input.selectionStart, input.selectionEnd, input.selectionDirection],
+              focused: document.activeElement === input, submit: !submit.disabled, readOnly: input.readOnly,
+              newEnabled: !add.disabled, status: resolve.hidden ? '' : resolve.textContent,
+              notice: panel.querySelector('[role=status]').textContent,
+              messages: Array.from(body.querySelectorAll('article'), row => ({
+                author: row.querySelector('strong').textContent, text: row.querySelector('p').textContent,
+                reply: row.hasAttribute('data-parent')
+              })),
+              dark: matchMedia('(prefers-color-scheme: dark)').matches,
+              slideLabelsStayOnOneLine: Array.from(panel.querySelectorAll('.spreadsheet-thread-list strong'))
+                .every(label => label.getBoundingClientRect().height <= 20),
+              panelWidth: panel.getBoundingClientRect().width, viewportWidth: innerWidth,
+              bodyHeight: body.clientHeight, submitBottom: submit.getBoundingClientRect().bottom,
+              viewportHeight: innerHeight,
+            };
+            """, args: ["action": action, "text": text as Any? ?? NSNull()])
+        if let image { try await checkEditorImage(image) }
+        guard let report = value as? [String: Any] else { throw PetError("批注窗口未回读") }
+        return report
     }
     func checkSpreadsheetThread(show: Bool = false, address: String? = nil, text: String? = nil, action: String? = nil,
                                 newAddress: String? = nil, blocked: Bool = false) async throws -> [String: Any] {

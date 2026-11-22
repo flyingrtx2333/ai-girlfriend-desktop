@@ -44,7 +44,7 @@ enum AgentSpreadsheetNotes {
     private static let vmlExcelURI = "urn:schemas-microsoft-com:office:excel"
     static let noteAuthor = "小鲸"
     struct Relation {
-        let id: String, kind: String, target: String
+        let id: String, kind: String, target: String, type: String
     }
     struct Sheet {
         let name: String, part: String, visible: Bool, supportsCreation: Bool
@@ -111,7 +111,7 @@ enum AgentSpreadsheetNotes {
                     throw PetError("工作簿备注的关联记录不完整")
                 }
                 guard attribute(item, "TargetMode") != "External" else { return nil }
-                return Relation(id: id, kind: type.split(separator: "/").last.map(String.init) ?? "", target: target)
+                return Relation(id: id, kind: type.split(separator: "/").last.map(String.init) ?? "", target: target, type: type)
             }
             guard Set(relations.map(\.id)).count == relations.count else { throw PetError("工作簿的关联标识重复") }
             return relations

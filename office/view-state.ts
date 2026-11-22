@@ -1,13 +1,14 @@
 import { createDocxReviewDrafts, type DocxReviewDraft } from './docx-review-drafts';
 import { spreadsheetAddress, spreadsheetCell, validSpreadsheetNotesLocation, type SpreadsheetNotesLocation } from './spreadsheet-notes';
 import { validSpreadsheetThreadsLocation, type SpreadsheetThreadsLocation } from './spreadsheet-threads';
+import { validPresentationReview, type PresentationReview } from './presentation-comments';
 
 // View coordinates belong to the exact document bytes stored by the native
 // journal. Session IDs are resolved again after opening those bytes.
 type Point = { part: string; ordinal: number; paragraphID: string | null; storyKind: string | null; itemID: string | null; offset: number; sourceHash?: string | null };
 export type WordRange = { anchor: Point; focus: Point };
 export type OfficeView = { version: 1; format: string; zoom: number | 'fit'; selection: any; scroll: { path: number[]; x: number; y: number }[];
-  review?: DocxReviewDraft[]; notes?: SpreadsheetNotesLocation; threads?: SpreadsheetThreadsLocation };
+  review?: DocxReviewDraft[]; notes?: SpreadsheetNotesLocation; threads?: SpreadsheetThreadsLocation; presentationReview?: PresentationReview };
 const issue = () => new Error('办公位置记录无效，原草稿已保留');
 const integer = (value: any, maximum = 100_000_000) => Number.isSafeInteger(value) && value >= 0 && value <= maximum;
 const text = (value: any, maximum = 2048) => typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\0');
@@ -19,6 +20,7 @@ export function validateOfficeView(value: any, format: string): asserts value is
   if (format === 'xlsx' && value?.notes) spreadsheetFields.push('notes');
   if (format === 'xlsx' && value?.threads) spreadsheetFields.push('threads');
   if (!(keys(value, fields) || format === 'docx' && keys(value, [...fields, 'review']) ||
+      format === 'pptx' && keys(value, [...fields, 'presentationReview']) && validPresentationReview(value.presentationReview) ||
       format === 'xlsx' && keys(value, spreadsheetFields) && (!value.notes || validSpreadsheetNotesLocation(value.notes)) &&
         (!value.threads || validSpreadsheetThreadsLocation(value.threads)) && !(value.notes && value.threads?.open)) ||
       value.version !== 1 || value.format !== format || !['docx', 'xlsx', 'pptx'].includes(format) ||
@@ -249,6 +251,8 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
     await applyScroll({ scroll });
   }
   return { plugin, capture, restore, applyScroll, focus, activeSpreadsheetNoteCell, locateSpreadsheetNote, isSpreadsheetNoteVisible,
+    activePresentationSlide: () => context?.snapshot.selection?.slide ?? context?.snapshot.layout?.slide ?? null,
+    locatePresentationSlide: (slideId: string) => navigate(c => c.navigation.goToSlide({ slideId }, { expectVersion: c.snapshot.version })),
     hasReviewDraft: () => reviewDrafts?.pending() === true, saved() { savedParagraphs = true; }, ready() {
     const zoom = () => format === 'docx' ? editor().getZoom() : editor().commands.getState('zoom').value;
     let previous = zoom();
