@@ -67,6 +67,15 @@ import AppKit
                 guard let back = additionalTaskWindows.last else { throw PetError("无法打开返回路径验收窗口") }
                 back.showAutomations()
                 guard back.automationWindow?.isVisible == true, back.showSettingsCategory("shortcuts") else { throw PetError("自动化返回路径不可用") }
+                if !interactive {
+                    guard let window = back.window else { throw PetError("缺少设置分类验收窗口") }
+                    window.setContentSize(NSSize(width: 780, height: 540)); window.contentView?.layoutSubtreeIfNeeded()
+                    guard let scroll = find(window.contentView, NSScrollView.self, { $0.accessibilityLabel() == "设置分类" }),
+                          let document = scroll.documentView else { throw PetError("缺少设置分类滚动区") }
+                    let clip = scroll.contentView
+                    clip.scroll(to: clip.constrainBoundsRect(NSRect(x: 0, y: document.bounds.height, width: clip.bounds.width, height: clip.bounds.height)).origin)
+                    scroll.reflectScrolledClipView(clip)
+                }
                 guard await flushWorkspaceWindows(), let a = control.workspaceSession?.id, let b = hooks.workspaceSession?.id, let c = back.workspaceSession?.id,
                       let global = control.captureSettingsNavigation(), let scoped = hooks.captureSettingsNavigation(), let noQuery = back.captureSettingsNavigation() else {
                     throw PetError("设置导航记录不完整")
@@ -76,6 +85,7 @@ import AppKit
                     !scoped.query.isEmpty && scoped.focus != nil && scoped.focus != "search" && scoped.resultVisible == true
                 checks["resultListCanActuallyScroll"] = interactive || scoped.contentY > 0
                 checks["returnRouteRecordedWithoutSearch"] = noQuery.query.isEmpty && noQuery.category == "shortcuts" && noQuery.returnTab == "automation"
+                checks["manualSidebarPositionCheckpointed"] = interactive || noQuery.sidebarY > 0
                 let fixture = NavigationFixture(windows: ["global":a, "hooks":b, "back":c], tasks: ["global":globalTask, "hooks":hookTask, "back":backTask],
                     global: global, hooks: scoped, back: noQuery)
                 try JSONEncoder().encode(fixture).write(to: fixtureURL, options: .atomic)
@@ -115,6 +125,8 @@ import AppKit
                         find(hooks.window?.contentView, NSTextView.self, { $0.accessibilityLabel() == "Hooks JSON 配置" }) == nil
                     checks["restoresUnfilteredCategoryAndReturnRoute"] = back.captureSettingsNavigation()?.category == "shortcuts" &&
                         back.captureSettingsNavigation()?.returnTab == "automation" && back.automationWindow == nil
+                    checks["restoresManualSidebarPositionWithOriginalCategory"] = interactive ||
+                        abs((back.captureSettingsNavigation()?.sidebarY ?? 0) - fixture.back.sidebarY) < 0.5
                     if !interactive {
                         try hooks.checkSettingsNavigationSearch(""); await wait(0.1)
                         guard let editor = find(hooks.window?.contentView, NSTextView.self, { $0.accessibilityLabel() == "Hooks JSON 配置" }) else {

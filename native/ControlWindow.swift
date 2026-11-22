@@ -94,6 +94,7 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = AgentSettingsSidebarSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
     private let settingsNavigationScroll = NSScrollView()
+    private var settingsCategoryViewport: (height: CGFloat, selectionVisible: Bool)?
     private var settingsColumn: NSStackView?
     private let settingsWindowActions = NSStackView()
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
@@ -754,11 +755,72 @@ final class FormDocumentView: NSView {
             checks["sidebarMenuBackRestoresAppearanceAndScroll"] = settingsHeading.stringValue == "外观" && sidebarMenuBack.isHidden && panel.window == nil &&
                 abs(settingsScroll.contentView.bounds.minY - parentY) < 1 && captureSettingsNavigation()?.sidebarMenu == nil
         }
+        for (key, value) in await checkSettingsCategoryVisibility(window) { checks[key] = value }
         returnToChat(); window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
         checks["ChatHidesSettingsWindowActions"] = settingsWindowActions.isHidden
         checks["settingsPageChangesPreserveUnsentComposer"] = composer.string == draft && settingsSidebar.isHidden && settings.isHidden
         checks["settingsDoNotReserveHiddenInspectorWidth"] = frames.values.allSatisfy { $0["inspectorWidth"] == 0 }
         return ["checks": checks, "frames": frames]
+    }
+    private func checkSettingsCategoryVisibility(_ window: NSWindow) async -> [String: Bool] {
+        let compact = NSSize(width: 780, height: 540), wide = NSSize(width: 1320, height: 800)
+        let scroll = settingsNavigationScroll
+        var checks: [String: Bool] = [:]
+        func resize(_ size: NSSize) async {
+            window.setContentSize(size); await Task.yield(); window.contentView?.layoutSubtreeIfNeeded()
+        }
+        func visible(_ key: String) -> Bool {
+            guard let index = settingsCategories.firstIndex(where: { $0.0 == key }) else { return false }
+            let button = categoryButtons[index], clip = scroll.contentView
+            let row = button.convert(button.bounds, to: settingsSidebar)
+            let viewport = clip.convert(clip.bounds, to: settingsSidebar)
+            return button.state == .on && row.height > 0 && viewport.insetBy(dx: -0.5, dy: -0.5).contains(row) &&
+                !button.isHiddenOrHasHiddenAncestor && categoryButtons.filter { $0.state == .on }.count == 1
+        }
+        let originalAppearance = window.appearance
+        window.appearance = NSAppearance(named: .darkAqua)
+        for key in ["hooks", "extensions"] {
+            await resize(wide)
+            restoreSettingsScroll(0, to: scroll)
+            let opened = showSettingsCategory(key), page = settingsPageHost.currentController
+            let visibleBefore = visible(key)
+            let field = settingsSearch.convert(settingsSearch.bounds, to: settingsSidebar)
+            let topInset = settingsSidebar.bounds.maxY - field.maxY
+            await resize(compact)
+            checks["SettingsCategoryKeepsSelectionVisibleAfterShrink-" + key] = opened && visibleBefore &&
+                visible(key) && settingsPageHost.currentController === page && window.contentView?.bounds.size == compact
+            let resizedField = settingsSearch.convert(settingsSearch.bounds, to: settingsSidebar)
+            checks["SettingsCategoryKeepsSearchPinnedAfterShrink-" + key] = abs(settingsSidebar.bounds.maxY - resizedField.maxY - topInset) < 0.5 &&
+                field.height == resizedField.height && !resizedField.intersects(scroll.frame)
+            if key == "hooks", let root = window.contentView, let output = companion?.checkDirectory,
+               let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) {
+                window.displayIfNeeded()
+                bitmap.size = root.bounds.size; root.cacheDisplay(in: root.bounds, to: bitmap)
+                if let png = bitmap.representation(using: .png, properties: [:]) {
+                    try? png.write(to: output.appendingPathComponent("settings-category-after-resize.png"), options: .atomic)
+                }
+            }
+        }
+        window.appearance = originalAppearance
+        for (key, _, _) in settingsCategories {
+            checks["SelectedCategoryFullyVisibleInMinimumWindow-" + key] = showSettingsCategory(key) && visible(key)
+        }
+        _ = showSettingsCategory("hooks")
+        await resize(NSSize(width: 800, height: 570))
+        restoreSettingsScroll(0, to: scroll)
+        let manual = scroll.contentView.bounds.minY, deliberatelyOutside = !visible("hooks")
+        updateSettingsSections()
+        await resize(compact)
+        checks["SettingsCategoryManualScrollSurvivesRefreshAndResize"] = deliberatelyOutside && !visible("hooks") &&
+            abs(scroll.contentView.bounds.minY - manual) < 0.5
+        returnToChat(); show(tab: "settings")
+        checks["SettingsEntryRevealsRetainedCategory"] = visible("hooks")
+        settingsSearch.stringValue = "Hooks"
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: settingsSearch))
+        let hookResult = settingsResults.firstIndex { $0.category == "hooks" }
+        if let hookResult, settingsResultButtons.indices.contains(hookResult) { settingsResultButtons[hookResult].performClick(nil) }
+        checks["SettingsSearchOpensVisibleCategoryInMinimumWindow"] = hookResult != nil && settingsSearch.stringValue.isEmpty && visible("hooks")
+        return checks
     }
     private func checkSettingsSidebarGeometry() -> [String: Bool] {
         guard let scroll = settingsSidebar.subviews.compactMap({ $0 as? NSScrollView }).first,
@@ -1890,9 +1952,12 @@ final class FormDocumentView: NSView {
     @discardableResult internal func showSettingsCategory(_ key: String) -> Bool {
         if workspaceSession?.pendingSettingsCategory == key { workspaceSession?.restoreSettings(); return false }
         guard settingsCategories.contains(where: { $0.0 == key }), canLeaveMainPage() else { return false }
+        let alreadyInSettings = selectedTab == "settings"
         pendingSettingsNavigation = nil
         companion?.ensureAgent(); settingsCategory = key; settingsSearch.stringValue = ""
-        show(tab: "settings"); revealSettingsCategory(); return true
+        show(tab: "settings")
+        if alreadyInSettings { revealSettingsCategory() }
+        return true
     }
     private func configureImportedConnector(_ id: String, workspace: String?) throws {
         guard let store = companion?.agentStore, store.mcp.availableServers(workspace: workspace).contains(where: { $0.id == id }) else {
@@ -1964,10 +2029,32 @@ final class FormDocumentView: NSView {
             try manager.openInstruction(scope)
         }
     }
+    private var selectedSettingsCategoryRect: NSRect? {
+        guard let button = categoryButtons.first(where: { $0.state == .on && !$0.isHiddenOrHasHiddenAncestor }),
+              button.bounds.height > 0 else { return nil }
+        return button.convert(button.bounds, to: settingsNavigationScroll.contentView)
+    }
+    private func rememberSettingsCategoryViewport() {
+        let viewport = settingsNavigationScroll.contentView.bounds
+        guard viewport.height > 0 else { return }
+        let visible = selectedSettingsCategoryRect.map { viewport.insetBy(dx: -0.5, dy: -0.5).contains($0) } ?? false
+        settingsCategoryViewport = (viewport.height, visible)
+    }
     private func revealSettingsCategory() {
         window?.contentView?.layoutSubtreeIfNeeded()
-        guard let index = settingsCategories.firstIndex(where: { $0.0 == settingsCategory }), categoryButtons.indices.contains(index) else { return }
-        categoryButtons[index].scrollToVisible(categoryButtons[index].bounds)
+        let viewport = settingsNavigationScroll.contentView.bounds
+        if let row = selectedSettingsCategoryRect, viewport.height > 0 {
+            let y = min(row.minY, max(viewport.minY, row.maxY - viewport.height))
+            if abs(y - viewport.minY) >= 0.5 { restoreSettingsScroll(y, to: settingsNavigationScroll) }
+        }
+        rememberSettingsCategoryViewport()
+    }
+    private func keepSettingsCategoryVisibleAfterResize() {
+        guard selectedTab == "settings", pendingSettingsNavigation == nil, let previous = settingsCategoryViewport else { return }
+        window?.contentView?.layoutSubtreeIfNeeded()
+        if previous.selectionVisible, settingsNavigationScroll.contentView.bounds.height < previous.height - 0.5 {
+            revealSettingsCategory()
+        } else { rememberSettingsCategoryViewport() }
     }
     @objc private func openSettingsSearchResult(_ sender: NSButton) {
         guard sender.isDescendant(of: settingsForm), settingsResults.indices.contains(sender.tag) else { return }
@@ -2620,15 +2707,18 @@ final class FormDocumentView: NSView {
 
     func show(tab: String) {
         if selectedTab != tab, !canLeaveMainPage() { return }
+        let enteringSettings = tab == "settings" && selectedTab != "settings"
         let returningToConversation = selectedTab != "chat" && tab == "chat"
         if selectedTab == "chat", tab != "chat" { rememberConversationPosition() }
         let revealingKnowledge = tab == "knowledge" && (selectedTab != tab || window?.isVisible != true)
         if window?.isVisible != true { refreshPreferences() }
-        if tab == "settings", selectedTab != "settings" {
+        if enteringSettings {
             setSettingsReturn(to: selectedTab, knowledgeRoot: selectedTab == "knowledge" ? knowledgePageHost.selectedRoot : nil)
         }
         if tab != "settings" { pendingSettingsNavigation = nil }
-        selectedTab = ["settings", "attention", "automation", "knowledge"].contains(tab) ? tab : "chat"; changeTab(); workspaceSession?.changed()
+        selectedTab = ["settings", "attention", "automation", "knowledge"].contains(tab) ? tab : "chat"; changeTab()
+        if enteringSettings, pendingSettingsNavigation == nil { revealSettingsCategory() }
+        workspaceSession?.changed()
         renderMessages()
         if returningToConversation { restoreActiveConversationPosition() }
         if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { focusTaskInput() }; return }
@@ -3328,6 +3418,7 @@ final class FormDocumentView: NSView {
         workspaceSession?.changed()
         dismissExtensionCandidates()
         updateWorkbenchLayout(); companion?.updatePetWorkspaceOcclusion()
+        keepSettingsCategoryVisibleAfterResize()
         if selectedTab == "chat", sidebarRequested { taskSidebar.revealCurrentSelection() }
         let width = companion?.usesAgent == true ? history.contentView.bounds.width - 40 : (window?.contentView?.bounds.width ?? 980) - 272
         messageRows.values.forEach { $0.fit(width: width) }
@@ -3480,7 +3571,13 @@ final class FormDocumentView: NSView {
         rememberSettingsNavigationInput()
     }
     @objc private func settingsNavigationScrolled(_ note: Notification) {
-        if selectedTab == "settings", pendingSettingsNavigation == nil { workspaceSession?.changed() }
+        guard selectedTab == "settings", pendingSettingsNavigation == nil else { return }
+        let clip = settingsNavigationScroll.contentView
+        // Bounds changes at a new height are handled once the window has laid out.
+        if note.object as? NSClipView === clip, settingsCategoryViewport?.height == clip.bounds.height {
+            rememberSettingsCategoryViewport()
+        }
+        workspaceSession?.changed()
     }
     func captureSettingsNavigation() -> AgentSettingsRecovery.Navigation? {
         guard selectedTab == "settings" else { return nil }
@@ -3556,6 +3653,7 @@ final class FormDocumentView: NSView {
             }
             if value.query.isEmpty, value.focus == nil, value.voiceDraft != nil { focusBasicDraftInput() }
             pendingSettingsNavigation = nil
+            rememberSettingsCategoryViewport()
             rememberSettingsNavigationInput()
             workspaceSession?.changed()
             if value.dataImport != nil {
