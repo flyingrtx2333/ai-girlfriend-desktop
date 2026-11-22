@@ -113,14 +113,42 @@ import AppKit
             try stageCreationFixture(id, name: "native-created-readme-check", tasks: tasks)
             guard let staged = tasks.task(id), let draft = staged.skillDraft else { throw PetError("缺少原生创建草稿") }
             checks["approvedPlanStagesMultipleFilesWithoutInstalling"] = try staged.mode == .agent && staged.skillEvolutionJob?.approvedPlan != nil && Set(draft.files.keys) == ["SKILL.md", "templates/result.txt"] && draft.savedAt == nil && (try tasks.extensions.catalog(workspace: nil).map(\.id)) == catalog
-            let review = try AgentSkillDraftReviewPage(store: tasks, taskID: id)
+            control.showAgentTask(id)
+            try control.reviewSkillDraft(taskID: id)
+            guard let root = control.window?.contentView,
+                  let review = descendants(root).compactMap({ $0 as? AgentSettingsPageHost }).first?.currentController as? AgentSkillDraftReviewPage else {
+                throw PetError("Skill 草稿未进入设置右侧")
+            }
             let scope = descendants(review.pageContentView).compactMap { $0 as? NSPopUpButton }.first { $0.identifier?.rawValue == "skill-review-scope" }
             let name = descendants(review.pageContentView).compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "skill-review-name" }
             checks["reviewDefaultsToUserAndKeepsNoWorkspaceProjectDisabled"] = scope?.indexOfSelectedItem == 0 && scope?.item(at: 1)?.isEnabled == false && scope?.menu?.autoenablesItems == false
             checks["reviewUsesSharedNativeNameInput"] = name is AgentDialogTextField && name?.stringValue == "native-created-readme-check" && name?.isEditable == true
-            let revision = AgentSkillDrafts.revision(draft)
             checks["staleReviewCannotSaveSkill"] = refused { _ = try AgentSkillDrafts.apply(taskID: id, draftID: draft.id, revision: "stale", name: "native-created-readme-check", project: false, store: tasks) }
-            let savedID = try AgentSkillDrafts.apply(taskID: id, draftID: draft.id, revision: revision, name: "native-created-readme-check", project: false, store: tasks)
+            guard let name, let preview = descendants(review.pageContentView).compactMap({ $0 as? NSTextView }).first(where: { $0.accessibilityLabel() == "设置审阅正文" }),
+                  let apply = descendants(root).compactMap({ $0 as? NSButton }).first(where: { $0.title == "创建 Skill" && !$0.isHiddenOrHasHiddenAncestor }),
+                  let feedback = descendants(review.pageContentView).compactMap({ $0 as? AgentSettingsStatusField }).first(where: { $0.accessibilityLabel() == "审阅操作错误" }) else {
+                throw PetError("缺少 Skill 审阅输入或保存")
+            }
+            let originalPreview = preview.string, originalName = name.stringValue
+            control.window?.appearance = NSAppearance(named: .darkAqua)
+            control.window?.setContentSize(NSSize(width: 780, height: 540))
+            name.stringValue = "无效 / 名"
+            name.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: name))
+            checks["invalidSkillNameKeepsPreviewAndDisablesApply"] = try !apply.isEnabled && !feedback.isHidden &&
+                feedback.stringValue.contains("Skill 名称") && preview.string == originalPreview &&
+                tasks.task(id)?.skillDraft?.savedAt == nil && tasks.extensions.catalog(workspace: nil).map(\.id) == catalog
+            root.layoutSubtreeIfNeeded()
+            guard root.bounds.size == NSSize(width: 780, height: 540),
+                  let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { throw PetError("缺少 Skill 审阅窗口图") }
+            bitmap.size = root.bounds.size
+            root.cacheDisplay(in: root.bounds, to: bitmap)
+            guard let png = bitmap.representation(using: .png, properties: [:]) else { throw PetError("Skill 审阅窗口无法编码") }
+            try png.write(to: output.appendingPathComponent("skill-review-invalid-name.png"), options: .atomic)
+            name.stringValue = originalName
+            name.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: name))
+            checks["fixingSkillNameRestoresExplicitApply"] = apply.isEnabled && feedback.isHidden && preview.string == originalPreview
+            apply.performClick(nil)
+            guard let savedID = tasks.task(id)?.skillDraft?.savedID else { throw PetError("Skill 审阅未写入目标文件") }
             let saved = try tasks.extensions.item(savedID, workspace: nil), resources = try AgentExtensions.resourceData(AgentFiles(workspace: saved.root.path))
             checks["explicitApplySavesExactSkillAndResourceFiles"] = resources == draft.files.mapValues { Data($0.utf8) } && tasks.task(id)?.skillDraft?.savedID == savedID && tasks.task(id)?.skillDraft?.savedAt != nil
             checks["savingDoesNotTurnCreationIntoFakeSuggestion"] = tasks.task(id)?.skillEvolutionJob?.creation?.taskID == id && tasks.task(id)?.skillEvolutionJob?.sourceTaskID == nil

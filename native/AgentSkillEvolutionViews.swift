@@ -130,7 +130,7 @@ import AppKit
             guard let task = store.task(taskID) else { throw PetError("原任务已不存在") }
             let values = try AgentSkillDrafts.proposed(draft,job:job,store:store,name:name.stringValue,task:task), original = try AgentSkillDrafts.base(job,store:store,task:task)
             updateSections(Self.previewSections(values,original:original))
-        } catch { updateSections([("无法审阅",error.localizedDescription)]) }
+        } catch { showPreviewFailure(error) }
     }
     private static func previewSections(_ values:[String:Data], original:[String:Data]) -> [(String,String)] {
         let sections = values.keys.sorted().filter { values[$0] != original[$0] }.map { path -> (String,String) in

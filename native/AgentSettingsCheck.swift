@@ -120,9 +120,11 @@ import Darwin
     }
 
     func runSettingsPagesCheck(_ output: URL) async {
-        var checks: [String: Bool] = [:], report: [String: Any] = [:]
+        var checks: [String: Bool] = [:], report: [String: Any] = [:], modelRequests = 0
         do {
-            let tasks = AgentStore(directory: store.directory, legacy: [], extensionHome: output.appendingPathComponent("shared-home"))
+            ensureAgent()
+            guard let tasks = agentStore, let agentRuntime else { throw PetError("缺少原生设置工作台") }
+            agentRuntime.modelRequestCheck = { modelRequests += 1; throw PetError("设置审阅验收禁止模型请求") }
             let id = try await prepareSettingsPagesCheck(output, tasks: tasks), workspace = tasks.task(id)?.workspace
             let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
             host.isReleasedWhenClosed = false
@@ -244,9 +246,12 @@ import Darwin
             checks.merge(try await AgentMCPFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try await AgentManagementReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try await checkSettingsPluginHistory(output, tasks: tasks, workspace: workspace, pane: pane, host: host)) { _, next in next }
+            host.orderOut(nil)
+            checks.merge(try await AgentManagementReviewCheck.runWindow(owner: control, tasks: tasks, taskID: id, output: output)) { _, next in next }
+            checks["reviewWorkbenchMakesNoModelRequests"] = modelRequests == 0
             report["success"] = checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
-        report["checks"] = checks; report["modelRequests"] = 0; report["appPID"] = getpid()
+        report["checks"] = checks; report["modelRequests"] = modelRequests; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("settings-pages-report.json"))
     }
 }

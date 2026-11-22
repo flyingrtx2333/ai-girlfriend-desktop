@@ -26,7 +26,7 @@ import AppKit
         let definitions: [[String: Any]] = [
             ["name": "页内命令审阅", "type": "command", "command": "/bin/sh", "args": [script.path, marker.path], "timeout": 5, "network": false],
             ["name": "页内HTTP审阅", "type": "http", "url": "https://example.com/hooks", "headers": [:], "allowedEnvVars": [], "timeout": 5],
-            ["name": "页内模型审阅", "type": "prompt", "prompt": "只核对公开输入，不修改文件。", "timeout": 5],
+            ["name": "页内模型审阅", "type": "prompt", "prompt": (1...48).map { "第 \($0) 项公开验收字段" }.joined(separator: "\n"), "timeout": 5],
             ["name": "页内Agent审阅", "type": "agent", "prompt": "只读取公开 README。", "tools": ["read_file"], "network": false, "maxTurns": 2, "timeout": 5],
             ["name": "页内后台审阅", "type": "command", "command": "/usr/bin/true", "args": [], "async": true, "asyncRewake": true, "rewakeMessage": "公开唤醒提示", "rewakeSummary": "公开唤醒摘要", "statusMessage": "页内后台状态", "timeout": 5]
         ]
@@ -52,7 +52,12 @@ import AppKit
             for (label, size) in [("normal", NSSize(width: 800, height: 540)), ("narrow", NSSize(width: 420, height: 360))] {
                 host.setContentSize(size); pane.layoutSubtreeIfNeeded(); let detail = try control(NSTextView.self, "设置审阅正文", page: page)
                 var valid = !detail.hasAmbiguousLayout && detail.bounds.width >= 140 && detail.bounds.height >= 100
-                if multiple { valid = try valid && !control(NSTableView.self, "设置审阅列表", page: page).hasAmbiguousLayout }
+                if multiple {
+                    if label == "narrow" {
+                        let picker = try control(NSPopUpButton.self, "选择审阅条目", page: page)
+                        valid = valid && !picker.isHiddenOrHasHiddenAncestor && detail.bounds.width >= 380
+                    } else { valid = try valid && !control(NSTableView.self, "设置审阅列表", page: page).hasAmbiguousLayout }
+                }
                 checks[key + "Layout-" + label] = valid; measurements[key + "-" + label] = ["previewSize": [detail.bounds.width, detail.bounds.height], "ambiguous": detail.hasAmbiguousLayout]
             }
             host.setContentSize(NSSize(width: 800, height: 540))
@@ -193,6 +198,94 @@ import AppKit
         checks["managementReviewCreatesNoVisibleWindows"] = NSApp.windows.filter(\.isVisible).count == visible
         checks["managementReviewLeavesNormally"] = pane.leave()
         try JSONSerialization.data(withJSONObject: measurements, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("management-review-layout.json"))
+        return checks
+    }
+
+    static func runWindow(owner: ControlWindow, tasks: AgentStore, taskID: String, output: URL) async throws -> [String: Bool] {
+        guard let window = owner.window, let root = window.contentView,
+              let pane = find(AgentSettingsPageHost.self, in: root, matching: { _ in true }),
+              let actions = find(NSStackView.self, in: root, matching: { $0.identifier?.rawValue == "settings-window-actions" }),
+              let workspace = tasks.task(taskID)?.workspace else { throw PetError("缺少设置工作台") }
+        let originalSize = root.bounds.size, appearance = window.appearance
+        defer { window.appearance = appearance; window.setContentSize(originalSize); owner.show(tab: "chat") }
+        owner.showAgentTask(taskID); window.makeKeyAndOrderFront(nil)
+        func render(_ size: NSSize, _ appearance: NSAppearance.Name, named label: String) async throws {
+            window.appearance = NSAppearance(named: appearance); window.setContentSize(size)
+            await Task.yield(); root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            guard root.bounds.size == size, let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else {
+                throw PetError("设置审阅窗口尺寸不符")
+            }
+            bitmap.size = root.bounds.size; root.cacheDisplay(in: root.bounds, to: bitmap)
+            guard let png = bitmap.representation(using: .png, properties: [:]) else { throw PetError("设置审阅窗口无法编码") }
+            try png.write(to: output.appendingPathComponent("settings-review-" + label + ".png"), options: .atomic)
+        }
+        func pressAction(_ title: String) throws {
+            guard let button = actions.arrangedSubviews.compactMap({ $0 as? NSButton }).first(where: { $0.title == title && $0.isEnabled }) else {
+                throw PetError("缺少设置页头操作 " + title)
+            }
+            button.performClick(nil)
+        }
+        func titleCount(_ title: String) -> Int {
+            func count(_ view: NSView) -> Int {
+                if view.isHiddenOrHasHiddenAncestor { return 0 }
+                let current = (view as? NSTextField)?.stringValue == title ? 1 : 0
+                return current + view.subviews.reduce(0) { $0 + count($1) }
+            }
+            return count(root)
+        }
+
+        var checks: [String: Bool] = [:]
+        let compact = NSSize(width: 780, height: 540), wide = NSSize(width: 1320, height: 800)
+        guard owner.showSettingsCategory("hooks"), let hooks = pane.currentController as? AgentHookWindow,
+              let hook = try tasks.hooks.catalog(workspace: workspace).first(where: { $0.name == "页内模型审阅" }) else { throw PetError("未打开实际 Hooks 列表") }
+        hooks.selectHook(hook.id); try press("启用", page: hooks)
+        guard let review = pane.currentController as? AgentSettingsReviewPage else { throw PetError("未打开实际 Hooks 审阅") }
+        try await render(compact, .darkAqua, named: "hook-compact")
+        let preview = try control(NSTextView.self, "设置审阅正文", page: review), headline = "启用「页内模型审阅」"
+        checks["reviewWorkbenchHookShowsSingleTitleAndHeaderActions"] = titleCount(headline) == 1 && review.presentingWindow === window &&
+            window.attachedSheet == nil && actions.arrangedSubviews.count == 2 && review.window?.isVisible == false
+        let tail = (preview.string as NSString).range(of: "第 48 项公开验收字段")
+        guard tail.location != NSNotFound else { throw PetError("Hooks 末段内容缺失") }
+        preview.scrollRangeToVisible(tail)
+        root.layoutSubtreeIfNeeded()
+        checks["reviewWorkbenchLongHookReachesTailWithActionsVisible"] = tail.location != NSNotFound &&
+            (preview.enclosingScrollView?.contentView.bounds.minY ?? 0) > 0 && !actions.isHiddenOrHasHiddenAncestor &&
+            preview.enclosingScrollView.map { root.bounds.contains($0.convert($0.bounds, to: root)) } == true
+        try pressAction("取消")
+        checks["reviewWorkbenchCancelPreservesHookAndFocus"] = pane.currentController === hooks && !tasks.hooks.enabled(hook) &&
+            (window.firstResponder as? NSButton)?.accessibilityIdentifier() == "hook-handler-" + hook.id
+
+        guard owner.showSettingsCategory("teams"), pane.currentController is AgentTeamWindow else { throw PetError("未打开实际团队列表") }
+        let rolesBefore = try tasks.agents.document().1, teamsBefore = try tasks.teams.document().1
+        try pressAction("审阅模板")
+        guard let team = pane.currentController as? AgentSettingsReviewPage else { throw PetError("未打开实际模板审阅") }
+        try await render(wide, .aqua, named: "team-wide")
+        let list = try control(NSTableView.self, "设置审阅列表", page: team), body = try control(NSTextView.self, "设置审阅正文", page: team)
+        checks["reviewWorkbenchWideTeamShowsIndexAndSingleTitle"] = titleCount("代码审阅团队") == 1 &&
+            !list.isHiddenOrHasHiddenAncestor && list.numberOfRows == 4
+        list.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
+        let role = body.string, selectedText = (role as NSString).range(of: "不得修改文件")
+        body.setSelectedRange(selectedText)
+        try await render(compact, .darkAqua, named: "team-compact")
+        let picker = try control(NSPopUpButton.self, "选择审阅条目", page: team)
+        checks["reviewWorkbenchCompactTeamKeepsSelectedRoleAndExpandsBody"] = picker.indexOfSelectedItem == 3 &&
+            body.string == role && body.selectedRange() == selectedText && body.bounds.width >= 480
+        func choose(_ row: Int) throws {
+            picker.selectItem(at: row)
+            guard let action = picker.action, NSApp.sendAction(action, to: picker.target, from: picker) else {
+                throw PetError("无法切换团队审阅条目")
+            }
+        }
+        try choose(0)
+        checks["reviewWorkbenchCompactTeamPickerReadsFullTeam"] = body.string.contains("等待两名成员的实际结果")
+        try choose(3)
+        checks["reviewWorkbenchCompactTeamRestoresRoleSelection"] = body.string == role && body.selectedRange() == selectedText
+        try pressAction("载入草稿")
+        checks["reviewWorkbenchLoadDraftReturnsToActualTeamEditor"] = try pane.currentController is AgentSettingsDetailPage &&
+            tasks.agents.document().1 == rolesBefore && tasks.teams.document().1 == teamsBefore && window.attachedSheet == nil
+        // Finish the isolated draft through the normal settings action.
+        try pressAction("保存")
+        checks["reviewWorkbenchExplicitSaveCreatesTeam"] = try tasks.teams.list().contains { $0.name.hasPrefix("代码审阅团队") && !$0.enabled }
         return checks
     }
 }
