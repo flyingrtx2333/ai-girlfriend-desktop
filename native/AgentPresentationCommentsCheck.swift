@@ -71,11 +71,11 @@ import AppKit
             }
             runtime.modelRequestCheck = { requests += 1; throw PetError("演示文稿批注验收禁止模型请求") }
             let files = try AgentFiles(workspace: project.path), journal = AgentWorkspaceRecovery(profile: store.directory)
-            let dark = ["apply", "legacy", "legacy-seed", "legacy-reopen"].contains(stage)
+            let dark = ["apply", "legacy", "legacy-seed", "legacy-reopen", "appearance"].contains(stage)
             control.window?.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             control.show(tab: "chat")
             control.window?.setContentSize(NSSize(width: dark ? 780 : 1320, height: dark ? 540 : 800))
-            if ["seed", "blank", "legacy", "legacy-seed"].contains(stage) {
+            if ["seed", "blank", "legacy", "legacy-seed", "appearance"].contains(stage) {
                 let hash = try files.fileHash(file)
                 let task = tasks.create(title: "核对演示文稿批注", workspace: project.path, draft: "保留任务原输入")
                 control.showAgentTask(task); control.showTaskDocument(file.path)
@@ -84,7 +84,78 @@ import AppKit
                 checks.merge(before["checks"] as? [String: Bool] ?? [:]) { a, _ in a }
                 let pane = try await editor.checkPresentationComments(action: "toggle")
                 checks["actualToolbarOpensReview"] = pane["visible"] as? Bool == true
-                if stage == "seed" {
+                if stage == "appearance" {
+                    func afterAppearance(dark: Bool, minimumWidth: Double = 0) async throws -> [String: Any] {
+                        let timeout = Date().addingTimeInterval(5)
+                        while Date() < timeout {
+                            let value = try await editor.checkPresentationAppearance()
+                            if value["prefersDark"] as? Bool == dark, (value["viewportWidth"] as? Double ?? 0) >= minimumWidth { return value }
+                            await wait(0.05)
+                        }
+                        throw PetError("编辑器未响应窗口外观或尺寸")
+                    }
+                    func palette(_ state: [String: Any], dark: Bool) -> Bool {
+                        let values = state["surfaceLightness"] as? [String: Double] ?? [:]
+                        return values.count == 6 && values.values.allSatisfy { dark ? (0..<0.15).contains($0) : $0 > 0.6 }
+                    }
+                    func sameSlide(_ first: [String: Any], _ second: [String: Any]) -> Bool {
+                        first["canvasHash"] as? String == second["canvasHash"] as? String &&
+                        first["canvasBackground"] as? String == second["canvasBackground"] as? String &&
+                        (first["canvasWidth"] as? Int ?? 0) > 0 && first["selectedSlides"] as? [String] == second["selectedSlides"] as? [String]
+                    }
+                    _ = try await select(editor, old)
+                    _ = try await editor.checkPresentationComments(action: "draft", text: reply)
+                    let darkState = try await editor.checkPresentationAppearance(image: output.appendingPathComponent("appearance-narrow-dark.png"))
+                    observed["darkNarrow"] = darkState
+                    control.window?.appearance = NSAppearance(named: .aqua)
+                    _ = try await afterAppearance(dark: false)
+                    let lightState = try await editor.checkPresentationAppearance(image: output.appendingPathComponent("appearance-narrow-light.png"))
+                    observed["lightNarrow"] = lightState
+                    let retained = try await editor.checkPresentationComments()
+                    checks["darkAppearanceReachesEveryEditorSurface"] = palette(darkState, dark: true)
+                    checks["lightAppearanceReachesEveryEditorSurface"] = palette(lightState, dark: false)
+                    checks["notesRemainReadableAcrossThemes"] = [darkState, lightState].allSatisfy { ($0["notesContrast"] as? Double ?? 0) >= 4.5 }
+                    checks["recoloringDoesNotChangeAnySlidePixels"] = sameSlide(darkState, lightState)
+                    checks["liveThemeSwitchKeepsCommentDraftAndFocus"] = retained["draft"] as? String == reply &&
+                        retained["focused"] as? Bool == true && (retained["range"] as? [Any])?.last as? String == "backward"
+                    let lightMenu = try await editor.checkPresentationAppearance(action: "menu")
+                    _ = try await editor.checkPresentationAppearance(action: "menu")
+                    control.window?.appearance = NSAppearance(named: .darkAqua)
+                    _ = try await afterAppearance(dark: true)
+                    let darkMenu = try await editor.checkPresentationAppearance(action: "menu", image: output.appendingPathComponent("appearance-overflow-dark.png"))
+                    observed["overflow"] = ["light": lightMenu["menu"] ?? NSNull(), "dark": darkMenu["menu"] ?? NSNull()]
+                    let firstMenu = lightMenu["menu"] as? [String: Any] ?? [:], secondMenu = darkMenu["menu"] as? [String: Any] ?? [:]
+                    checks["overflowMenuFollowsBothThemesAndFitsNarrowWindow"] =
+                        (firstMenu["lightness"] as? Double ?? -1) > 0.6 && (0..<0.15).contains(secondMenu["lightness"] as? Double ?? -1) &&
+                        [firstMenu, secondMenu].allSatisfy {
+                            $0["inside"] as? Bool == true && $0["endReachable"] as? Bool == true && ($0["contrast"] as? Double ?? 0) >= 4.5
+                        }
+                    _ = try await editor.checkPresentationAppearance(action: "menu")
+                    let noteFocus = try await editor.checkPresentationAppearance(action: "notes")
+                    let locked = try await editor.checkPresentationAppearance(action: "lock")
+                    checks["notesHaveVisibleFocusAndReadableLockedState"] = noteFocus["notesFocusRing"] as? Bool == true &&
+                        locked["locked"] as? Bool == true && locked["reviewLocked"] as? Bool == true &&
+                        locked["notesColor"] as? String != noteFocus["notesColor"] as? String && (locked["notesContrast"] as? Double ?? 0) >= 4.5
+                    _ = try await editor.checkPresentationAppearance(action: "unlock")
+                    let narrowSize = control.window?.contentView?.bounds.size
+                    control.window?.setContentSize(NSSize(width: 1320, height: 800))
+                    control.window?.contentView?.layoutSubtreeIfNeeded()
+                    if let expand = findButton(control.taskWorkspace, label: "放大工作区"), !expand.isHiddenOrHasHiddenAncestor {
+                        expand.performClick(nil)
+                    }
+                    _ = try await afterAppearance(dark: true, minimumWidth: 900)
+                    let darkWide = try await editor.checkPresentationAppearance(image: output.appendingPathComponent("appearance-wide-dark.png"))
+                    control.window?.appearance = NSAppearance(named: .aqua)
+                    _ = try await afterAppearance(dark: false, minimumWidth: 900)
+                    let lightWide = try await editor.checkPresentationAppearance(image: output.appendingPathComponent("appearance-wide-light.png"))
+                    observed["wide"] = ["dark": darkWide, "light": lightWide]
+                    checks["bothPalettesCoverExpandedEditorAndKeepPaint"] = palette(darkWide, dark: true) &&
+                        palette(lightWide, dark: false) && sameSlide(darkWide, lightWide)
+                    checks["usesExactNarrowAndWideWindowSizes"] = narrowSize == NSSize(width: 780, height: 540) &&
+                        control.window?.contentView?.bounds.size == NSSize(width: 1320, height: 800)
+                    checks["themeSwitchPreservesOriginalPresentation"] = try files.fileHash(file) == hash &&
+                        darkState["notesValue"] as? String == lightState["notesValue"] as? String
+                } else if stage == "seed" {
                     guard let expand = findButton(control.taskWorkspace, label: "放大工作区"), !expand.isHiddenOrHasHiddenAncestor else {
                         throw PetError("工作区没有展开入口")
                     }

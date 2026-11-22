@@ -710,6 +710,91 @@ import Darwin
               let png = bits.representation(using: .png, properties: [:]) else { throw PetError("办公编辑器图像无法编码") }
         try png.write(to: file, options: .atomic)
     }
+    func checkPresentationAppearance(action: String = "", image: URL? = nil) async throws -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled, CommandLine.arguments.contains("--presentation-comments"),
+              file.pathExtension.lowercased() == "pptx" else { throw PetError("仅限演示文稿外观验收") }
+        let value = try await evaluate(#"""
+            const root = document.getElementById('office-root');
+            const toolbar = root.querySelector('[data-testid="pptx-editor-toolbar"]');
+            const canvas = root.querySelector('[data-testid="pptx-slide-canvas"]');
+            const notes = root.querySelector('[data-testid="pptx-notes-textarea"]');
+            const rail = root.querySelector('aside');
+            const pane = document.getElementById('presentation-comments');
+            const stage = canvas?.closest('[role=application]') ?? canvas?.parentElement;
+            if (!toolbar || !canvas || !notes || !rail || !stage) throw new Error('演示文稿编辑区尚未就绪');
+            const more = toolbar.querySelector('[data-testid="pptx-toolbar-more"]');
+            if (action === 'menu') more?.click();
+            if (action === 'notes') notes.focus();
+            if (action === 'lock' || action === 'unlock') await BlueFatFishOffice.setInteractionLocked(action === 'lock');
+            if (action) await new Promise(resolve => requestAnimationFrame(resolve));
+            function describe(element) {
+              const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+              return {tag: element.tagName, role: element.getAttribute('role') ?? '', label: element.getAttribute('aria-label') ?? '',
+                testID: element.getAttribute('data-testid') ?? '', background: style.backgroundColor, color: style.color,
+                border: style.borderTopColor, width: rect.width, height: rect.height};
+            }
+            function background(element) {
+              for (let node = element; node; node = node.parentElement) {
+                const value = getComputedStyle(node).backgroundColor;
+                if (value !== 'rgba(0, 0, 0, 0)' && value !== 'transparent') return value;
+              }
+              return '';
+            }
+            function lightness(value) {
+              const rgb = (value.match(/\d+(?:\.\d+)?/g) ?? []).slice(0,3).map(s => Number(s) / 255);
+              if (rgb.length !== 3) return -1;
+              const [r,g,b] = rgb.map(v => v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4));
+              return .2126*r + .7152*g + .0722*b;
+            }
+            const surfaces = { toolbar: toolbar.parentElement, stage, rail, notesPanel: notes.parentElement, notesField: notes, annotations: pane };
+            const colors = Object.fromEntries(Object.entries(surfaces).map(([key,node]) => [key, background(node)]));
+            function contrast(text, backgroundColor) {
+              const ink = lightness(text), base = lightness(backgroundColor);
+              return (Math.max(ink,base)+.05) / (Math.min(ink,base)+.05);
+            }
+            const noteStyle = getComputedStyle(notes);
+            const menu = document.getElementById(more?.getAttribute('aria-controls') || '') ?? document.querySelector('[role=menu]');
+            const choice = menu?.querySelector('[role^=menuitem]:not([aria-disabled=true]):not([disabled])') ?? menu;
+            const menuBounds = menu?.getBoundingClientRect();
+            let menuEndReachable = false;
+            if (menu) {
+              const previousScroll = menu.scrollTop;
+              menu.scrollTop = menu.scrollHeight;
+              menuEndReachable = menu.scrollHeight - menu.clientHeight - menu.scrollTop <= 1;
+              menu.scrollTop = previousScroll;
+            }
+            const encoded = new TextEncoder().encode(canvas.toDataURL());
+            const canvasHash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', encoded)),
+              v => v.toString(16).padStart(2, '0')).join('');
+            const trail = element => {
+              const values = [];
+              for (let node = element; node && node !== root; node = node.parentElement) values.push(describe(node));
+              return values;
+            };
+            return {
+              prefersDark: matchMedia('(prefers-color-scheme: dark)').matches, colors,
+              surfaceLightness: Object.fromEntries(Object.entries(colors).map(([key,value]) => [key, lightness(value)])),
+              notesContrast: contrast(noteStyle.color, colors.notesField), notesColor: noteStyle.color,
+              notesFocusRing: document.activeElement === notes && noteStyle.outlineStyle !== 'none' && parseFloat(noteStyle.outlineWidth) >= 2,
+              locked: root.inert, reviewLocked: pane.querySelector('textarea').readOnly,
+              canvasHash, canvasBackground: getComputedStyle(canvas).backgroundColor,
+              canvasWidth: canvas.width, canvasHeight: canvas.height, notesValue: notes.value,
+              editorWidth: root.clientWidth, viewportWidth: innerWidth,
+              focus: document.activeElement?.getAttribute('aria-label') ?? '',
+              selectedSlides: Array.from(rail.querySelectorAll('[aria-current]'), el => el.getAttribute('aria-label') ?? el.textContent),
+              trace: { toolbar:trail(toolbar), canvas:trail(canvas), rail:trail(rail), notes:trail(notes) },
+              menuTriggers: Array.from(toolbar.querySelectorAll('[aria-haspopup=menu]'), button =>
+                ({label:button.getAttribute('aria-label') ?? '', testID:button.getAttribute('data-testid') ?? '',
+                  expanded:button.getAttribute('aria-expanded') ?? '', width:button.getBoundingClientRect().width})),
+              menu: menu && choice ? { lightness: lightness(background(menu)), contrast: contrast(getComputedStyle(choice).color, background(menu)),
+                endReachable: menuEndReachable, inside: menuBounds.left >= -1 && menuBounds.right <= innerWidth + 1 &&
+                  menuBounds.top >= -1 && menuBounds.bottom <= innerHeight + 1 } : null
+            };
+            """#, args: ["action": action])
+        if let image { try await checkEditorImage(image) }
+        guard let detail = value as? [String: Any] else { throw PetError("演示文稿外观未回读") }
+        return detail
+    }
     func checkPresentationComments(action: String = "", text: String? = nil, image: URL? = nil) async throws -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled, CommandLine.arguments.contains("--presentation-comments"),
               file.pathExtension.lowercased() == "pptx" else { throw PetError("仅限演示文稿批注验收") }

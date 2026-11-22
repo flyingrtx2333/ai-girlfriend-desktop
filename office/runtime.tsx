@@ -229,6 +229,7 @@ class EditorBoundary extends React.Component<{ children: React.ReactNode }, { me
 async function load(url: string, name: string, locked: boolean) {
   const token = ++generation, format = name.split('.').pop()?.toLowerCase() ?? '';
   if (!['docx', 'xlsx', 'pptx'].includes(format)) throw new Error('不支持此办公文件格式');
+  document.documentElement.dataset.officeFormat = format;
   pendingReady?.reject(new Error('文档已切换')); pendingReady = null; rejectOperations(new Error('文档已切换'));
   workspaceView?.dispose(); workspaceView = null; docxReview.reset(); sheetNotes.reset(); sheetThreads.reset(); presentationComments.reset();
   modernPresentationCommentsEdited = false; legacyPresentationParents.clear();

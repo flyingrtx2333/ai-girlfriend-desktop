@@ -1,0 +1,79 @@
+@media (prefers-color-scheme: dark) {
+  :root[data-office-format="pptx"] {
+    color-scheme: dark;
+    --slide-workspace: #19201c;
+    --slide-surface: #242c27;
+    --slide-input: #1b231e;
+    --slide-line: #3c4b41;
+    --slide-ink: #e3ede6;
+    --slide-muted: #abbdb2;
+    --slide-accent: #9dd9c0;
+    --slide-selection: #2d493d;
+    --slide-error: #ffc0bd;
+    --bo-toolbar-ink: var(--slide-ink);
+    --bo-toolbar-ink-muted: var(--slide-muted);
+    --bo-toolbar-rail: var(--slide-surface);
+    --bo-toolbar-surface: var(--slide-input);
+    --bo-toolbar-hover: #344039;
+    --bo-toolbar-selected: var(--slide-selection);
+    --bo-toolbar-line: var(--slide-line);
+    --bo-toolbar-accent: var(--slide-accent);
+    --bo-toolbar-accent-ink: #122c21;
+  }
+
+  :root[data-office-format="pptx"],
+  :root[data-office-format="pptx"] :is(body, #office-root) {
+    background-color: var(--slide-workspace);
+    color: var(--slide-ink);
+  }
+
+  /* The worker editor assigns inline colors to these presentation controls. */
+  [data-testid="pptx-worker-editor"] {
+    color: var(--slide-ink) !important;
+  }
+  [data-testid="pptx-worker-editor"] > div:has([data-testid="pptx-editor-toolbar"]),
+  [data-testid="pptx-worker-editor"] :is(label, div):has(> [data-testid="pptx-notes-textarea"]),
+  [data-testid="pptx-worker-editor"] div:has(> aside[aria-label]:not([data-testid])),
+  [data-testid="pptx-proposals-panel"] {
+    background: var(--slide-surface) !important;
+    border-color: var(--slide-line) !important;
+  }
+  [data-testid="pptx-worker-editor"] > div:has([data-testid="pptx-editor-toolbar"]) {
+    box-shadow: inset 0 -1px var(--slide-line);
+  }
+  [data-testid="pptx-worker-editor"] [role="application"] {
+    background: var(--slide-workspace) !important;
+  }
+  [data-testid="pptx-worker-editor"] [data-testid="pptx-notes-textarea"],
+  [data-testid="pptx-worker-editor"] div:has(> aside[aria-label]:not([data-testid])) > div button,
+  [data-testid="pptx-proposals-panel"] button {
+    background: var(--slide-input) !important;
+    color: var(--slide-ink) !important;
+    border-color: var(--slide-line) !important;
+  }
+  [data-testid="pptx-worker-editor"] [data-testid="pptx-notes-textarea"]::placeholder,
+  [data-testid="pptx-worker-editor"] :is(label, div):has(> [data-testid="pptx-notes-textarea"]) > span,
+  [data-testid="pptx-worker-editor"] aside[aria-label]:not([data-testid]) > button > span,
+  [data-testid="pptx-proposals-panel"] > :is(p, header span) {
+    color: var(--slide-muted) !important;
+  }
+  [data-testid="pptx-worker-editor"] aside[aria-label]:not([data-testid]) > button[aria-current="page"] {
+    background: var(--slide-selection) !important;
+    border-color: var(--slide-accent) !important;
+  }
+  [data-testid="pptx-worker-editor"] :is(button, textarea, [role="application"]):focus-visible {
+    outline: 2px solid var(--slide-accent) !important;
+    outline-offset: -2px;
+  }
+  [data-testid="pptx-worker-editor"] [data-testid="pptx-notes-textarea"]:disabled,
+  #office-root[inert] [data-testid="pptx-notes-textarea"] {
+    color: var(--slide-muted) !important;
+  }
+  [data-testid="pptx-error"] {
+    background: var(--slide-workspace) !important;
+    color: var(--slide-ink) !important;
+  }
+  :root[data-office-format="pptx"] .office-error {
+    color: var(--slide-error);
+  }
+}
