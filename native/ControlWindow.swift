@@ -217,6 +217,7 @@ final class FormDocumentView: NSView {
     private var artifactDocuments: [AgentRecordWindow] = []
     private var taskModelPopover: NSPopover?
     private var contextWindow: AgentContextWindow?
+    private var requestedContextSection: (taskID: String, section: Int)?
     private let taskMCPContext = AgentWorkbenchButton()
     private let taskContext = AgentWorkbenchButton()
     private var worktreeWindow: AgentWorktreeWindow?
@@ -1845,10 +1846,21 @@ final class FormDocumentView: NSView {
     }
     @objc private func showTaskContext() { presentTaskContext(section: 0) }
     @objc private func showTaskRecap() { presentTaskContext(section: 1) }
+    private func preparedTaskContext(runtime: AgentRuntime, taskID: String, section: Int = 0) -> AgentContextWindow {
+        let page = AgentContextWindow(runtime: runtime, taskID: taskID, section: section)
+        page.recapModel = { [weak self] in self?.companion?.taskMonitor.settings.recapModel }
+        return page
+    }
     internal func presentTaskContext(section: Int) {
         guard let runtime = companion?.agentRuntime, let id = agentTaskID, saveAgentDraft() else { return }
         if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
-        guard taskWorkspace.show(taskID: id, root: .context, make: { let page = AgentContextWindow(runtime: runtime, taskID: id, section: section); page.recapModel = { [weak self] in self?.companion?.taskMonitor.settings.recapModel }; return page }) else { return }
+        guard taskWorkspace.show(taskID: id, root: .context, make: { preparedTaskContext(runtime: runtime, taskID: id, section: section) }) else {
+            if taskWorkspace.taskID == id, taskWorkspace.selectedRoot == .context, taskWorkspace.rootController(.context) == nil {
+                requestedContextSection = (id, section)
+            }
+            return
+        }
+        requestedContextSection = nil
         (taskWorkspace.rootController(.context) as? AgentContextWindow)?.selectSection(section)
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
@@ -4311,7 +4323,7 @@ final class FormDocumentView: NSView {
     func selectAgentTask(_ id: String, searchQuery: String? = nil, messageID: String? = nil) {
         dismissExtensionCandidates()
         guard let tasks = companion?.agentStore, let record = tasks.task(id), saveAgentDraft(), canLeaveMainPage() else { return }
-        if id != agentTaskID { taskModelPopover?.close(); pendingAttachmentTarget = nil }
+        if id != agentTaskID { taskModelPopover?.close(); pendingAttachmentTarget = nil; requestedContextSection = nil }
         if let sideTaskTabID, sideTaskTabID != id {
             if record.sideTask != nil && record.parentID == sideTaskTabID { self.sideTaskTabID = id }
             else { companion?.showTaskInMainWindow(id); return }
@@ -5099,7 +5111,16 @@ final class FormDocumentView: NSView {
         func present(_ controller: AgentSettingsPageController) -> Bool {
             activate ? taskWorkspace.show(taskID: id, root: root, recovering: true, make: { controller }) : taskWorkspace.restoreBackgroundRoot(taskID: id, tab: tab, controller: controller)
         }
-        if root == .importSource {
+        if root == .context {
+            guard let runtime = companion?.agentRuntime else { throw PetError("原任务详情暂不可用") }
+            let page = preparedTaskContext(runtime: runtime, taskID: id)
+            if let loaded { try page.restoreWorkspaceRecovery(loaded.saved.value) }
+            guard present(page) else { throw PetError("工作区当前无法打开任务详情") }
+            if let requestedContextSection, requestedContextSection.taskID == id {
+                page.selectSection(requestedContextSection.section)
+                self.requestedContextSection = nil
+            }
+        } else if root == .importSource {
             guard loaded == nil, let origin = task.importOrigin else { throw PetError("原任务的导入来源已不可用") }
             guard present(AgentImportSourcePage(store: store, taskID: id, origin: origin)) else { throw PetError("工作区当前无法打开导入来源") }
         } else if case .attachment(let id) = root {

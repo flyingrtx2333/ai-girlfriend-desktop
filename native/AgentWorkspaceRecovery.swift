@@ -447,12 +447,18 @@ struct AgentWorkspaceRecovery: Sendable {
         guard value.taskID == taskID else { throw PetError("恢复草稿不属于当前任务") }
         return value.dirty
     }
-    func loadPage(windowID: String, pageID: String, taskID: String) throws -> LoadedPage? {
-        let files = try files(), path = try pagePath(windowID, pageID) + ".json", url = try literal(files, path)
+    func loadPage(windowID: String, pageID: String, taskID: String, contextPosition: Bool = false) throws -> LoadedPage? {
+        // The old build can still open its task details when it sees no editor
+        // payload. Keep the reading position beside that payload.
+        let suffix = contextPosition ? ".context.json" : ".json"
+        let files = try files(), path = try pagePath(windowID, pageID) + suffix, url = try literal(files, path)
         if try files.entryMetadata(url).kind == "missing" { return nil }
         return try locked(windowID) { files in
             let data = try files.readData(url, maximum: Self.maximumState), value = try decodePage(data)
             guard value.taskID == taskID else { throw PetError("恢复草稿不属于当前任务") }
+            if contextPosition, value.kind != "context-position" || value.dirty || value.asset != nil {
+                throw PetError("任务详情位置格式无效，原记录已保留")
+            }
             var asset: URL?
             if let stored = value.asset {
                 let file = try literal(files, pagePath(windowID, pageID) + ".\(stored.slot).data")
@@ -465,12 +471,15 @@ struct AgentWorkspaceRecovery: Sendable {
     @discardableResult func savePage(_ value: Page, asset: URL?, windowID: String, pageID: String, expected: String?) throws -> Saved<Page> {
         try validate(value)
         guard value.asset == nil || (asset == nil && value.kind == "office") else { throw PetError("恢复附件必须由保存入口生成") }
+        let contextPosition = value.kind == "context-position"
+        if contextPosition, value.dirty || asset != nil { throw PetError("任务详情只能保存阅读位置") }
+        let suffix = contextPosition ? ".context.json" : ".json"
         _ = try encoded(value)
         return try locked(windowID) { files in
-            let path = try pagePath(windowID, pageID), url = try literal(files, path + ".json")
+            let path = try pagePath(windowID, pageID), url = try literal(files, path + suffix)
             let entry = try files.entryMetadata(url)
             let before = entry.kind == "missing" ? nil : try files.readData(url, maximum: Self.maximumState)
-            let probe = try AgentKnowledgeFileWrite(files: files, path: path + ".json", data: before ?? Data(), expectedHash: expected ?? AgentFiles.hash(Data()), missing: expected == nil, permissions: 0o600, label: Self.label)
+            let probe = try AgentKnowledgeFileWrite(files: files, path: path + suffix, data: before ?? Data(), expectedHash: expected ?? AgentFiles.hash(Data()), missing: expected == nil, permissions: 0o600, label: Self.label)
             let previous = try before.map(decodePage)
             if let previous { guard previous.taskID == value.taskID, previous.kind == value.kind else { throw PetError("恢复草稿所属任务或编辑器已变化") } }
             var saved = value

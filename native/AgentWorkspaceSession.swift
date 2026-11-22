@@ -23,8 +23,8 @@ private actor AgentWorkspaceJournal {
         } }
         return (values, issues)
     }
-    func loadPage(windowID: String, pageID: String, taskID: String) throws -> AgentWorkspaceRecovery.LoadedPage? {
-        try storage.loadPage(windowID: windowID, pageID: pageID, taskID: taskID)
+    func loadPage(windowID: String, pageID: String, taskID: String, contextPosition: Bool = false) throws -> AgentWorkspaceRecovery.LoadedPage? {
+        try storage.loadPage(windowID: windowID, pageID: pageID, taskID: taskID, contextPosition: contextPosition)
     }
     func savePage(_ page: AgentWorkspaceRecovery.Page, asset: URL?, windowID: String, pageID: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Page> {
         try storage.savePage(page, asset: asset, windowID: windowID, pageID: pageID, expected: expected)
@@ -404,6 +404,9 @@ private actor AgentWorkspaceJournal {
                     } else if let attachment = controller as? AgentAttachmentWindow {
                         let page = try attachment.captureWorkspaceRecovery()
                         if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
+                    } else if let context = controller as? AgentContextWindow {
+                        let page = try context.captureWorkspaceRecovery()
+                        if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
                     } else if let git = controller as? AgentGitWindow, let page = try git.captureWorkspaceRecovery(persistClean: pages[tab.id] != nil), pages[tab.id] != page {
                         try await persist(page, asset: nil, pageID: tab.id)
                     }
@@ -554,7 +557,7 @@ private actor AgentWorkspaceJournal {
             defer { roots[tab.id] = nil; owner.taskWorkspace.retryRecovery(tab.id) }
             do {
                 let journal = journal, windowID = id
-                let loaded = try await journal.loadPage(windowID: windowID, pageID: tab.id, taskID: task)
+                let loaded = try await journal.loadPage(windowID: windowID, pageID: tab.id, taskID: task, contextPosition: tab.root == "context")
                 guard !stopped, (!activate || owner.agentTaskID == task), owner.taskWorkspace.recoveryLayouts.contains(where: { $0.taskID == task && $0.tabs.contains(where: { $0.id == tab.id }) }) else { return }
                 if let loaded { pageHashes[tab.id] = loaded.saved.hash; pages[tab.id] = loaded.saved.value }
                 try await owner.materializeRecoveryRoot(task: task, tab: tab, loaded: loaded, activate: activate)
