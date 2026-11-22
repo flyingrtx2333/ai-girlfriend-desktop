@@ -35,6 +35,9 @@ private actor AgentWorkspaceJournal {
     func loadMarketReviewCopy(windowID: String, hash: String) throws -> Data {
         try storage.loadMarketReviewCopy(windowID: windowID, hash: hash)
     }
+    func saveAttention(_ record: AgentAttentionRecovery.Record, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentAttentionRecovery.Record> {
+        try storage.saveAttention(record, expected: expected)
+    }
     func saveTerminals(_ layout: AgentTerminalLayout, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTerminalLayout> {
         try storage.saveTerminalLayout(layout, expected: expected)
     }
@@ -65,6 +68,8 @@ private actor AgentWorkspaceJournal {
     private var coldSettingsNavigation: AgentSettingsRecovery.Navigation?
     private var coldAutomation: AgentWorkspaceRecovery.Automation?, automationFailure: String?
     private var coldAttention: AgentAttentionRecovery?
+    private var savedAttention: AgentWorkspaceRecovery.Saved<AgentAttentionRecovery.Record>?
+    private var attentionRecoveryError: String?
     var pendingSettingsCategory: String? { coldSettings?.category }
     var hasPendingAutomation: Bool { coldAutomation != nil }
     private var knowledgeFailure: String?
@@ -107,9 +112,20 @@ private actor AgentWorkspaceJournal {
         owner.taskWorkspace.onRestoreRoot = { [weak self] task, tab in self?.restore(task: task, tab: tab) }
         do { if let saved { try owner.taskWorkspace.restoreLayouts(saved.value.tasks); loadTabStates(saved.value.tasks) } }
         catch { disabled = true; owner.setStatus(error.localizedDescription, error: true) }
-        if saved != nil, !disabled {
+        if let saved, !disabled {
+            let recovery = AgentWorkspaceRecovery(profile: profile)
             do {
-                let recovery = AgentWorkspaceRecovery(profile: profile)
+                savedAttention = try recovery.loadAttention(windowID: id)
+                if coldAttention == nil, let record = savedAttention?.value {
+                    var state = record.state
+                    state.active = state.active && record.layoutHash == saved.hash && saved.value.permitsActiveAttention
+                    coldAttention = state
+                }
+            } catch {
+                attentionRecoveryError = error.localizedDescription
+                owner.setStatus("需要我位置未恢复，原记录已保留：" + error.localizedDescription, error: true)
+            }
+            do {
                 savedTerminals = try recovery.loadTerminalLayout(windowID: id)
                 if let layout = savedTerminals?.value {
                     do { savedTerminalAppearance = try recovery.loadTerminalAppearance(windowID: id) }
@@ -362,11 +378,20 @@ private actor AgentWorkspaceJournal {
                 layout.settingsNavigation = coldSettingsNavigation ?? owner.captureSettingsNavigation()
                 layout.conversationPositions = owner.captureConversationPositions()
                 layout.automation = try coldAutomation ?? owner.captureAutomationRecovery()
-                layout.attention = owner.captureAttentionRecovery() ?? coldAttention
+                let attention = owner.captureAttentionRecovery() ?? coldAttention ?? previous?.attention
+                if let legacy = previous?.attention, let layoutHash {
+                    if let attentionRecoveryError { throw PetError("需要我恢复记录无法迁移：" + attentionRecoveryError) }
+                    // Keep the embedded state until its independent copy is durable.
+                    try await persistAttention(legacy, layoutHash: layoutHash)
+                }
                 let marketCopy = coldSettings == nil ? (owner.settingsRecoveryControllers.last as? AgentPluginReviewPage)?.marketCopy : nil
                 let expected = layoutHash, capturedLayout = layout
                 let saved = try await journal.saveWindow(capturedLayout, expected: expected, marketCopy: marketCopy)
                 layoutHash = saved.hash; previous = saved.value
+                if var attention, attentionRecoveryError == nil {
+                    attention.active = attention.active && saved.value.permitsActiveAttention
+                    try await persistAttention(attention, layoutHash: saved.hash)
+                }
                 if !terminalRecoveryReadOnly, let terminals = owner.captureTerminalLayout(windowID: id) {
                     let appearance = terminalAppearance(for: terminals, preference: owner.terminalAppearancePreference)
                     if terminals != savedTerminals?.value {
@@ -420,6 +445,11 @@ private actor AgentWorkspaceJournal {
         pageHashes[pageID] = saved.hash; pages[pageID] = saved.value
         owner?.taskWorkspace.applyRecoveredTabStates([pageID: saved.value.dirty])
     }
+    private func persistAttention(_ state: AgentAttentionRecovery, layoutHash: String) async throws {
+        let record = AgentAttentionRecovery.Record(windowID: id, layoutHash: layoutHash, state: state)
+        guard record != savedAttention?.value else { return }
+        savedAttention = try await journal.saveAttention(record, expected: savedAttention?.hash)
+    }
     private func terminalAppearance(for layout: AgentTerminalLayout, preference: AgentTerminalAppearance?) -> AgentTerminalAppearanceRecord? {
         guard !terminalAppearanceReadOnly, let preference, preference == .application || savedTerminalAppearance != nil else { return nil }
         return AgentTerminalAppearanceRecord(windowID: id, preference: preference, fallbackDark: layout.dark)
@@ -433,7 +463,8 @@ private actor AgentWorkspaceJournal {
         // Read the latest media position even between throttled time events.
         if editors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) || owner?.knowledgePageHost.recoveryReaders.contains(where: \.hasVideoPlayback) == true { revision &+= 1 }
         if editors.contains(where: { ($0.2 as? AgentGitWindow)?.recoveryWorktreeForm?.hasDraft == true }) { revision &+= 1 }
-        if let owner, let attention = owner.captureAttentionRecovery(), attention != previous?.attention { revision &+= 1 }
+        if attentionRecoveryError == nil, let owner, let attention = owner.captureAttentionRecovery(),
+           attention != savedAttention?.value.state { revision &+= 1 }
         if !terminalRecoveryReadOnly, let owner, let terminals = owner.captureTerminalLayout(windowID: id) {
             let appearance = terminalAppearance(for: terminals, preference: owner.terminalAppearancePreference)
             if terminals != savedTerminals?.value || (appearance != nil && appearance != savedTerminalAppearance?.value) { revision &+= 1 }

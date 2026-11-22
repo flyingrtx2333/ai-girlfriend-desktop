@@ -1,6 +1,11 @@
 import Foundation
 
 struct AgentAttentionRecovery: Codable, Equatable, Sendable {
+    struct Record: Codable, Equatable, Sendable {
+        var version = 1
+        let windowID: String, layoutHash: String
+        let state: AgentAttentionRecovery
+    }
     struct Position: Codable, Equatable, Sendable {
         var anchor: String?
         var y: Double, offset: Double

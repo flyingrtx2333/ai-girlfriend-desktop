@@ -137,8 +137,12 @@ import AppKit
                 _ = try select(other, denied); try query(other, "另一项", range: NSRange(location: 1, length: 2))
                 try page(other).showSettings()
                 guard await flushWorkspaceWindows(), let mainID = control.workspaceSession?.id, let otherID = other.workspaceSession?.id,
-                      let primary = try journal.loadWindow(mainID)?.value.attention, let secondary = try journal.loadWindow(otherID)?.value.attention,
-                      let detail = primary.detail, let position = primary.lists[0].position else { throw PetError("两扇窗口的恢复记录未保存") }
+                      let layout = try journal.loadWindow(mainID),
+                      let record = try journal.loadAttention(windowID: mainID)?.value,
+                      let secondary = try journal.loadAttention(windowID: otherID)?.value.state,
+                      let detail = record.state.detail, let position = record.state.lists[0].position else { throw PetError("两扇窗口的恢复记录未保存") }
+                let primary = record.state
+                checks["inboxPositionIsIndependentOfCompatibleWindowLayout"] = layout.value.attention == nil && record.layoutHash == layout.hash
                 checks["windowJournalStoresPositionsNotReplyText"] = primary.active && primary.tab == 0 &&
                     primary.lists[1].query == "拒绝" && position.y > 0 && detail.reply?.hash == AgentFiles.hash(Data(draft.utf8))
                 checks["backgroundWindowKeepsIndependentHistoryAndDirection"] = !secondary.active && secondary.tab == 1 &&
@@ -149,6 +153,12 @@ import AppKit
             } else {
                 let fixture = try JSONDecoder().decode(AttentionFixture.self, from: Data(contentsOf: fixtureURL))
                 control.show(tab: "chat"); restoreAdditionalWorkspaceWindows()
+                if stage == "fallback" {
+                    await control.workspaceSession?.waitForPendingRestores()
+                    checks["changedLayoutKeepsInboxInBackground"] = control.attentionPageController?.isVisible == false &&
+                        control.workspaceSession?.id == fixture.main && control.agentTaskID == fixture.owner
+                    control.showAttentionPage()
+                }
                 try await waitUntil("正式恢复流程未显示原事项页") {
                     !tasks.attention.loading && control.attentionPageController?.isVisible == true &&
                     control.attentionPageController?.checkState()["status"] as? String != "正在载入…"
@@ -173,7 +183,10 @@ import AppKit
                     checks["originalFiltersAndNarrowReaderOpenWithoutNavigation"] = state["reading"] as? Bool == true &&
                         state["selected"] as? String == fixture.item && state["query"] as? String == "确认" &&
                         state["kind"] as? String == "question" && control.window?.contentView?.bounds.size == NSSize(width: 780, height: 540)
-                    if stage == "changed" {
+                    if stage == "fallback" {
+                        checks["inboxCanResumeAfterLayoutChangesInOlderApp"] = reply.string == draft &&
+                            picked(reply) == replyMarker && picked(body) == bodyMarker
+                    } else if stage == "changed" {
                         checks["updatedDraftReadFromDiskWithoutOldSelection"] = reply.string == changedDraft && picked(reply) != replyMarker &&
                             state["status"] as? String == "答复草稿已更新，请核对后继续"
                     } else {

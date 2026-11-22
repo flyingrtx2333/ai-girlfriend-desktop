@@ -85,9 +85,14 @@ struct AgentWorkspaceRecovery: Sendable {
         var marketReviewCopy: Asset? = nil
         var settingsNavigation: AgentSettingsRecovery.Navigation? = nil
         var automation: Automation? = nil
+        // Read the inbox state embedded by earlier builds during migration.
         var attention: AgentAttentionRecovery? = nil
         var conversationPositions: [String: AgentConversationPosition]? = nil
         var closed = false
+
+        var permitsActiveAttention: Bool {
+            settings?.active != true && settingsNavigation == nil && knowledge?.active != true && automation == nil
+        }
     }
     struct Asset: Codable, Equatable, Sendable {
         var slot: Int
@@ -195,8 +200,9 @@ struct AgentWorkspaceRecovery: Sendable {
             guard automation.context.valid, automation.state.count <= Self.maximumState else { throw PetError("自动化编辑恢复范围无效，原记录已保留") }
         }
         if let attention = value.attention {
-            guard attention.valid, !attention.active || (value.settings?.active != true && value.settingsNavigation == nil &&
-                value.knowledge?.active != true && value.automation == nil) else { throw PetError("需要我恢复范围无效，原记录已保留") }
+            guard attention.valid, !attention.active || value.permitsActiveAttention else {
+                throw PetError("需要我恢复范围无效，原记录已保留")
+            }
         }
     }
     private func validate(_ value: Page) throws {
@@ -326,6 +332,36 @@ struct AgentWorkspaceRecovery: Sendable {
             let data = try files.readData(url, maximum: Self.maximumMarketCopy)
             guard AgentFiles.hash(data) == hash else { throw PetError("原市场插件审阅副本已变化，需恢复原件或重新审阅") }
             return data
+        }
+    }
+    // Keep layout.json readable when rolling back to an app without inbox recovery.
+    func loadAttention(windowID: String) throws -> Saved<AgentAttentionRecovery.Record>? {
+        let files = try files(), url = try literal(files, prefix(windowID) + "/attention.json")
+        let metadata = try files.entryMetadata(url)
+        if metadata.kind == "missing" { return nil }
+        guard metadata.kind == "file" else { throw PetError("需要我恢复记录不是普通文件") }
+        let data = try files.readData(url, maximum: Self.maximumState)
+        let raw = try keys(JSONSerialization.jsonObject(with: data), ["version", "windowID", "layoutHash", "state"])
+        try AgentAttentionRecovery.validateObject(raw["state"] ?? NSNull())
+        let value = try JSONDecoder().decode(AgentAttentionRecovery.Record.self, from: data)
+        guard value.version == 1, value.windowID == windowID, Self.hash(value.layoutHash), value.state.valid else {
+            throw PetError("需要我恢复格式不受支持，原记录已保留")
+        }
+        return Saved(value: value, hash: AgentFiles.hash(data))
+    }
+    func saveAttention(_ value: AgentAttentionRecovery.Record, expected: String?) throws -> Saved<AgentAttentionRecovery.Record> {
+        guard value.version == 1, Self.hash(value.layoutHash), value.state.valid else { throw PetError("需要我恢复记录无效") }
+        let data = try encoded(value)
+        return try locked(value.windowID) { files in
+            let directory = try prefix(value.windowID), layout = try literal(files, directory + "/layout.json")
+            guard try files.fileHash(layout, maximum: Self.maximumState) == value.layoutHash else {
+                throw PetError("窗口布局已变化，请重新打开窗口")
+            }
+            let change = try AgentKnowledgeFileWrite(files: files, path: directory + "/attention.json", data: data,
+                expectedHash: expected ?? AgentFiles.hash(Data()), missing: expected == nil, permissions: 0o600, label: "需要我恢复记录")
+            try change.requireCurrent()
+            try files.writeData(data, to: change.url, permissions: 0o600, expectedTarget: change.signature)
+            return Saved(value: value, hash: AgentFiles.hash(data))
         }
     }
     func loadTerminalLayout(windowID: String) throws -> Saved<AgentTerminalLayout>? {

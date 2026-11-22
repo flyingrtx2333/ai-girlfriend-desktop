@@ -120,6 +120,26 @@ import AppKit
             }
             let listing = try journal.list()
             checks["invalidWindowsAreReportedWhileValidWindowRemainsAvailable"] = listing.windows.count == 1 && listing.windows.first?.value == window && listing.issues.count == 2
+            let record = AgentAttentionRecovery.Record(windowID: windowID, layoutHash: savedWindow.hash,
+                state: .init(active: true, tab: 0, lists: [.init(), .init()]))
+            let savedAttention = try journal.saveAttention(record, expected: nil)
+            let attentionURL = try files.resolve("workspace-recovery/" + windowID + "/attention.json")
+            let attentionBytes = try files.readData(attentionURL)
+            checks["attentionPositionDoesNotChangeLayoutRevision"] = try journal.loadWindow(windowID)?.hash == savedWindow.hash
+            try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: attentionURL.path)
+            do { _ = try journal.saveAttention(record, expected: savedAttention.hash); checks["readOnlyInboxPositionRemainsIntact"] = false }
+            catch { checks["readOnlyInboxPositionRemainsIntact"] = try files.readData(attentionURL) == attentionBytes && journal.loadWindow(windowID)?.hash == savedWindow.hash }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: attentionURL.path)
+            let newerLayout = try journal.saveWindow(stale, expected: savedWindow.hash)
+            do { _ = try journal.saveAttention(record, expected: savedAttention.hash); checks["staleLayoutCannotPublishInboxPosition"] = false }
+            catch { checks["staleLayoutCannotPublishInboxPosition"] = try files.readData(attentionURL) == attentionBytes }
+            let badAttention = Data(#"{"version":2,"future":"留待支持"}"#.utf8)
+            try files.writeData(badAttention, to: attentionURL, permissions: 0o600)
+            do { _ = try journal.loadAttention(windowID: windowID); checks["unknownInboxPositionLeavesWindowReadable"] = false }
+            catch {
+                checks["unknownInboxPositionLeavesWindowReadable"] = try journal.loadWindow(windowID)?.hash == newerLayout.hash &&
+                    files.readData(attentionURL) == badAttention
+            }
             try files.writeData(Data("DAMAGED_RESOURCE_PUBLIC".utf8), to: loaded.asset!, permissions: 0o600)
             checks["coldMarkerDoesNotRequireDamagedAssetToLoad"] = try journal.loadTabDirtyState(windowID: windowID, pageID: pageID, taskID: owner) == true && files.readData(pageURL) == activeBefore
             do { _ = try journal.loadPage(windowID: windowID, pageID: pageID, taskID: owner); checks["damagedResourceFailsChecksumWithoutRewritingDraft"] = false }
