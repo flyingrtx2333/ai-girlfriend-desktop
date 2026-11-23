@@ -8,15 +8,17 @@ import { fileURLToPath } from 'node:url';
 import { verifyNativeCandidate } from './native-signing.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url)), app = process.env.BLUEFATFISH_APP;
-const args = process.argv.slice(2), manual = args.includes('--manual-ui'), reopen = args[0] === '--reopen' ? args[1] : null;
-if (!app || !(args.length === 0 || args.length === 1 && manual || args.length === 2 && reopen)) throw Error('请指定独立验收应用；可用 --manual-ui 或 --reopen <原目录>，本检查不调用模型。');
+const args = process.argv.slice(2), manual = args.includes('--manual-ui'), reopen = args[0] === '--reopen' ? args[1] : null, diagram = args.includes('--diagram-preview');
+if (!app || !(args.length === 0 || args.length === 1 && (manual || diagram) || args.length === 2 && reopen)) throw Error('请指定独立验收应用；可用 --diagram-preview、--manual-ui 或 --reopen <原目录>，本检查不调用模型。');
 if (verifyNativeCandidate(app).kind !== 'isolated-local') throw Error('文本位置恢复只使用独立本地验收包。');
 const evidence = await realpath(path.join(root, 'evidence/agent'));
-const output = reopen ? await realpath(reopen) : await mkdtemp(path.join(evidence, 'text-viewport-command-'));
+const output = reopen ? await realpath(reopen) : await mkdtemp(path.join(evidence, diagram ? 'markdown-diagram-command-' : 'text-viewport-command-'));
 if (!output.startsWith(evidence + path.sep)) throw Error('验收资料必须留在项目外置盘。');
 for (const name of ['tmp', 'shared-home', 'workspace']) await mkdir(path.join(output, name), { recursive: true, mode: 0o700 });
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-if (!reopen) {
+if (diagram) {
+  await writeFile(path.join(output, 'workspace/diagram.md'), await readFile(path.join(root, 'docs/AGENT-READING.md')), { mode: 0o600 });
+} else if (!reopen) {
   const plainText = Array.from({ length: 260 }, (_, i) => i === 150 ? 'PUBLIC_PLAIN_CURSOR_518 中文😀' : `原文 ${i} PUBLIC_PLAIN_LINE_${i} 保留完整正文。`).join('\r\n') + '\r\n';
   const paragraphs = Array.from({ length: 180 }, (_, i) => i === 80 ? 'PUBLIC_BLOCK_ORIGINAL_517' : `公开段落 ${i} PUBLIC_PARAGRAPH_${i}，保留中文与表情😀。`);
   paragraphs.splice(120, 0, '| 第一列 | 第二列 |\r\n| --- | --- |\r\n| 原值 | PUBLIC_CELL_ORIGINAL_628 |');
@@ -52,7 +54,28 @@ async function run(stage, ui = false) {
   if (!result.success) throw Error('文本位置恢复阶段失败：' + stage);
 }
 try {
-  if (manual || reopen) await run(reopen ? 'observe' : 'seed', true);
+  if (diagram) {
+    await run('diagram-seed');
+    const fixture = JSON.parse(await readFile(path.join(output, 'diagram-fixture.json'), 'utf8'));
+    const page = path.join(output, 'profile/workspace-recovery', fixture.window, 'pages', fixture.tab + '.json');
+    const savedPreview = async () => JSON.parse(Buffer.from(JSON.parse(await readFile(page, 'utf8')).state, 'base64')).markdownViewport;
+    const saved = await savedPreview();
+    await run('diagram-reopen');
+    const returned = await savedPreview();
+    const checks = {
+      sameApplication: results.length === 2 && results.every(result => result.sameApplication),
+      activeDiagramAndZoomWereSaved: saved.diagram.index === 0 && saved.diagram.scale > 0 && Math.abs(saved.diagram.x - 0.36) < 0.02,
+      returningClosesPreviewAndKeepsTheOriginalSelection: returned.diagram == null &&
+        JSON.stringify(returned.viewport.selections) === JSON.stringify(saved.viewport.selections),
+      originalMarkdownMatchesFixtureAndRepository: hash(await readFile(fixture.file)) === fixture.hash &&
+        (await readFile(path.join(root, 'docs/AGENT-READING.md'))).equals(await readFile(fixture.file)),
+      noModels: results.every(result => result.modelRequests === 0),
+    };
+    const success = Object.values(checks).every(Boolean);
+    await writeFile(path.join(output, 'independent.json'), JSON.stringify({ success, checks }, null, 2) + '\n');
+    if (!success) throw Error('图表恢复的独立核对未通过');
+    console.log(JSON.stringify({ output, success, checks }));
+  } else if (manual || reopen) await run(reopen ? 'observe' : 'seed', true);
   else {
     await run('seed');
     const fixture = JSON.parse(await readFile(path.join(output, 'text-viewport-fixture.json'), 'utf8'));

@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor final class AgentMarkdownReader: NSView, NSTextViewDelegate, NSMenuDelegate {
     let text = AgentMarkdownTextView()
-    private let outline = NSPopUpButton(), scroll = NSScrollView()
+    private let outline = NSPopUpButton(), scroll = NSScrollView(), toolbar = NSStackView()
     private let addSelection = NSButton(title: "加入任务", target: nil, action: nil)
     private let retryImages = NSButton(title: "重试图片", target: nil, action: nil)
     private let edit = NSButton(title: "编辑", target: nil, action: nil), edits = UndoManager()
@@ -21,7 +21,8 @@ import AppKit
     private var pendingAnchor: NSRange?, revealScheduled = false
     private var diagramTask: Task<Void, Never>?, diagramRenderer: AgentMarkdownDiagrams?, generation = UUID()
     private(set) var drawings: [Int: AgentMarkdownDiagrams.Drawing] = [:], diagramErrors: [Int: String] = [:]
-    private var diagramWindow: AgentMarkdownDiagramWindow?
+    private var diagramPreview: AgentMarkdownDiagramPreview?
+    private var diagramReadingViewport: AgentTextViewport?
     var onLink: ((URL) -> Void)?
     var onViewportChange: (() -> Void)?
     private var pendingViewRecovery: ViewRecovery?, applyingViewRecovery = false, viewRecoveryScheduled = false
@@ -30,7 +31,7 @@ import AppKit
     override init(frame: NSRect) {
         super.init(frame: frame)
         text.isEditable = false; text.isSelectable = true; text.isRichText = true; text.importsGraphics = false; text.delegate = self
-        text.onDoubleClickAttachment = { [weak self] index in self?.openDiagram(index) ?? false }
+        text.onOpenAttachment = { [weak self] location in self?.openDiagram(at: location) ?? false }
         text.onPreviewEditClick = { [weak self] point in self?.beginEditing(at: point) ?? false }; text.previewUndoManager = edits; text.allowsUndo = true; edits.levelsOfUndo = 20
         text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.textContainerInset = NSSize(width: 18, height: 16)
         text.setAccessibilityLabel("Markdown 预览")
@@ -49,13 +50,15 @@ import AppKit
         scroll.documentView = text; scroll.hasVerticalScroller = true
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
-        let toolbar = NSStackView(views: [outline, NSView(), retryImages, tableActions, edit, addSelection]); toolbar.spacing = 8
+        for view in [outline, NSView(), retryImages, tableActions, edit, addSelection] { toolbar.addArrangedSubview(view) }
+        toolbar.orientation = .horizontal
+        toolbar.spacing = 8
         for view in [toolbar, scroll] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([toolbar.topAnchor.constraint(equalTo: topAnchor, constant: 4), toolbar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), toolbar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12), outline.widthAnchor.constraint(lessThanOrEqualToConstant: 380), scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 6), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor)])
         selectionAction.update(); updateEditingState()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func clear() { pendingViewRecovery = nil; rememberedPreviewFocus = false; rememberedEditorFocus = false; inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); diagramWindow?.close(); diagramWindow = nil; source = ""; file = nil; workspace = nil; document = nil; pendingAnchor = nil; outline.removeAllItems(); text.string = ""; selectionAction.update(); updateEditingState() }
+    func clear() { pendingViewRecovery = nil; rememberedPreviewFocus = false; rememberedEditorFocus = false; inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); source = ""; file = nil; workspace = nil; document = nil; pendingAnchor = nil; outline.removeAllItems(); text.string = ""; selectionAction.update(); updateEditingState() }
     func show(_ source: String, file: URL, workspace: String, reuseIfUnchanged: Bool = false) {
         if reuseIfUnchanged, inlineEditor == nil, self.source == source, self.file == file, self.workspace == workspace, document != nil { isEditing = false; updateEditingState(); return }
         pendingViewRecovery = nil; inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); pendingAnchor = nil; self.source = source; self.file = file; self.workspace = workspace; outline.selectItem(at: 0); render(); updateEditingState()
@@ -268,7 +271,10 @@ import AppKit
         for diagram in document?.diagrams ?? [] { if let drawing = drawings[diagram.range.location] { cached[diagram.source] = drawing } }
         cancelDiagrams(); render(cachedImages: images, cachedDrawings: cached); updateTableActions()
     }
-    private func cancelDiagrams() { generation = UUID(); diagramTask?.cancel(); diagramTask = nil; diagramRenderer?.stop(); diagramRenderer = nil; drawings = [:]; diagramErrors = [:] }
+    private func cancelDiagrams() {
+        returnFromDiagram(restore: false)
+        generation = UUID(); diagramTask?.cancel(); diagramTask = nil; diagramRenderer?.stop(); diagramRenderer = nil; drawings = [:]; diagramErrors = [:]
+    }
     private func renderDiagrams(_ diagrams: [AgentMarkdownDocument.Diagram]) {
         guard !diagrams.isEmpty else { return }
         let renderer = AgentMarkdownDiagrams(), token = generation; diagramRenderer = renderer
@@ -326,16 +332,23 @@ import AppKit
         var editing: Bool
         var editor: Editor?
         var heading: Int? = nil
+        var diagram: AgentMarkdownDiagramPreview.Position? = nil
         var valid: Bool {
             version == 1 && sourceHash.count == 64 && sourceHash.allSatisfy { $0.isHexDigit && !$0.isUppercase } && viewport.valid &&
-                editor?.valid != false && (editor == nil || editing) && (heading.map { (0...20_000).contains($0) } ?? true)
+                editor?.valid != false && (editor == nil || editing) && (heading.map { (0...20_000).contains($0) } ?? true) &&
+                (diagram.map { $0.valid && !editing } ?? true)
         }
         static func validateObject(_ raw: Any) throws {
-            guard let value = raw as? [String: Any], Set(value.keys).isSubset(of: ["version", "sourceHash", "viewport", "editing", "editor", "heading"]) else { throw PetError("Markdown 位置恢复格式不受支持，原记录已保留") }
+            guard let value = raw as? [String: Any], Set(value.keys).isSubset(of: ["version", "sourceHash", "viewport", "editing", "editor", "heading", "diagram"]) else { throw PetError("Markdown 位置恢复格式不受支持，原记录已保留") }
             try AgentTextViewport.validateObject(value["viewport"] ?? NSNull())
             if let raw = value["editor"], !(raw is NSNull) {
                 guard let editor = raw as? [String: Any], Set(editor.keys).isSubset(of: ["base", "value", "location", "length", "table", "row", "column", "viewport"]) else { throw PetError("Markdown 编辑位置恢复格式不受支持，原草稿已保留") }
                 try AgentTextViewport.validateObject(editor["viewport"] ?? NSNull())
+            }
+            if let raw = value["diagram"], !(raw is NSNull) {
+                guard let diagram = raw as? [String: Any], Set(diagram.keys).isSubset(of: ["index", "scale", "x", "y"]) else {
+                    throw PetError("Markdown 图表恢复格式不受支持，原记录已保留")
+                }
             }
         }
     }
@@ -357,12 +370,17 @@ import AppKit
             editorState = .init(base: editor.base, value: editor.value, location: editor.region.source.location, length: editor.region.source.length,
                 table: table, row: row, column: column, viewport: viewport)
         }
-        var viewport = try AgentTextViewport(text); viewport.focused = rememberedPreviewFocus
-        let result = ViewRecovery(sourceHash: AgentFiles.hash(Data(source.utf8)), viewport: viewport, editing: isEditing, editor: editorState, heading: max(0, outline.indexOfSelectedItem))
+        var viewport = try diagramReadingViewport ?? AgentTextViewport(text); viewport.focused = rememberedPreviewFocus
+        let result = ViewRecovery(sourceHash: AgentFiles.hash(Data(source.utf8)), viewport: viewport, editing: isEditing, editor: editorState,
+                                  heading: max(0, outline.indexOfSelectedItem), diagram: diagramPreview?.position)
         guard result.valid else { throw PetError("Markdown 编辑位置无效，原草稿已保留") }; return result
     }
     func restoreViewRecovery(_ value: ViewRecovery) throws {
         guard value.valid, value.sourceHash == AgentFiles.hash(Data(source.utf8)) else { throw PetError("Markdown 正文已变化，原阅读位置已保留") }
+        if let position = value.diagram, document?.diagrams.indices.contains(position.index) != true {
+            throw PetError("Markdown 图表已变化，原阅读位置已保留")
+        }
+        returnFromDiagram(restore: false)
         applyingViewRecovery = true
         defer { applyingViewRecovery = false; scheduleViewRecovery() }
         if let saved = value.editor {
@@ -404,7 +422,7 @@ import AppKit
     func activateRememberedView(force: Bool = false) {
         forceViewActivation = forceViewActivation || force
         scheduleViewRecovery()
-        guard forceViewActivation || rememberedPreviewFocus || rememberedEditorFocus, !viewActivationScheduled else { return }
+        guard forceViewActivation || rememberedPreviewFocus || rememberedEditorFocus || diagramPreview != nil, !viewActivationScheduled else { return }
         viewActivationScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }; let force = forceViewActivation; forceViewActivation = false
@@ -412,6 +430,7 @@ import AppKit
             guard document != nil, window?.isVisible == true, !isHiddenOrHasHiddenAncestor else { return }
             window?.contentView?.layoutSubtreeIfNeeded(); positionEditor()
             applyPendingViewRecovery()
+            if let diagramPreview { diagramPreview.focus(); return }
             guard pendingViewRecovery == nil, var viewport = try? AgentTextViewport(text) else { return }
             applyingViewRecovery = true
             defer { applyingViewRecovery = false }
@@ -438,13 +457,19 @@ import AppKit
     private func applyPendingViewRecovery() {
         guard let value = pendingViewRecovery, !applyingViewRecovery, window?.isVisible == true, !isHiddenOrHasHiddenAncestor,
               bounds.width > 0, bounds.height > 0 else { return }
+        if let position = value.diagram, let diagrams = document?.diagrams, diagrams.indices.contains(position.index) {
+            let location = diagrams[position.index].range.location
+            guard drawings[location] != nil || diagramErrors[location] != nil else { return }
+        }
         applyingViewRecovery = true
         defer { applyingViewRecovery = false }
         window?.contentView?.layoutSubtreeIfNeeded(); positionEditor()
         guard value.editor.map({ inlineEditor?.restoreViewport($0.viewport) == true }) ?? true, value.viewport.apply(to: text) else { return }
         if let editor = inlineEditor, editor.region.isCell, value.editor?.viewport.focused == true,
            scroll.documentVisibleRect.intersects(editor.frame) { _ = text.scrollToVisible(editor.frame) }
-        pendingViewRecovery = nil; onViewportChange?()
+        pendingViewRecovery = nil
+        if let position = value.diagram { _ = showDiagram(position.index, reading: value.viewport, position: position) }
+        onViewportChange?()
     }
     @objc private func viewportChanged(_ notification: Notification) { viewChanged() }
     private func viewChanged() { if !applyingViewRecovery, pendingViewRecovery == nil { rememberViewportFocus(); onViewportChange?() } }
@@ -480,8 +505,50 @@ import AppKit
     }
     func textViewDidChangeSelection(_ notification: Notification) { selectionAction.update(); viewportChanged(notification) }
     func undoManager(for view: NSTextView) -> UndoManager? { edits }
-    private func openDiagram(_ index: Int) -> Bool {
-        guard let drawing = drawings[index] else { return false }; selectionAction.update(); diagramWindow = AgentMarkdownDiagramWindow(drawing); diagramWindow?.showWindow(nil); diagramWindow?.window?.makeKeyAndOrderFront(nil); return true
+    private func openDiagram(at location: Int) -> Bool {
+        guard !isEditing, let index = document?.diagrams.firstIndex(where: { $0.range.location == location }),
+              var reading = try? AgentTextViewport(text) else { return false }
+        reading.focused = true
+        guard showDiagram(index, reading: reading, position: nil) else { return false }
+        rememberedPreviewFocus = true
+        pendingViewRecovery = nil
+        onViewportChange?()
+        return true
+    }
+    private func showDiagram(_ index: Int, reading: AgentTextViewport, position: AgentMarkdownDiagramPreview.Position?) -> Bool {
+        guard diagramPreview == nil, let diagrams = document?.diagrams, diagrams.indices.contains(index),
+              let drawing = drawings[diagrams[index].range.location] else { return false }
+        let preview = AgentMarkdownDiagramPreview(index: index, drawing: drawing, position: position)
+        selectionAction.update()
+        diagramReadingViewport = reading
+        diagramPreview = preview
+        preview.onReturn = { [weak self] in self?.returnFromDiagram(restore: true) }
+        preview.onChange = { [weak self] in self?.viewChanged() }
+        toolbar.isHidden = true
+        scroll.isHidden = true
+        addSubview(preview)
+        preview.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            preview.topAnchor.constraint(equalTo: topAnchor), preview.bottomAnchor.constraint(equalTo: bottomAnchor),
+            preview.leadingAnchor.constraint(equalTo: leadingAnchor), preview.trailingAnchor.constraint(equalTo: trailingAnchor)
+        ])
+        preview.focus()
+        return true
+    }
+    private func returnFromDiagram(restore: Bool) {
+        guard let preview = diagramPreview else { return }
+        preview.removeFromSuperview()
+        diagramPreview = nil
+        let reading = diagramReadingViewport
+        diagramReadingViewport = nil
+        toolbar.isHidden = false
+        scroll.isHidden = false
+        if restore {
+            layoutSubtreeIfNeeded()
+            _ = reading?.apply(to: text)
+            selectionAction.update()
+            viewChanged()
+        }
     }
     @objc private func selectHeading() {
         do { try finishEditing() } catch { onEditError?(error.localizedDescription); return }

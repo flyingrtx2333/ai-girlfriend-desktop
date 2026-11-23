@@ -9,12 +9,20 @@ import AppKit
         var readingFile: String? = nil, readingTab: String? = nil
         var reading: AgentRecordWindow.RecoveryState? = nil
     }
+    private struct MarkdownDiagramFixture: Codable {
+        let task: String, other: String, window: String, tab: String, file: String, hash: String
+        let reading: AgentMarkdownReader.ViewRecovery
+    }
     func runTextViewportRecoveryCheck(_ output: URL, interactive: Bool = false) async {
+        let stage = CommandLine.arguments.firstIndex(of: "--recovery-stage").flatMap { CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil } ?? "seed"
+        if stage == "diagram-seed" || stage == "diagram-reopen" {
+            await runMarkdownDiagramRecoveryCheck(output, stage: stage)
+            return
+        }
         var report: [String: Any] = [:], checks: [String: Bool] = [:], requests = 0
         do {
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务系统不可用") }
             runtime.modelRequestCheck = { requests += 1; throw PetError("文本位置验收禁止模型请求") }
-            let stage = CommandLine.arguments.firstIndex(of: "--recovery-stage").flatMap { CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil } ?? "seed"
             let input = try JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("input.json"))) as! [String: String]
             func expected(_ name: String) throws -> String { guard let value = input[name] else { throw PetError("缺少独立预期正文") }; return value }
             let journal = AgentWorkspaceRecovery(profile: store.directory), fixtureURL = output.appendingPathComponent("text-viewport-fixture.json")
@@ -286,5 +294,180 @@ import AppKit
         if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
         report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(interactive ? "text-viewport-ui-ready.json" : "text-viewport-report.json"))
+    }
+
+    private func runMarkdownDiagramRecoveryCheck(_ output: URL, stage: String) async {
+        var report: [String: Any] = ["stage": stage], checks: [String: Bool] = [:], requests = 0
+        do {
+            ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务系统不可用") }
+            runtime.modelRequestCheck = { requests += 1; throw PetError("图表验收禁止模型请求") }
+            let journal = AgentWorkspaceRecovery(profile: store.directory), location = output.appendingPathComponent("diagram-fixture.json")
+            let workspace = output.appendingPathComponent("workspace"), files = try AgentFiles(workspace: workspace.path)
+            let file = try files.resolve("diagram.md"), draft = "查看文档流程图"
+            let fixture: MarkdownDiagramFixture
+            control.show(tab: "chat")
+            if stage == "diagram-seed" {
+                let task = tasks.create(title: "文档流程图", workspace: workspace.path)
+                let other = tasks.create(title: "另一条任务", workspace: workspace.path)
+                for id in [task, other] { tasks.update(id) { $0.draft = draft } }
+                control.showAgentTask(task)
+                control.showTaskDocument(file.path)
+                let (observed, result) = try await checkMarkdownDiagram(output)
+                checks = observed
+                report["diagram"] = result
+                control.showAgentTask(other)
+                guard await flushWorkspaceWindows(), let window = control.workspaceSession?.id, let layout = try journal.loadWindow(window)?.value,
+                      let tab = layout.tasks.first(where: { $0.taskID == task })?.tabs.first(where: { $0.root == "document:" + file.path }),
+                      let page = try journal.loadPage(windowID: window, pageID: tab.id, taskID: task),
+                      let reading = try AgentRecordWindow.recoveryState(page.saved.value).markdownViewport, reading.diagram != nil else {
+                    throw PetError("未保存原任务的图表位置")
+                }
+                fixture = .init(task: task, other: other, window: window, tab: tab.id, file: file.path, hash: try files.fileHash(file), reading: reading)
+                try JSONEncoder().encode(fixture).write(to: location, options: .atomic)
+            } else {
+                fixture = try JSONDecoder().decode(MarkdownDiagramFixture.self, from: Data(contentsOf: location))
+                guard control.agentTaskID == fixture.other, file.path == fixture.file else { throw PetError("原后台任务或图表文件不匹配") }
+                control.showAgentTask(fixture.task)
+                guard await flushWorkspaceWindows() else { throw PetError("原图表标签尚未恢复") }
+                let (observed, result) = try await checkMarkdownDiagram(output, restoring: fixture.reading)
+                checks = observed
+                report["diagram"] = result
+            }
+            checks["originalDiagramDocumentBytesUnchanged"] = try files.fileHash(file) == fixture.hash
+            checks["originalAndOtherTaskDraftsStayIndependent"] = [fixture.task, fixture.other].allSatisfy {
+                tasks.task($0)?.draft == draft && tasks.task($0)?.messages.isEmpty == true && (tasks.task($0)?.modelReceipts ?? []).isEmpty
+            }
+            checks["latestViewStatesCheckpointed"] = await flushWorkspaceWindows()
+        } catch { report["error"] = error.localizedDescription }
+        report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
+        if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
+        report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 } && requests == 0
+        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("text-viewport-report.json"))
+    }
+
+    private func checkMarkdownDiagram(_ output: URL, restoring saved: AgentMarkdownReader.ViewRecovery? = nil) async throws
+        -> (checks: [String: Bool], observation: [String: Any]) {
+        guard let host = control.window, let record = control.taskWorkspace.currentController as? AgentRecordWindow,
+              let root = record.pageContentView else { throw PetError("Markdown 图表没有进入任务文档") }
+        func find<T: NSView>(_ view: NSView, _ match: (T) -> Bool) -> T? {
+            if let result = view as? T, match(result) { return result }
+            for child in view.subviews { if let result = find(child, match) { return result } }
+            return nil
+        }
+        func click(_ label: String) throws {
+            guard let button = find(root, { (view: NSButton) in view.accessibilityLabel() == label && !view.isHiddenOrHasHiddenAncestor }),
+                  button.isEnabled else { throw PetError("图表操作不可用 " + label) }
+            button.performClick(nil)
+            host.contentView?.layoutSubtreeIfNeeded()
+        }
+        func screenshot(_ name: String) throws {
+            guard let view = host.contentView, host.isVisible, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw PetError("无法读取图表窗口") }
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            guard let png = bitmap.representation(using: .png, properties: [:]) else { throw PetError("图表窗口无法绘制") }
+            try png.write(to: output.appendingPathComponent(name + ".png"))
+        }
+        func state() async throws -> AgentRecordWindow.RecoveryState {
+            try AgentRecordWindow.recoveryState(await record.captureWorkspaceRecovery())
+        }
+        let originalSize = host.contentView?.bounds.size ?? host.frame.size, originalAppearance = host.appearance
+        defer { host.setContentSize(originalSize); host.appearance = originalAppearance }
+        host.appearance = NSAppearance(named: saved == nil ? .darkAqua : .aqua)
+        host.setContentSize(saved == nil ? NSSize(width: 780, height: 540) : NSSize(width: 1320, height: 800))
+        host.makeKeyAndOrderFront(nil)
+        host.contentView?.layoutSubtreeIfNeeded()
+        guard let reader = find(root, { (view: AgentMarkdownReader) in !view.isHiddenOrHasHiddenAncestor }),
+              let first = reader.document?.diagrams.first, let second = reader.document?.diagrams.dropFirst().first else {
+            throw PetError("公开示例 Markdown 缺少图表")
+        }
+        await reader.waitForDiagrams()
+        await wait(0.12)
+        let windowIDs = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
+        var checks: [String: Bool] = [:]
+        if saved == nil {
+            let text = reader.text
+            let selection = (text.string as NSString).range(of: "文档打开流程")
+            guard selection.location != NSNotFound, let layout = text.layoutManager, let container = text.textContainer else {
+                throw PetError("公开图表的原文选区不可用")
+            }
+            text.setSelectedRange(selection)
+            host.makeFirstResponder(text)
+            text.scrollRangeToVisible(first.range)
+            layout.ensureLayout(for: container)
+            let glyphs = layout.glyphRange(forCharacterRange: first.range, actualCharacterRange: nil)
+            let diagram = layout.boundingRect(forGlyphRange: glyphs, in: container).offsetBy(dx: text.textContainerOrigin.x, dy: text.textContainerOrigin.y)
+            let visible = diagram.intersection(text.visibleRect)
+            let location = text.convert(NSPoint(x: visible.midX, y: visible.midY), to: nil)
+            guard !visible.isEmpty, let event = NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: 0,
+                windowNumber: host.windowNumber, context: nil, eventNumber: 0, clickCount: 2, pressure: 1) else { throw PetError("原文内图表不可点击") }
+            try screenshot("diagram-reading-before")
+            text.mouseDown(with: event)
+        }
+        host.contentView?.layoutSubtreeIfNeeded()
+        guard let chart = find(root, { (view: NSImageView) in view.accessibilityLabel() == "Mermaid 图表" && !view.isHiddenOrHasHiddenAncestor }),
+              chart.window === host, let scroll = chart.enclosingScrollView, let image = chart.image, let paper = scroll.documentView else {
+            throw PetError("图表未在任务文档内放大")
+        }
+        let clip = scroll.contentView
+        func scale() -> Double { Double(chart.frame.width / image.size.width) }
+        func pan() -> Double {
+            let bounds = clip.bounds, center = clip.convert(NSPoint(x: bounds.midX, y: bounds.midY), to: paper)
+            return Double((center.x - chart.frame.minX) / chart.frame.width)
+        }
+        checks["diagramReusesTheOriginalDocumentWindow"] = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber)) == windowIDs
+        checks["renderedVectorPageHasUsableWindowArea"] = scroll.bounds.width > 400 && scroll.bounds.height > 280 &&
+            image.representations.contains { $0 is NSPDFImageRep }
+        let fitted = scale()
+        if saved == nil {
+            let original = try await state()
+            checks["diagramOpensFittedWithoutChangingSource"] = original.markdownViewport?.diagram?.scale == nil && !original.dirty &&
+                chart.frame.width <= clip.bounds.width && chart.frame.height <= clip.bounds.height
+            for _ in 0..<4 { try click("放大图表") }
+            let offset = chart.frame.minX + chart.frame.width * 0.36 - clip.bounds.width / 2
+            clip.scroll(to: NSPoint(x: offset, y: clip.bounds.minY))
+            scroll.reflectScrolledClipView(clip)
+            checks["zoomControlsAndScrollChangeTheVisiblePage"] = scale() > fitted * 2 && chart.frame.width - clip.bounds.width > 50 &&
+                abs(clip.bounds.minX - offset) < 2 && abs(pan() - 0.36) < 0.02
+        }
+        await wait(0.1)
+        let current = try await state()
+        guard let position = current.markdownViewport?.diagram, let view = current.markdownViewport?.viewport else {
+            throw PetError("独立进程未捕获当前图表")
+        }
+        let actualX = pan()
+        let observation: [String: Any] = [
+            "index": position.index, "actualScale": scale(), "actualHorizontalScrollFraction": actualX,
+            "savedHorizontalScrollFraction": position.x, "originalSelection": view.selections.map { [$0.location, $0.length] },
+            "originalAnchor": view.anchor, "originalScroll": view.y
+        ]
+        if let saved, let position = saved.diagram {
+            checks["reopenedDiagramRestoresActualMagnificationAndHorizontalPan"] = abs(scale() - (position.scale ?? 0)) < 0.01 &&
+                actualX > 0 && abs(actualX - position.x) < 0.02
+            checks["reopenedDiagramKeepsTheUnderlyingReadingSelection"] = view.selections == saved.viewport.selections && view.anchor == saved.viewport.anchor
+            try screenshot("diagram-reopened-wide")
+            try click("适合窗口")
+            let refitted = try await state()
+            checks["fitReturnsToAdaptiveScale"] = refitted.markdownViewport?.diagram?.scale == nil && scale() < (position.scale ?? 0) &&
+                chart.frame.width <= clip.bounds.width && chart.frame.height <= clip.bounds.height
+            try click("返回文档")
+            let returned = try await state()
+            checks["returnRestoresDocumentSelectionAndTextFocus"] = returned.markdownViewport?.diagram == nil &&
+                reader.text.selectedRange() == saved.viewport.selections.first?.range && host.firstResponder === reader.text &&
+                returned.markdownViewport?.viewport.anchor == saved.viewport.anchor
+            try screenshot("diagram-reading-return")
+            reader.text.setSelectedRange(second.range)
+            if let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: host.windowNumber,
+                context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) {
+                reader.text.keyDown(with: enter)
+                host.contentView?.layoutSubtreeIfNeeded()
+            }
+            checks["returnKeyOpensTheSelectedDifferentDiagram"] = try await state().markdownViewport?.diagram?.index == 1
+            try click("返回文档")
+            reader.text.setSelectedRanges(saved.viewport.selections.map { NSValue(range: $0.range) }, affinity: .downstream, stillSelecting: false)
+        } else {
+            try screenshot("diagram-loupe-narrow")
+            checks["currentDiagramAndExactReadingSelectionArePersistable"] = position.index == 0 && abs((position.scale ?? 0) - scale()) < 0.001 &&
+                abs(position.x - 0.36) < 0.02 && view.selections.first?.length == "文档打开流程".utf16.count
+        }
+        return (checks, observation)
     }
 }

@@ -1,6 +1,5 @@
 import AppKit
 import WebKit
-import PDFKit
 
 @MainActor private final class AgentDiagramAssets: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
@@ -101,12 +100,140 @@ import PDFKit
     }
 }
 
-@MainActor final class AgentMarkdownDiagramWindow: NSWindowController {
-    init(_ drawing: AgentMarkdownDiagrams.Drawing) {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "Mermaid 图表"; window.minSize = NSSize(width: 400, height: 300); window.isReleasedWhenClosed = false; window.center()
-        let pdf = PDFView(); pdf.document = PDFDocument(data: drawing.pdf); pdf.autoScales = true; pdf.displayMode = .singlePageContinuous; pdf.setAccessibilityLabel("Mermaid 图表，可缩放")
-        window.contentView = pdf; super.init(window: window)
+@MainActor final class AgentMarkdownDiagramPreview: AgentThemeView {
+    struct Position: Codable, Equatable, Sendable {
+        var index: Int
+        var scale: Double?
+        var x: Double, y: Double
+        var valid: Bool {
+            (0..<16).contains(index) && (scale.map { (0.02...8).contains($0) } ?? true) &&
+                (0...1).contains(x) && (0...1).contains(y)
+        }
+    }
+    private let scroll = NSScrollView(), paper = NSView(), chart = NSImageView()
+    private let back = AgentWorkbenchButton(), minus = AgentWorkbenchButton(), plus = AgentWorkbenchButton(), fit = AgentWorkbenchButton()
+    private let percentage = NSTextField(labelWithString: "")
+    private(set) var position: Position
+    private var fittedTo: NSSize = .zero, applyingLayout = false
+    private var displayedScale: CGFloat = 1
+    var onReturn: (() -> Void)?
+    var onChange: (() -> Void)?
+
+    init(index: Int, drawing: AgentMarkdownDiagrams.Drawing, position: Position?) {
+        self.position = position ?? Position(index: index, scale: nil, x: 0.5, y: 0.5)
+        super.init(frame: .zero)
+        fill = AgentWorkbenchTheme.surface
+        setAccessibilityLabel("Mermaid 图表预览")
+        let title = NSTextField(labelWithString: "Mermaid 图表")
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.lineBreakMode = .byTruncatingTail
+        for (button, label, symbol, action) in [
+            (back, "返回文档", "chevron.left", #selector(returnToDocument)),
+            (minus, "缩小图表", "minus", #selector(zoom(_:))),
+            (plus, "放大图表", "plus", #selector(zoom(_:))),
+            (fit, "适合窗口", "arrow.up.left.and.arrow.down.right", #selector(fitToWindow))
+        ] {
+            AgentWorkbenchTheme.toolbar(button, title: label, symbol: symbol)
+            button.target = self
+            button.action = action
+        }
+        back.keyEquivalent = "\u{1b}"
+        back.keyEquivalentModifierMask = []
+        percentage.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        percentage.alignment = .center
+        percentage.textColor = AgentWorkbenchTheme.secondaryText
+        percentage.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        let header = NSStackView(views: [back, title, NSView(), minus, percentage, plus, fit])
+        header.alignment = .centerY
+        header.spacing = 4
+        let line = AgentWorkbenchTheme.rule()
+        for view in [header, line, scroll] {
+            addSubview(view)
+            view.translatesAutoresizingMaskIntoConstraints = false
+        }
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            line.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
+            line.leadingAnchor.constraint(equalTo: leadingAnchor), line.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: line.bottomAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor)
+        ])
+        chart.image = drawing.image
+        chart.imageScaling = .scaleAxesIndependently
+        chart.setAccessibilityLabel("Mermaid 图表")
+        paper.addSubview(chart)
+        scroll.documentView = paper
+        scroll.hasHorizontalScroller = true
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.usesPredominantAxisScrolling = false
+        updateBackground()
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBackground()
+    }
+    private func updateBackground() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            scroll.backgroundColor = AgentThemeContext.resolve(AgentWorkbenchTheme.subtle, in: self)
+        }
+    }
+    override func layout() {
+        super.layout()
+        if fittedTo != scroll.contentView.bounds.size { layoutChart() }
+    }
+    private func layoutChart() {
+        let clip = scroll.contentView, size = clip.bounds.size
+        guard !applyingLayout, size.width > 16, size.height > 16, let image = chart.image else { return }
+        applyingLayout = true
+        defer { applyingLayout = false }
+        fittedTo = size
+        let fitted = min((size.width - 16) / image.size.width, (size.height - 16) / image.size.height)
+        displayedScale = position.scale.map { CGFloat($0) } ?? min(8, fitted)
+        let width = displayedScale * image.size.width, height = displayedScale * image.size.height
+        let document = NSSize(width: max(size.width, width + 16), height: max(size.height, height + 16))
+        paper.setFrameSize(document)
+        chart.frame = NSRect(x: (document.width - width) / 2, y: (document.height - height) / 2, width: width, height: height)
+        let reading = NSRect(x: chart.frame.minX + CGFloat(position.x) * width - size.width / 2,
+                             y: chart.frame.minY + CGFloat(position.y) * height - size.height / 2,
+                             width: size.width, height: size.height)
+        clip.scroll(to: clip.constrainBoundsRect(reading).origin)
+        scroll.reflectScrolledClipView(clip)
+        percentage.stringValue = "\(Int((displayedScale * 100).rounded()))%"
+        minus.isEnabled = displayedScale > 0.02
+        plus.isEnabled = displayedScale < 8
+        fit.isEnabled = position.scale != nil
+    }
+    func focus() { window?.makeFirstResponder(back) }
+    @objc private func returnToDocument() { onReturn?() }
+    @objc private func zoom(_ sender: NSButton) {
+        let next = displayedScale * (sender === plus ? 1.4 : 1 / 1.4)
+        position.scale = Double(max(0.02, min(8, next)))
+        layoutChart()
+        onChange?()
+    }
+    @objc private func fitToWindow() {
+        position = Position(index: position.index, scale: nil, x: 0.5, y: 0.5)
+        layoutChart()
+        onChange?()
+    }
+    @objc private func viewportChanged() {
+        let clip = scroll.contentView, bounds = clip.bounds, image = chart.frame
+        guard !applyingLayout else { return }
+        if bounds.size != fittedTo { layoutChart(); return }
+        guard !image.isEmpty, position.scale != nil else { return }
+        let center = clip.convert(NSPoint(x: bounds.midX, y: bounds.midY), to: paper)
+        let x = min(1, max(0, (center.x - image.minX) / image.width)), y = min(1, max(0, (center.y - image.minY) / image.height))
+        guard x != position.x || y != position.y else { return }
+        position.x = x
+        position.y = y
+        onChange?()
+    }
 }

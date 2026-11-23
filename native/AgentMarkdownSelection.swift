@@ -11,7 +11,7 @@ struct AgentMarkdownSelection {
 
 @MainActor final class AgentMarkdownTextView: NSTextView {
     var onSelectionSettled: (() -> Void)?
-    var onDoubleClickAttachment: ((Int) -> Bool)?
+    var onOpenAttachment: ((Int) -> Bool)?
     var onPreviewEditClick: ((NSPoint) -> Bool)?
     var previewUndoManager: UndoManager?
     weak var previewEditor: NSView?
@@ -41,13 +41,19 @@ struct AgentMarkdownSelection {
             let glyph = layout.glyphIndex(for: point, in: container)
             if glyph < layout.numberOfGlyphs {
                 let character = layout.characterIndexForGlyph(at: glyph), rect = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
-                if character < storage.length, rect.contains(point), storage.attribute(.attachment, at: character, effectiveRange: nil) != nil, onDoubleClickAttachment?(character) == true { return }
+                if character < storage.length, rect.contains(point), storage.attribute(.attachment, at: character, effectiveRange: nil) != nil, onOpenAttachment?(character) == true { return }
             }
         }
         super.mouseDown(with: event)
         let range = selectedRange()
         if event.clickCount > 1, range.length == 1, let storage = textStorage, range.location < storage.length, storage.attribute(.attachment, at: range.location, effectiveRange: nil) != nil { return }
         onSelectionSettled?()
+    }
+    override func keyDown(with event: NSEvent) {
+        let selection = selectedRange()
+        if (event.keyCode == 36 || event.keyCode == 76), event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+           selection.length == 1, onOpenAttachment?(selection.location) == true { return }
+        super.keyDown(with: event)
     }
     override func keyUp(with event: NSEvent) { super.keyUp(with: event); onSelectionSettled?() }
 }
