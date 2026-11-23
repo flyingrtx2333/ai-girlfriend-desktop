@@ -86,3 +86,60 @@ enum AgentSettingsNavigation {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 }
+
+@MainActor final class AgentSettingsSearchResultButton: AgentWorkbenchButton {
+    var onMove: ((Int) -> Void)?
+    var onEscape: (() -> Void)?
+
+    init(title: String, path: String, target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        self.title = title; self.target = target; self.action = action
+        isBordered = false; focusRingType = .none; setButtonType(.momentaryPushIn)
+
+        let name = NSTextField(labelWithString: title), category = NSTextField(labelWithString: path)
+        name.font = .systemFont(ofSize: 13, weight: .medium)
+        category.font = .systemFont(ofSize: 11); category.textColor = AgentWorkbenchTheme.secondaryText
+        for label in [name, category] {
+            label.lineBreakMode = .byTruncatingTail
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            label.setAccessibilityElement(false)
+        }
+        let labels = NSStackView(views: path == title ? [name] : [name, category])
+        labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 2
+        let arrow = NSImageView()
+        arrow.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
+        arrow.contentTintColor = AgentWorkbenchTheme.secondaryText
+        arrow.setAccessibilityElement(false)
+        for view in [labels, arrow] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 46),
+            labels.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9), labels.centerYAnchor.constraint(equalTo: centerYAnchor),
+            labels.trailingAnchor.constraint(lessThanOrEqualTo: arrow.leadingAnchor, constant: -10),
+            arrow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9), arrow.centerYAnchor.constraint(equalTo: centerYAnchor),
+            arrow.widthAnchor.constraint(equalToConstant: 12), arrow.heightAnchor.constraint(equalToConstant: 12)
+        ])
+        toolTip = path == title ? title : path + " · " + title
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override var acceptsFirstResponder: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
+    override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
+    override func becomeFirstResponder() -> Bool { let accepted = super.becomeFirstResponder(); needsDisplay = true; return accepted }
+    override func resignFirstResponder() -> Bool { let accepted = super.resignFirstResponder(); needsDisplay = true; return accepted }
+    override func keyDown(with event: NSEvent) {
+        guard event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { super.keyDown(with: event); return }
+        switch event.keyCode {
+        case 125: onMove?(1)
+        case 126: onMove?(-1)
+        case 36, 76: performClick(nil)
+        case 53: onEscape?()
+        default: super.keyDown(with: event)
+        }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        guard window?.isKeyWindow == true, window?.firstResponder === self else { return }
+        AgentThemeContext.resolve(AgentWorkbenchTheme.accent, in: self).setStroke()
+        let ring = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 5, yRadius: 5)
+        ring.lineWidth = 1.5; ring.stroke()
+    }
+}

@@ -172,6 +172,14 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
     }
     private var settingsResults: [SettingsSearchResult] = []
     private var settingsResultButtons: [NSButton] = []
+    private struct SettingsSearchOrigin {
+        let category: String, input: SettingsNavigationInput, result: String
+        let contentY: CGFloat, sidebarY: CGFloat
+    }
+    private let settingsSearchBack = AgentWorkbenchButton()
+    private var settingsSearchOrigin: SettingsSearchOrigin? {
+        didSet { settingsSearchBack.isHidden = settingsSearchOrigin == nil }
+    }
     private var settingsNavigationInput = SettingsNavigationInput()
     private var pendingSettingsNavigation: AgentSettingsRecovery.Navigation?
     private var settingsGroupLabels: [(String, NSView)] = []
@@ -636,22 +644,33 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
                     if ["agents", "teams"].contains(page) {
                         checks[name + page + "FormCardsShareTheSameContentColumn"] = !cards.isEmpty && cards.allSatisfy { let rect = $0.convert($0.bounds, to: contentSurface); return abs(rect.minX - column.minX) < 0.5 && abs(rect.width - column.width) < 0.5 }
                     }
-                    if page == "plugins", let table = descendants(content).compactMap({ $0 as? NSTableView }).first(where: { $0.accessibilityLabel() == "插件组件" }), let scroll = table.enclosingScrollView {
+                    if page == "plugins" {
+                        let controls = descendants(content)
+                        guard let table = controls.compactMap({ $0 as? NSTableView }).first(where: { $0.accessibilityLabel() == "插件组件" }),
+                              let scroll = table.enclosingScrollView,
+                              let tabs = controls.compactMap({ $0 as? NSSegmentedControl }).first(where: { $0.accessibilityLabel() == "插件详情内容" }),
+                              let preview = controls.compactMap({ $0 as? NSTextView }).first(where: { $0.accessibilityLabel() == "插件说明预览" }) else {
+                            checks[detailKey + "ReadmeAndComponentTabsFitWithReachableLastRow"] = false; continue
+                        }
                         let previousFrame = window.frame, minimumFrame = NSSize(width: 780, height: 540)
                         window.setFrame(NSRect(origin: previousFrame.origin, size: minimumFrame), display: true)
                         window.contentView?.layoutSubtreeIfNeeded()
+                        let readmeHeight = preview.enclosingScrollView?.visibleRect.height ?? 0
+                        let readmeIsReadable = tabs.selectedSegment == 0 && !preview.isHiddenOrHasHiddenAncestor &&
+                            table.isHiddenOrHasHiddenAncestor && readmeHeight >= 76 && !preview.string.isEmpty
+                        tabs.selectedSegment = 1; tabs.sendAction(tabs.action, to: tabs.target)
+                        window.contentView?.layoutSubtreeIfNeeded()
                         let rows = table.numberOfRows, expected = title.hasSuffix("many") ? 16 : 1
-                        let heightFits = scroll.bounds.height <= (rows < 2 ? 76 : 200)
+                        let heightFits = !table.isHiddenOrHasHiddenAncestor && preview.isHiddenOrHasHiddenAncestor && scroll.visibleRect.height >= 40
                         let last = rows > 0 ? table.rect(ofRow: rows - 1) : .zero
                         if rows > 0 { table.scrollRowToVisible(rows - 1) }
                         let lastVisible = rows == 0 || last.intersection(table.visibleRect).height >= last.height - 0.5
-                        let readme = descendants(content).compactMap({ $0 as? NSTextView }).first { $0.accessibilityLabel() == "插件说明" }?.enclosingScrollView
-                        let readmeHeight = readme?.documentVisibleRect.height ?? 0
-                        checks[detailKey + "ComponentListAndReadmeFitWithReachableLastRow"] = rows == expected && heightFits && scroll.bounds.height >= 40 && lastVisible && readmeHeight >= 76 && window.frame.size == minimumFrame
+                        checks[detailKey + "ReadmeAndComponentTabsFitWithReachableLastRow"] = rows == expected && heightFits && lastVisible && readmeIsReadable && window.frame.size == minimumFrame
                         frames[name + "-" + category]?[title + "ComponentsHeight"] = scroll.bounds.height
                         frames[name + "-" + category]?[title + "ReadmeViewportHeight"] = readmeHeight
                         frames[name + "-" + category]?[title + "MinimumWindowWidth"] = window.frame.width
                         frames[name + "-" + category]?[title + "MinimumWindowHeight"] = window.frame.height
+                        tabs.selectedSegment = 0; tabs.sendAction(tabs.action, to: tabs.target)
                         window.setFrame(previousFrame, display: true); window.contentView?.layoutSubtreeIfNeeded()
                     }
                 }
@@ -703,7 +722,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
         for (category, kind, title, entryLabel, contentID, actions) in [
             ("extensions", "mcp", "设置连接器", "配置连接器 设置连接器", "settings-card-mcp-basic", ["连接", "保存"]),
-            ("extensions", "plugins", "zz-settings-many", "配置 zz-settings-many", "插件说明", ["在任务中使用"]),
+            ("extensions", "plugins", "zz-settings-many", "配置 zz-settings-many", "插件说明预览", ["在任务中使用"]),
             ("memory", "rules", "settings-rule", "配置 settings-rule", "settings-card-rule-body", ["在任务中使用", "保存"])
         ] {
             guard showSettingsCategory(category) else { checks[kind + "CompactDetailOpens"] = false; continue }
@@ -2269,11 +2288,16 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             settingsSearch.stringValue = ""; updateSettingsSections()
             revealSettingsCategory()
             settingsPageHost.currentController?.settingsDidAppear()
-            if let input, input.window === window, input.isDescendant(of: settingsPageHost), !input.isHiddenOrHasHiddenAncestor,
-               window?.makeFirstResponder(input) == true, let selection, let editor = window?.firstResponder as? NSTextView,
-               NSMaxRange(selection) <= editor.string.utf16.count { editor.setSelectedRange(selection) }
+            restoreSettingsEditingFocus(input, selection: selection)
         }
         return false
+    }
+    private func restoreSettingsEditingFocus(_ input: NSView?, selection: NSRange?) {
+        guard let input, let window, input.window === window, !input.isHiddenOrHasHiddenAncestor,
+              input.isDescendant(of: settingsPageHost) || input.isDescendant(of: settingsForm),
+              window.makeFirstResponder(input), let selection, let editor = window.firstResponder as? NSTextView,
+              NSMaxRange(selection) <= editor.string.utf16.count else { return }
+        editor.setSelectedRange(selection)
     }
     func windowDidUpdate(_ notification: Notification) {
         if let workspaceSession, let window,
@@ -2300,7 +2324,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         if workspaceSession?.pendingSettingsCategory == key { workspaceSession?.restoreSettings(); return false }
         guard settingsCategories.contains(where: { $0.0 == key }), canLeaveMainPage() else { return false }
         let alreadyInSettings = selectedTab == "settings"
-        pendingSettingsNavigation = nil
+        pendingSettingsNavigation = nil; settingsSearchOrigin = nil
         companion?.ensureAgent(); settingsCategory = key; settingsSearch.stringValue = ""
         show(tab: "settings")
         if alreadyInSettings { revealSettingsCategory() }
@@ -2405,20 +2429,55 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
     }
     @objc private func openSettingsSearchResult(_ sender: NSButton) {
         guard sender.isDescendant(of: settingsForm), settingsResults.indices.contains(sender.tag) else { return }
-        let result = settingsResults[sender.tag], query = settingsSearch.stringValue.lowercased()
+        let result = settingsResults[sender.tag]
+        let origin = captureSettingsSearchOrigin(result)
         guard showSettingsCategory(result.category) else { return }
+        settingsSearchOrigin = origin
         if result.category == "archived" { archivedTasksView?.focusSearch(); return }
         if let key = result.key { settingsPageHost.selectPage(key); return }
-        let target = result.category == "general" ? generalSettingsPanel?.revealSearchTarget(result.target, query: query) ?? result.target : result.target
+        let target = result.category == "general" ? generalSettingsPanel?.revealSearchTarget(result.target, query: origin.input.query.lowercased()) ?? result.target : result.target
         window?.contentView?.layoutSubtreeIfNeeded()
         let bounds = target.bounds, height = min(44, bounds.height)
         target.scrollToVisible(NSRect(x: bounds.minX, y: target.isFlipped ? bounds.minY : bounds.maxY - height, width: bounds.width, height: height))
         func input(_ view: NSView) -> NSView? {
-            if !view.isHiddenOrHasHiddenAncestor, let control = view as? NSControl, control.isEnabled,
+            guard !view.isHiddenOrHasHiddenAncestor else { return nil }
+            if let control = view as? NSControl, control.isEnabled, !(control is NSImageView),
                !(control is NSTextField) || (control as? NSTextField)?.isEditable == true { return control }
             for child in view.subviews { if let found = input(child) { return found } }; return nil
         }
         if let input = input(target) { window?.makeFirstResponder(input) }
+    }
+    private func captureSettingsSearchOrigin(_ result: SettingsSearchResult) -> SettingsSearchOrigin {
+        .init(category: settingsCategory, input: currentSettingsNavigationInput(), result: result.identity,
+              contentY: settingsScroll.contentView.bounds.minY, sidebarY: settingsNavigationScroll.contentView.bounds.minY)
+    }
+    private func focusSettingsSearchResult(_ index: Int) {
+        guard settingsResultButtons.indices.contains(index), let window else { return }
+        let button = settingsResultButtons[index]
+        window.contentView?.layoutSubtreeIfNeeded()
+        button.scrollToVisible(button.bounds)
+        window.makeFirstResponder(button)
+        rememberSettingsNavigationInput()
+    }
+    private func focusSettingsSearchField() {
+        let selection = settingsNavigationInput.selection
+        guard window?.makeFirstResponder(settingsSearch) == true, let editor = settingsSearch.currentEditor() as? NSTextView else { return }
+        if let selection, selection.valid(in: editor.string.utf16.count) { editor.setSelectedRange(selection.range) }
+        rememberSettingsNavigationInput()
+    }
+    @objc private func returnToSettingsSearch() {
+        guard let origin = settingsSearchOrigin else { return }
+        let input = settingsEditingInput, selection = settingsEditingSelection
+        guard canLeaveMainPage() else { restoreSettingsEditingFocus(input, selection: selection); return }
+        settingsSearchOrigin = nil; pendingSettingsNavigation = nil
+        settingsCategory = origin.category; settingsSearch.stringValue = origin.input.query; settingsNavigationInput = origin.input
+        updateSettingsSections()
+        window?.contentView?.layoutSubtreeIfNeeded()
+        restoreSettingsScroll(origin.sidebarY, to: settingsNavigationScroll)
+        restoreSettingsScroll(origin.contentY, to: settingsScroll)
+        if let index = settingsResults.firstIndex(where: { $0.identity == origin.result }) { focusSettingsSearchResult(index) }
+        else { focusSettingsSearchField() }
+        workspaceSession?.changed()
     }
     private func makeSettingsManager(_ key: String, taskID: String?, workspace: String?, selection: String? = nil) -> AgentSettingsPageController? {
         guard let store = companion?.agentStore else { return nil }
@@ -2488,6 +2547,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         let back = AgentSettingsNavigationButton(title: "返回对话", symbol: "arrow.left", navigation: false, target: self, action: #selector(returnToChat))
         settingsBackButton = back
         settingsSearch.placeholderString = "搜索设置…"; settingsSearch.setAccessibilityLabel("搜索设置"); settingsSearch.delegate = self
+        AgentWorkbenchTheme.toolbar(settingsSearchBack, title: "返回搜索结果", symbol: "chevron.left")
+        settingsSearchBack.target = self; settingsSearchBack.action = #selector(returnToSettingsSearch); settingsSearchBack.isHidden = true
+        let searchRow = stack([settingsSearchBack, settingsSearch], spacing: 4); searchRow.detachesHiddenViews = true
         let navigation = stack([], vertical: true, spacing: 2); navigation.detachesHiddenViews = true
         // Keep stable category indices for existing routes and stored scope;
         // arrange the same buttons in the visual order defined by the groups.
@@ -2510,13 +2572,13 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
                 button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true
             }
         }
-        let fixed = stack([back, settingsSearch], vertical: true, spacing: 14)
+        let fixed = stack([back, searchRow], vertical: true, spacing: 14)
         let scroll = settingsNavigationScroll
         scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document; document.addSubview(navigation)
         settingsSidebar.addSubview(fixed); settingsSidebar.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.setAccessibilityLabel("设置分类")
-        NSLayoutConstraint.activate([fixed.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 50), fixed.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor, constant: 12), fixed.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor, constant: -16), back.widthAnchor.constraint(equalTo: fixed.widthAnchor), settingsSearch.widthAnchor.constraint(equalTo: fixed.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 30), scroll.topAnchor.constraint(equalTo: fixed.bottomAnchor, constant: 12), scroll.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: settingsSidebar.bottomAnchor, constant: -12), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), navigation.topAnchor.constraint(equalTo: document.topAnchor), navigation.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 8), navigation.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16), navigation.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
+        NSLayoutConstraint.activate([fixed.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 50), fixed.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor, constant: 12), fixed.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor, constant: -16), back.widthAnchor.constraint(equalTo: fixed.widthAnchor), searchRow.widthAnchor.constraint(equalTo: fixed.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 30), scroll.topAnchor.constraint(equalTo: fixed.bottomAnchor, constant: 12), scroll.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: settingsSidebar.bottomAnchor, constant: -12), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), navigation.topAnchor.constraint(equalTo: document.topAnchor), navigation.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 8), navigation.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16), navigation.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
         for clip in [scroll.contentView, settingsScroll.contentView] {
             clip.postsBoundsChangedNotifications = true
             NotificationCenter.default.addObserver(self, selector: #selector(settingsNavigationScrolled(_:)), name: NSView.boundsDidChangeNotification, object: clip)
@@ -2539,10 +2601,12 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         }
     }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
-        if workspaceSession?.pendingSettingsCategory == settingsCategories[sender.tag].0 {
+        let category = settingsCategories[sender.tag].0
+        if workspaceSession?.pendingSettingsCategory == category {
             for (index, button) in categoryButtons.enumerated() { button.state = settingsCategories[index].0 == settingsCategory ? .on : .off }
             workspaceSession?.restoreSettings(); return
         }
+        let origin = settingsResults.first(where: { $0.category == category }).map(captureSettingsSearchOrigin)
         guard leaveSettingsPage() else {
             for (index, button) in categoryButtons.enumerated() {
                 button.state = settingsSearch.stringValue.isEmpty && settingsCategories[index].0 == settingsCategory ? .on : .off
@@ -2550,7 +2614,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             revealSettingsCategory()
             return
         }
-        window?.makeFirstResponder(sender); settingsCategory = settingsCategories[sender.tag].0
+        window?.makeFirstResponder(sender); settingsCategory = category; settingsSearchOrigin = origin
         settingsSearch.stringValue = ""; updateSettingsSections(); revealSettingsCategory()
         pendingSettingsNavigation = nil; workspaceSession?.changed()
     }
@@ -2573,28 +2637,33 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
                 result.append(SettingsSearchResult(category: group.category, title: group.title, section: group.title, key: group.key, target: group.view))
             }
         }
+        if let exact = result.firstIndex(where: { $0.key?.lowercased() == query || $0.title.lowercased() == query }), exact > 0 {
+            let match = result.remove(at: exact)
+            result.insert(match, at: 0)
+        }
         return result
     }
     private func showSettingsSearchResults() {
-        let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 14
+        let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 1
         for (index, result) in settingsResults.enumerated() {
             if index > 0 { let line = AgentWorkbenchTheme.rule(); body.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
-            let title = NSTextField(labelWithString: result.title); title.font = .systemFont(ofSize: 13, weight: .medium)
             let category = settingsCategories.first { $0.0 == result.category }?.1 ?? result.category
-            let path = NSTextField(labelWithString: category + (result.section == category ? "" : " · " + result.section)); path.font = .systemFont(ofSize: 11); path.textColor = AgentWorkbenchTheme.secondaryText
-            let labels = NSStackView(views: [title, path]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 5
-            labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            let open = NSButton(title: "打开", target: self, action: #selector(openSettingsSearchResult(_:))); open.tag = index; open.bezelStyle = .rounded; open.controlSize = .large
-            open.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil); open.imagePosition = .imageTrailing
-            open.identifier = .init(result.key ?? "settings-result-\(result.category)-\(index)"); open.setAccessibilityLabel("打开设置：" + category + " · " + result.title)
+            let path = result.section == category || result.section == result.title ? category : category + " · " + result.section
+            let open = AgentSettingsSearchResultButton(title: result.title, path: path, target: self, action: #selector(openSettingsSearchResult(_:)))
+            open.tag = index
+            open.identifier = .init(result.key ?? "settings-result-\(result.category)-\(index)")
+            open.setAccessibilityLabel("打开设置：" + (category == result.title ? category : category + " · " + result.title))
+            open.onMove = { [weak self] delta in
+                if index + delta < 0 { self?.focusSettingsSearchField() }
+                else { self?.focusSettingsSearchResult(index + delta) }
+            }
+            open.onEscape = { [weak self] in self?.focusSettingsSearchField() }
             settingsResultButtons.append(open)
-            open.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
-            let row = NSStackView(views: [labels, NSView(), open]); row.spacing = 16; row.alignment = .centerY; row.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
-            body.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+            body.addArrangedSubview(open); open.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
         }
         let card = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
         card.addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16), body.topAnchor.constraint(equalTo: card.topAnchor, constant: 16), body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16)])
+        NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 6), body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -6), body.topAnchor.constraint(equalTo: card.topAnchor, constant: 6), body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -6)])
         settingsForm.addArrangedSubview(card); card.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
     }
     private func updateSettingsSections() {
@@ -2613,7 +2682,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         archivedTasksView?.isHidden = !showingArchive
         sidebarMenuBack.isHidden = sidebarPanel == nil
         if let title = settingsHeading.superview {
-            let compactHeader = showingModelDirectory || showingArchive || sidebarPanel != nil || query.isEmpty && managedSettings.contains(settingsCategory)
+            let compactHeader = showingModelDirectory || showingArchive || sidebarPanel != nil || !query.isEmpty || managedSettings.contains(settingsCategory)
             settingsColumn?.setCustomSpacing(compactHeader ? 16 : 30, after: title)
         }
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
@@ -3068,7 +3137,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         if enteringSettings {
             setSettingsReturn(to: selectedTab, knowledgeRoot: selectedTab == "knowledge" ? knowledgePageHost.selectedRoot : nil)
         }
-        if tab != "settings" { pendingSettingsNavigation = nil }
+        if tab != "settings" { pendingSettingsNavigation = nil; settingsSearchOrigin = nil }
         selectedTab = ["settings", "attention", "automation", "knowledge"].contains(tab) ? tab : "chat"; changeTab()
         if enteringSettings, pendingSettingsNavigation == nil { revealSettingsCategory() }
         workspaceSession?.changed()
@@ -3355,8 +3424,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         if preservingRecovery, let draft = captureVoiceDraft(), workspaceSession?.hasPreservedVoiceDraft(draft) == true { return true }
         let input = settingsEditingInput, selection = settingsEditingSelection
         guard AgentUnsavedChanges.discard("放弃未保存的设置更改？", owner: window) else {
-            if let input, input.window === window, !input.isHiddenOrHasHiddenAncestor, window?.makeFirstResponder(input) == true,
-               let selection, let editor = window?.firstResponder as? NSTextView, NSMaxRange(selection) <= editor.string.utf16.count { editor.setSelectedRange(selection) }
+            restoreSettingsEditingFocus(input, selection: selection)
             return false
         }
         refreshPreferences(); workspaceSession?.changed(); return true
@@ -3434,7 +3502,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
     }
     func controlTextDidChange(_ obj: Notification) {
         if let search = obj.object as? NSSearchField, search === settingsSearch {
-            pendingSettingsNavigation = nil
+            pendingSettingsNavigation = nil; settingsSearchOrigin = nil
             updateSettingsSections()
             if search.stringValue.isEmpty { revealSettingsCategory() }
             rememberSettingsNavigationInput()
@@ -3449,6 +3517,12 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         invalidateModelCheck(sourceChanged: input === endpoint || input === apiKey)
         if input === model { modelDirectory.updateCurrentModel(model.stringValue) }
         if settingsCategory == "model" { updateBasicDraftControls(); workspaceSession?.changed() }
+    }
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy command: Selector) -> Bool {
+        guard control === settingsSearch, !textView.hasMarkedText(), let first = settingsResultButtons.first else { return false }
+        if command == #selector(NSResponder.moveDown(_:)) { focusSettingsSearchResult(0); return true }
+        if command == #selector(NSResponder.insertNewline(_:)) { first.performClick(nil); return true }
+        return false
     }
     @objc private func scaleChanged() { sizeValue.stringValue = "\(Int((scale.doubleValue * 100).rounded()))%" }
     func comboBoxSelectionDidChange(_ notification: Notification) { reasoningChanged() }
@@ -4254,6 +4328,50 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         search("mCp")
         checks["settingsSearchFiltersSidebarToMatchingCategories"] = categoryButtons.enumerated().filter { !$0.element.isHidden }.map { settingsCategories[$0.offset].0 } == ["monitor", "imports", "extensions"]
         checks["settingsSearchFiltersSidebarGroupHeadings"] = settingsGroupLabels.filter { !$0.1.isHidden }.map(\.0) == ["个人", "集成"]
+        let initialResults = settingsResults.map(\.identity), connection = settingsResultButtons.first
+        checks["exactSettingsRouteComesBeforeRelatedSettings"] = settingsResults.first?.key == "mcp" && initialResults.count == 3
+        checks["settingsResultsAreFullWidthKeyboardTargets"] = settingsResultButtons.allSatisfy {
+            $0 is AgentSettingsSearchResultButton && $0.acceptsFirstResponder && $0.bounds.height == 46 &&
+                $0.bounds.width >= settingsForm.bounds.width - 12.5 && $0.hitTest(NSPoint(x: $0.frame.minX + 12, y: $0.frame.midY)) === $0
+        }
+        window.makeFirstResponder(settingsSearch)
+        if let editor = settingsSearch.currentEditor() as? NSTextView {
+            editor.setSelectedRange(NSRange(location: 1, length: 1))
+            checks["downFromSettingsSearchFocusesFirstResult"] = control(settingsSearch, textView: editor, doCommandBy: #selector(NSResponder.moveDown(_:))) && window.firstResponder === connection
+            (connection as? AgentSettingsSearchResultButton)?.onMove?(-1)
+            checks["upFromFirstResultRestoresSearchFieldAndSelection"] = settingsSearch.currentEditor() === window.firstResponder &&
+                (settingsSearch.currentEditor() as? NSTextView)?.selectedRange() == NSRange(location: 1, length: 1)
+            if let editor = settingsSearch.currentEditor() as? NSTextView {
+                checks["returnFromSettingsSearchOpensConnectorPage"] = control(settingsSearch, textView: editor, doCommandBy: #selector(NSResponder.insertNewline(_:))) &&
+                    settingsCategory == "extensions" && settingsPageHost.selectedPageKey == "mcp" && !settingsSearchBack.isHidden && !window.hasBlockingDialog
+            }
+        } else { checks["settingsSearchUsesActiveFieldEditor"] = false }
+        settingsSearchBack.performClick(nil)
+        checks["backRestoresSettingsQueryAndSelectedResult"] = settingsSearch.stringValue == "mCp" && settingsResults.map(\.identity) == initialResults &&
+            window.firstResponder === settingsResultButtons.first && settingsSearchBack.isHidden
+        if let index = settingsCategories.firstIndex(where: { $0.0 == "imports" }) {
+            categoryButtons[index].performClick(nil)
+            checks["filteredSidebarCategoryShowsReturnToSearch"] = settingsCategory == "imports" && !settingsSearchBack.isHidden
+            settingsSearchBack.performClick(nil)
+            checks["sidebarReturnFocusesMatchingResult"] = settingsSearch.stringValue == "mCp" &&
+                settingsResults.firstIndex(where: { $0.category == "imports" }).map { window.firstResponder === settingsResultButtons[$0] } == true
+        }
+        search("接口")
+        if let index = settingsResults.firstIndex(where: { $0.category == "model" && $0.title == "接口" }) {
+            settingsResultButtons[index].performClick(nil)
+            checks["modelEndpointSearchFocusesEditableField"] = endpoint.currentEditor() != nil && window.firstResponder === endpoint.currentEditor()
+            window.makeFirstResponder(nil)
+            let original = endpoint.stringValue, unsubmitted = "https://example.invalid/settings-search-draft"
+            endpoint.stringValue = unsubmitted; window.makeFirstResponder(endpoint)
+            let selection = NSRange(location: 8, length: 7)
+            (endpoint.currentEditor() as? NSTextView)?.setSelectedRange(selection)
+            windowDidUpdate(Notification(name: NSWindow.didUpdateNotification, object: window))
+            checks["cancelledSearchBackKeepsDraftSelectionAndReturn"] = try !choose("继续编辑", { self.returnToSettingsSearch(); return self.settingsSearchOrigin == nil }) &&
+                settingsCategory == "model" && !settingsSearchBack.isHidden && endpoint.stringValue == unsubmitted &&
+                (endpoint.currentEditor() as? NSTextView)?.selectedRange() == selection
+            checks["confirmedSearchBackRestoresQueryAndDropsOnlyDraft"] = try choose("放弃更改", { self.returnToSettingsSearch(); return self.settingsSearchOrigin == nil }) &&
+                settingsSearch.stringValue == "接口" && endpoint.stringValue == original && settingsSearchBack.isHidden
+        } else { checks["settingsSearchFindsModelEndpoint"] = false }
         search("Token")
         checks["regularSettingsSearchShowsNavigationWithoutEditableFieldsOrSave"] = settingsResults.contains { $0.category == "model" } && find(NSTextField.self, in: settingsForm, matching: { $0.isEditable }) == nil && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true
         let endpointBefore = endpoint.stringValue, savedEndpoint = companion?.store.preferences.endpoint
@@ -7021,6 +7139,11 @@ extension ControlWindow {
         value["windowNumber"] = taskWindowNumber; value["windowTitle"] = window?.title ?? ""; value["windowVisible"] = window?.isVisible == true
         value["nativeWindowNumber"] = window?.windowNumber ?? 0
         if CommandLine.arguments.contains("--manual-ui") {
+            let searchInput = selectedTab == "settings" ? currentSettingsNavigationInput() : SettingsNavigationInput()
+            value["settingsSearch"] = ["query": searchInput.query, "focusedResult": searchInput.focus ?? "", "resultTitles": settingsResults.map(\.title),
+                "resultWidths": settingsResultButtons.map { $0.bounds.width }, "rowHeights": settingsResultButtons.map { $0.bounds.height },
+                "formWidth": settingsForm.bounds.width, "contentY": settingsScroll.contentView.bounds.minY,
+                "heading": settingsHeading.stringValue, "category": settingsCategory, "page": settingsPageHost.selectedPageKey ?? "", "canReturn": !settingsSearchBack.isHidden] as [String: Any]
             value["leftSidebar"] = ["requested": sidebarRequested, "visible": !workbenchSidebar.isHidden, "mainLeading": sidebarWidth?.constant ?? 0, "navigationLeading": navigationLeading?.constant ?? 0]
             value["taskSwitcher"] = taskSwitcher?.checkState() ?? ["visible": false]
             value["nameEditor"] = workspaceEditor?.checkState() ?? nameEditor?.checkState() ?? ["visible": false]
