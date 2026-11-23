@@ -3,6 +3,7 @@ import WebKit
 
 @MainActor final class AgentBrowser {
     private(set) var sessions: [String: AgentBrowserWindow] = [:]
+    weak var store: AgentStore?
     static let tools = ["browser_open", "browser_read", "browser_action", "browser_close", "browser_tabs", "browser_screenshot"]
     var onDraftCapture: ((String, AgentBrowserShot, [AgentBrowserMark], String) async throws -> Void)?
     var onPresent: ((AgentBrowserWindow) throws -> Void)?
@@ -22,7 +23,8 @@ import WebKit
     }
     private func makeSession(taskID: String, title: String) throws -> AgentBrowserWindow {
         guard sessions.count < 4 else { throw PetError("请先关闭一个任务浏览器，最多同时打开 4 个") }
-        let session = AgentBrowserWindow(title: title, taskID: taskID)
+        let downloads = store.flatMap { AgentBrowserDownloads(store: $0, taskID: taskID) }
+        let session = AgentBrowserWindow(title: title, taskID: taskID, downloads: downloads)
         session.onPresent = onPresent; session.onDetach = onDetach
         session.onMonitorChange = { [weak self, weak session] in
             guard let self, let session, sessions[taskID] === session else { return }; onChange?(taskID)
@@ -94,12 +96,12 @@ import WebKit
     private let address = NSTextField(), state = NSTextField(labelWithString: "")
     private let back = NSButton(), forward = NSButton(), reload = NSButton(), halt = NSButton()
     private let add = NSButton(), remove = NSButton(), copyLink = NSButton(), copyImage = NSButton()
-    private let annotate = NSButton()
+    private let annotate = NSButton(), downloadList = NSButton()
     private let separate = NSButton(title: "新窗口", target: nil, action: nil), pageTabs = NSStackView(), pageTabScroll = NSScrollView()
     private var tabSignature = "", detached = false
     private var addressDraft: String?, restoredAddressSelection: AgentBrowserRecoveryState.Selection?, restoringRecovery = false
     private var busy = false, closed = false, selecting = false, capturingViewport = false, popupError: String?
-    private var manualLoad: Task<Void, Never>?
+    let downloads: AgentBrowserDownloads?
     private var captureJob: Task<Void, Never>?, annotationWindow: AgentBrowserAnnotationWindow?
     var onClose: (() -> Void)?
     var onDraftCapture: ((AgentBrowserShot, [AgentBrowserMark], String) async throws -> Void)?
@@ -119,8 +121,9 @@ import WebKit
     private var current: AgentBrowserPage { pages.first { $0.id == tabs.selectedTabViewItem?.identifier as? String } ?? pages[0] }
     var web: WKWebView { current.web }
 
-    init(title: String, taskID: String = "") {
+    init(title: String, taskID: String = "", downloads: AgentBrowserDownloads? = nil) {
         self.taskID = taskID
+        self.downloads = downloads
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "浏览器 · " + title; window.minSize = NSSize(width: 620, height: 440); window.isReleasedWhenClosed = false; window.center()
         window.backgroundColor = .windowBackgroundColor
@@ -131,11 +134,15 @@ import WebKit
             AgentWorkbenchTheme.toolbar(button, title: label, symbol: symbol)
             button.target = self; button.action = action
         }
+        AgentWorkbenchTheme.toolbar(downloadList, title: "下载", symbol: "arrow.down.circle")
+        downloadList.target = self; downloadList.action = #selector(showDownloads(_:)); downloadList.isHidden = downloads == nil
+        downloads?.onChange = { [weak self] in self?.updateDownloadStatus() }
+        updateDownloadStatus()
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         address.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         separate.target = self; separate.action = #selector(toggleSeparateWindow); separate.bezelStyle = .rounded; separate.controlSize = .small
         let toolbar = NSStackView(views: [back, forward, reload, halt, address]); toolbar.spacing = 6
-        let actions = NSStackView(views: [add, remove, copyLink, copyImage, annotate, NSView(), separate]); actions.spacing = 6
+        let actions = NSStackView(views: [add, remove, copyLink, copyImage, annotate, downloadList, NSView(), separate]); actions.spacing = 6
         pageTabs.orientation = .horizontal; pageTabs.spacing = 3
         pageTabScroll.documentView = pageTabs; pageTabScroll.hasHorizontalScroller = true; pageTabScroll.scrollerStyle = .overlay; pageTabScroll.drawsBackground = false; pageTabScroll.setAccessibilityLabel("网页标签页")
         let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface); window.contentView = content
@@ -194,6 +201,7 @@ import WebKit
     private func addPage(configuration: WKWebViewConfiguration? = nil, origins: Set<String> = [], activate: Bool = true) throws -> AgentBrowserPage {
         guard !closed, pages.count < 8 else { throw PetError("每个任务最多打开 8 个标签页，请先关闭不需要的页面") }
         let page = AgentBrowserPage(dataStore: dataStore, configuration: configuration, origins: origins)
+        page.downloads = downloads
         page.onChange = { [weak self] in guard let self, !restoringRecovery else { return }; updateControls(); onWorkspaceChange?() }
         let parentID = page.id
         page.onNewWindow = { [weak self] configuration, _, origins in
@@ -249,22 +257,66 @@ import WebKit
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeaveSettings() }
     func windowWillClose(_ notification: Notification) { finishClose() }
     private func finishClose() {
-        guard !closed else { return }; closed = true; NotificationCenter.default.removeObserver(self, name: NSTextView.didChangeSelectionNotification, object: nil); NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil); manualLoad?.cancel(); captureJob?.cancel()
+        guard !closed else { return }; closed = true; NotificationCenter.default.removeObserver(self, name: NSTextView.didChangeSelectionNotification, object: nil); NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil); captureJob?.cancel()
+        downloads?.close()
         if let annotationWindow { annotationWindow.finishClose(); if annotationWindow.settingsHostWindow == nil { annotationWindow.close() } }
         for page in pages { page.close() }; onClose?(); onClose = nil
     }
-    @objc private func stopLoading() { manualLoad?.cancel(); current.stop() }
+    @objc private func stopLoading() { current.stop() }
     @objc private func goBack() { current.manualNavigation("back") }
     @objc private func goForward() { current.manualNavigation("forward") }
     @objc private func refresh() { current.manualNavigation("reload") }
     @objc private func newTab() { do { _ = try addPage() } catch { state.stringValue = error.localizedDescription } }
     @objc private func closeTab() { do { _ = try manageTabs(["action": "close", "tab_id": current.id]) } catch { state.stringValue = error.localizedDescription } }
     @objc private func navigate() {
-        manualLoad?.cancel(); let value = address.stringValue; addressDraft = nil; restoredAddressSelection = nil
-        manualLoad = Task { [weak self] in
-            guard let self else { return }
-            do { _ = try await open(AgentBrowser.url(value)) } catch { state.stringValue = error.localizedDescription }
+        guard !busy, !closed else { return }
+        let value = address.stringValue; addressDraft = nil; restoredAddressSelection = nil
+        do { current.openManually(try AgentBrowser.url(value)) }
+        catch { state.stringValue = error.localizedDescription }
+    }
+    private func updateDownloadStatus() {
+        guard let downloads else { return }
+        if !downloads.status.isEmpty { state.stringValue = downloads.status }
+        downloadList.toolTip = downloads.active.isEmpty ? "下载 · \(downloads.completed.count) 个文件" : "下载 · \(downloads.active.count) 个进行中"
+    }
+    @objc private func showDownloads(_ sender: NSButton) {
+        guard let downloads else { return }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        func entry(_ title: String, action: Selector? = nil, id: UUID? = nil) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self; item.representedObject = id?.uuidString; item.isEnabled = action != nil
+            return item
         }
+        if downloads.active.isEmpty, downloads.completed.isEmpty { menu.addItem(entry(downloads.status.isEmpty ? "暂无下载" : downloads.status)) }
+        for active in downloads.active {
+            let item = entry("正在下载 " + (active.destination?.lastPathComponent ?? "文件"))
+            let submenu = NSMenu()
+            submenu.addItem(entry("取消下载", action: #selector(cancelDownload(_:)), id: active.id))
+            item.isEnabled = true; item.submenu = submenu; menu.addItem(item)
+        }
+        for record in downloads.completed {
+            let item = entry(record.name)
+            let submenu = NSMenu()
+            if let status = downloads.attachmentStatus(record) { submenu.addItem(entry(status)) }
+            else { submenu.addItem(entry("加入草稿", action: #selector(attachDownload(_:)), id: record.id)) }
+            submenu.addItem(entry("在访达中显示", action: #selector(revealDownload(_:)), id: record.id))
+            item.isEnabled = true; item.submenu = submenu; menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
+    }
+    private func selectedDownload(_ item: NSMenuItem) -> AgentBrowserDownloadRecord? {
+        downloads?.completed.first { $0.id.uuidString == item.representedObject as? String }
+    }
+    @objc private func cancelDownload(_ item: NSMenuItem) {
+        if let value = item.representedObject as? String, let id = UUID(uuidString: value) { downloads?.cancel(id) }
+    }
+    @objc private func attachDownload(_ item: NSMenuItem) {
+        guard let downloads, let record = selectedDownload(item) else { return }
+        Task { await downloads.attach(record) }
+    }
+    @objc private func revealDownload(_ item: NSMenuItem) {
+        if let record = selectedDownload(item) { downloads?.reveal(record) }
     }
     @objc private func copyCurrentLink() {
         guard let url = web.url else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string); state.stringValue = "已复制链接"

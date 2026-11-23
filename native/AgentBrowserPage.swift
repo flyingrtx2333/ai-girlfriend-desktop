@@ -6,6 +6,7 @@ import WebKit
     let web: WKWebView
     var onChange: (() -> Void)?
     var onNewWindow: ((WKWebViewConfiguration, WKNavigationAction, Set<String>) -> WKWebView?)?
+    weak var downloads: AgentBrowserDownloads?
     private(set) var status = "" { didSet { onChange?() } }
     private var revision: String?, snapshot: [String: Any]?, lastObservation: [String: Any]?, pageError: String?, busy = false, closed = false
     private var allowedOrigins = Set<String>(), navigation = UUID(), documentID = UUID()
@@ -14,6 +15,13 @@ import WebKit
     private let recoveryEvents = AgentBrowserRecoveryEvents()
     private var pendingRecovery: AgentBrowserRecoveryState.Page?
     private var restoringView: Task<Void, Never>?
+    private struct DownloadIntent {
+        let origin: String
+        let fromAddress: Bool
+    }
+    private var explicitAddress: URL?
+    private var downloadIntent: DownloadIntent?
+    private var convertingDownload: DownloadIntent?
     var recoveryURL: String? { web.url?.absoluteString ?? pendingRecovery?.url }
     var recoveryTitle: String { web.title.flatMap { $0.isEmpty ? nil : $0 } ?? pendingRecovery?.title ?? "" }
     var tabReference: AgentBrowserTabReference? {
@@ -66,13 +74,14 @@ import WebKit
     private func notify() { onChange?() }
     private func begin() throws {
         try Task.checkCancellation(); guard !closed, !busy else { throw PetError(closed ? "标签页已关闭，请重新打开" : "标签页正在执行操作") }
-        busy = true; pageError = nil; notify()
+        busy = true; pageError = nil; explicitAddress = nil; downloadIntent = nil; notify()
     }
     private func end() { busy = false; notify() }
-    func stop() { navigation = UUID(); web.stopLoading(); invalidate(); status = "已停止加载" }
+    func stop() { navigation = UUID(); explicitAddress = nil; downloadIntent = nil; web.stopLoading(); invalidate(); status = "已停止加载" }
     func close() { closed = true; lastObservation = nil; titleObservation = nil; urlObservation = nil; restoringView?.cancel(); pendingRecovery = nil; recoveryEvents.onChange = nil; web.configuration.userContentController.removeScriptMessageHandler(forName: "workspaceRecovery", contentWorld: world); stop(); web.navigationDelegate = nil; web.uiDelegate = nil; web.removeFromSuperview() }
     func manualNavigation(_ action: String) {
         invalidate(); pageError = nil
+        explicitAddress = nil; downloadIntent = nil
         switch action {
         case "back": pendingRecovery = nil; web.goBack()
         case "forward": pendingRecovery = nil; web.goForward()
@@ -84,6 +93,14 @@ import WebKit
     func open(_ url: URL) async throws -> AgentToolResult {
         try begin(); defer { end() }; invalidate(); pendingRecovery = nil; allowedOrigins.insert(AgentBrowser.origin(url))
         web.load(URLRequest(url: url, timeoutInterval: 25)); return try await capture(offset: 1, query: "")
+    }
+    func openManually(_ url: URL) {
+        web.stopLoading()
+        invalidate()
+        pageError = nil; pendingRecovery = nil; downloadIntent = nil
+        allowedOrigins.insert(AgentBrowser.origin(url))
+        explicitAddress = url
+        web.load(URLRequest(url: url, timeoutInterval: 25))
     }
     func read(offset: Int, query: String, elementOffset: Int = 0) async throws -> AgentToolResult {
         try begin(); defer { end() }; return try await capture(offset: offset, query: query, elementOffset: elementOffset)
@@ -181,26 +198,78 @@ import WebKit
         return AgentToolResult(text: "已执行 \(operation)，以下是操作后的实际页面；成功触发操作不等于网站业务已经完成。\n" + result.text, sources: result.sources)
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        let main = navigationAction.targetFrame?.isMainFrame != false
+        let userLink = [.linkActivated, .formSubmitted].contains(navigationAction.navigationType)
         do {
-            let url = try AgentBrowser.url(navigationAction.request.url?.absoluteString ?? "")
-            guard allowedOrigins.contains(AgentBrowser.origin(url)) else { throw PetError("页面尝试打开另一站点，请用 browser_open 单独打开：" + url.absoluteString) }
-            if [.linkActivated, .formSubmitted].contains(navigationAction.navigationType) { pendingRecovery = nil }
+            guard let url = navigationAction.request.url else { throw PetError("网页没有有效地址") }
+            if !navigationAction.shouldPerformDownload || url.scheme?.lowercased() != "blob" { _ = try AgentBrowser.url(url.absoluteString) }
+            guard let origin = AgentBrowserDownloads.origin(url), allowedOrigins.contains(origin) else { throw PetError("页面尝试打开另一站点，请用 browser_open 单独打开：" + url.absoluteString) }
+            if main {
+                let typed = explicitAddress == url
+                explicitAddress = nil
+                if !busy, typed || userLink && navigationAction.sourceFrame.isMainFrame {
+                    pendingRecovery = nil
+                    downloadIntent = DownloadIntent(origin: origin, fromAddress: typed)
+                } else if navigationAction.navigationType != .other || downloadIntent?.origin != origin {
+                    downloadIntent = nil
+                }
+            }
             if pendingRecovery != nil, !["GET", "HEAD"].contains(navigationAction.request.httpMethod ?? "GET") { throw PetError("此网页需要重新提交，请在恢复后手动完成；原页面记录已保留") }
-            if navigationAction.shouldPerformDownload { throw PetError("请在外部浏览器中下载文件，再作为附件添加") }
-            decisionHandler(.allow)
+            if navigationAction.shouldPerformDownload {
+                guard main, navigationAction.sourceFrame.isMainFrame || downloadIntent?.fromAddress == true else { decisionHandler(.cancel); return }
+                convertingDownload = try allowDownload(from: origin)
+                decisionHandler(.download)
+            } else { decisionHandler(.allow) }
         } catch {
-            if navigationAction.targetFrame?.isMainFrame != false { pageError = error.localizedDescription; status = error.localizedDescription }
+            if main { downloadIntent = nil; pageError = error.localizedDescription; status = error.localizedDescription }
             decisionHandler(.cancel)
         }
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-        if !navigationResponse.canShowMIMEType || (navigationResponse.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased().contains("attachment") == true {
-            pageError = "此页面需要下载文件，请在外部浏览器中完成"; status = pageError!; decisionHandler(.cancel)
-        } else if let response = navigationResponse.response as? HTTPURLResponse, response.statusCode >= 400 {
-            pageError = "网页请求失败（\(response.statusCode)）"; status = pageError!; decisionHandler(.cancel)
-        } else { decisionHandler(.allow) }
+        let response = navigationResponse.response
+        let http = response as? HTTPURLResponse
+        let disposition = http?.value(forHTTPHeaderField: "Content-Disposition")?.split(separator: ";").first
+        do {
+            if let http, http.statusCode >= 400 { throw PetError("网页请求失败（\(http.statusCode)）") }
+            if !navigationResponse.canShowMIMEType || disposition?.trimmingCharacters(in: .whitespaces).lowercased() == "attachment" {
+                guard navigationResponse.isForMainFrame, let origin = AgentBrowserDownloads.origin(response.url), allowedOrigins.contains(origin) else {
+                    decisionHandler(.cancel); return
+                }
+                convertingDownload = try allowDownload(from: origin)
+                decisionHandler(.download)
+            } else { decisionHandler(.allow) }
+        } catch {
+            if navigationResponse.isForMainFrame { pageError = error.localizedDescription; status = error.localizedDescription }
+            decisionHandler(.cancel)
+        }
+    }
+    private func allowDownload(from origin: String) throws -> DownloadIntent {
+        defer { downloadIntent = nil }
+        guard downloads != nil, !closed, !busy, pendingRecovery == nil else { throw PetError("请在任务浏览器中手动下载文件") }
+        if let downloadIntent, downloadIntent.origin == origin { return downloadIntent }
+        if #available(macOS 15.2, *) { return DownloadIntent(origin: origin, fromAddress: false) }
+        throw PetError("请点击网页中的下载链接，或在地址栏打开下载地址")
+    }
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        handOffDownload(download)
+    }
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        handOffDownload(download)
+    }
+    private func handOffDownload(_ download: WKDownload) {
+        defer { convertingDownload = nil }
+        guard !closed, let downloads, let intent = convertingDownload else { download.cancel(nil); return }
+        if #available(macOS 15.2, *), !intent.fromAddress, !download.isUserInitiated {
+            download.cancel(nil)
+            status = "请在任务浏览器中手动下载文件"
+            return
+        }
+        pageError = nil
+        status = web.title ?? ""
+        downloads.start(download, origin: intent.origin)
     }
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { documentID = UUID(); invalidate(); lastObservation = nil; status = "加载中…" }
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { downloadIntent = nil; explicitAddress = nil; pageError = nil }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         status = pageError ?? web.title ?? ""
         if let saved = pendingRecovery, pageError == nil {
@@ -225,7 +294,17 @@ import WebKit
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
-    private func failed(_ error: Error) { if (error as NSError).code != NSURLErrorCancelled { pageError = error.localizedDescription; status = error.localizedDescription }; invalidate(); notify() }
+    private func failed(_ error: Error) {
+        let failure = error as NSError
+        // WebKit reports a navigation interrupted by the response policy as
+        // a load failure, including when it handed the response to a download.
+        let policyChange = failure.domain == "WebKitErrorDomain" && failure.code == 102
+        if failure.code != NSURLErrorCancelled, !policyChange || pageError == nil && convertingDownload == nil && status == "加载中…" {
+            pageError = error.localizedDescription; status = error.localizedDescription
+        }
+        if !policyChange, failure.code != NSURLErrorCancelled { downloadIntent = nil; explicitAddress = nil }
+        invalidate(); notify()
+    }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { stop(); pageError = "网页进程已退出，请重新加载"; status = pageError! }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard let url = navigationAction.request.url, (try? AgentBrowser.url(url.absoluteString)) != nil,

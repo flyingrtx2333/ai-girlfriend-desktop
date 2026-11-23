@@ -12,6 +12,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
     var mcpSource: AgentMCPAttachmentSource?
     var desktopCapture: AgentDesktopCapture?
     var canvasCapture: AgentCanvasCapture?
+    var browserDownloadID: UUID?
 }
 
 @MainActor enum AgentAttachments {
@@ -56,9 +57,10 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
         let root = try directory(store: store, taskID: taskID, id: id), files = try AgentFiles(workspace: root.path)
         return try JSONDecoder().decode(AgentDocumentContent.self, from: files.readData(root.appendingPathComponent("content.json"), maximum: 2_000_000))
     }
-    static func importFile(_ original: URL, store: AgentStore, taskID: String, draft: Bool = true, capture: AgentBrowserCapture? = nil, mcpSource: AgentMCPAttachmentSource? = nil, desktopCapture: AgentDesktopCapture? = nil, canvasCapture: AgentCanvasCapture? = nil, appShotText: String? = nil, browserPage: AgentBrowserPageSource? = nil, replacingDraft: (() throws -> (before: String, after: String))? = nil) async throws -> AgentAttachment {
+    static func importFile(_ original: URL, store: AgentStore, taskID: String, draft: Bool = true, capture: AgentBrowserCapture? = nil, mcpSource: AgentMCPAttachmentSource? = nil, desktopCapture: AgentDesktopCapture? = nil, canvasCapture: AgentCanvasCapture? = nil, appShotText: String? = nil, browserPage: AgentBrowserPageSource? = nil, browserDownload: AgentBrowserDownloadRecord? = nil, replacingDraft: (() throws -> (before: String, after: String))? = nil) async throws -> AgentAttachment {
         guard let task = store.task(taskID), task.kind != "wiki", !task.archived else { throw PetError("当前任务不能添加附件") }
         try store.sideTasks.requireOpen(task)
+        if let browserDownload, let attached = task.attachments?.first(where: { $0.browserDownloadID == browserDownload.id }) { return attached }
         guard !draft || (task.draftAttachmentIDs?.count ?? 0) < 6 else { throw PetError("每条消息最多 6 个附件") }
         if let error = store.writeError { throw PetError("任务尚未保存：" + error) }
         if let appShotText {
@@ -81,9 +83,11 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             let files = try AgentFiles(workspace: selected.deletingLastPathComponent().path), local = stage.appendingPathComponent("source." + type)
             let copied: (Int, String) = try {
                 let data = try files.readData(selected, maximum: 20_000_000)
+                let hash = AgentFiles.hash(data)
+                if let browserDownload, hash != browserDownload.sha256 { throw PetError("下载文件已变化，请重新下载") }
                 try data.write(to: local, options: .atomic); try preserveQuarantine(from: selected, to: local)
                 try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: local.path)
-                return (data.count, AgentFiles.hash(data))
+                return (data.count, hash)
             }()
             let scratch = stage.appendingPathComponent("parser-tmp", isDirectory: true)
             try fm.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -105,7 +109,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             }
             let modified = try local.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
             try fm.moveItem(at: stage, to: destination); moved = true
-            return AgentAttachment(id: id, name: original.lastPathComponent, fileExtension: type, bytes: copied.0, sha256: copied.1, modified: modified, totalParts: document.totalParts, partial: document.partial || browserPage?.partial == true, width: width, height: height, partTitles: document.parts.map(\.title), notes: document.notes, browserCapture: capture, browserPage: browserPage, mcpSource: mcpSource, desktopCapture: desktopCapture, canvasCapture: canvasCapture)
+            return AgentAttachment(id: id, name: original.lastPathComponent, fileExtension: type, bytes: copied.0, sha256: copied.1, modified: modified, totalParts: document.totalParts, partial: document.partial || browserPage?.partial == true, width: width, height: height, partTitles: document.parts.map(\.title), notes: document.notes, browserCapture: capture, browserPage: browserPage, mcpSource: mcpSource, desktopCapture: desktopCapture, canvasCapture: canvasCapture, browserDownloadID: browserDownload?.id)
         }
         let file = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
         do {
@@ -113,6 +117,9 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             let edit = try replacingDraft?()
             guard let previous = store.task(taskID), previous.kind != "wiki", !previous.archived else { throw PetError("任务状态已变化，附件未添加") }
             try store.sideTasks.requireOpen(previous)
+            if let browserDownload, previous.attachments?.contains(where: { $0.browserDownloadID == browserDownload.id }) == true {
+                throw PetError("下载文件已添加")
+            }
             guard !draft || (previous.draftAttachmentIDs?.count ?? 0) < 6 else { throw PetError("每条消息最多 6 个附件") }
             let version = try store.recordVersion(taskID); var record = previous
             if let edit {
