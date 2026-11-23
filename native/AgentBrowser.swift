@@ -279,7 +279,7 @@ import WebKit
         captureJob = Task { [weak self] in
             guard let self else { return }; defer { captureJob = nil; annotate.isEnabled = !closed && !busy && web.url != nil; separate.isEnabled = !closed && !busy }
             do {
-                let shot = try await screenshot()
+                let shot = try await screenshot(collectAnnotationTargets: annotating)
                 if annotating {
                     let editor = makeAnnotation(shot); captureJob = nil; presentSettingsChild(editor); onWorkspaceChange?()
                 } else {
@@ -288,14 +288,14 @@ import WebKit
             } catch { if !closed { state.stringValue = error.localizedDescription } }
         }
     }
-    func screenshot(tabID: String? = nil) async throws -> AgentBrowserShot {
+    func screenshot(tabID: String? = nil, collectAnnotationTargets: Bool = false) async throws -> AgentBrowserShot {
         if !isPageVisible { try present() }
         guard isPageVisible else { throw PetError("请先返回浏览器页面后截图，当前标注保留") }
         capturingViewport = true; defer { capturingViewport = false }
         return try await perform {
             let target = try page(tabID)
             if target.id != current.id { select(target) }
-            return try await target.screenshot()
+            return try await target.screenshot(collectAnnotationTargets: collectAnnotationTargets)
         }
     }
     func open(_ url: URL, newTab: Bool = false, tabID: String? = nil) async throws -> AgentToolResult {

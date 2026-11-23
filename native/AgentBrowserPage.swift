@@ -88,14 +88,32 @@ import WebKit
     func read(offset: Int, query: String, elementOffset: Int = 0) async throws -> AgentToolResult {
         try begin(); defer { end() }; return try await capture(offset: offset, query: query, elementOffset: elementOffset)
     }
-    func screenshot() async throws -> AgentBrowserShot {
+    private struct AnnotationLayout: Decodable, Equatable {
+        var url: String
+        var viewport: [Double]
+        var targets: [AgentBrowserAnnotationTarget]
+    }
+    private func annotationLayout() async throws -> AnnotationLayout {
+        let result = try await web.callAsyncJavaScript(AgentBrowserScript.annotationTargets,
+            arguments: ["limit": AgentBrowserAnnotationTarget.limit], in: nil, contentWorld: world)
+        guard let result = result as? [String: Any] else { throw PetError("网页元素位置不可读") }
+        return try JSONDecoder().decode(AnnotationLayout.self, from: JSONSerialization.data(withJSONObject: result))
+    }
+    func screenshot(collectAnnotationTargets: Bool = false) async throws -> AgentBrowserShot {
         try begin(); defer { end() }; try await settled()
         guard let url = web.url, web.bounds.width > 0, web.bounds.height > 0 else { throw PetError("页面尚未显示，无法截图") }
         let document = documentID, token = navigation, viewport = web.bounds.size
+        let before = collectAnnotationTargets ? try? await annotationLayout() : nil
         let (image, method) = try await AgentBrowserShot.viewport(web)
+        var targets: [AgentBrowserAnnotationTarget] = []
+        if let before, before.url == url.absoluteString, before == (try? await annotationLayout()), web.bounds.size == viewport {
+            targets = before.targets.filter(\.isValid)
+        }
         try Task.checkCancellation()
         guard !closed, documentID == document, navigation == token, web.url == url else { throw PetError("截图期间页面已变化，请重新截图") }
-        return AgentBrowserShot(image: image, source: AgentBrowserCapture(tabID: id, url: url.absoluteString, title: web.title ?? "", created: Date(), viewportWidth: Double(viewport.width), viewportHeight: Double(viewport.height), method: method))
+        let source = AgentBrowserCapture(tabID: id, url: url.absoluteString, title: web.title ?? "", created: Date(),
+                                        viewportWidth: Double(viewport.width), viewportHeight: Double(viewport.height), method: method)
+        return AgentBrowserShot(image: image, source: source, annotationTargets: targets)
     }
     private func settled() async throws {
         let token = navigation, deadline = Date().addingTimeInterval(30)

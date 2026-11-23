@@ -11,11 +11,39 @@ struct AgentBrowserCapture: Codable, Equatable, Sendable {
     var viewportHeight: Double
     var annotations = 0
     var method: String?
+    var annotatedElements: [AgentBrowserAnnotationTarget]?
+
+    var elementSummary: String {
+        guard let annotatedElements, !annotatedElements.isEmpty else { return "" }
+        let labels = annotatedElements.prefix(8).map { "\($0.role.title)「\($0.label)」" }.joined(separator: "、")
+        return "点选的网页元素：\(labels)" + (annotatedElements.count > 8 ? " 等 \(annotatedElements.count) 项。" : "。")
+    }
+}
+
+struct AgentBrowserAnnotationTarget: Codable, Equatable, Sendable {
+    static let limit = 96
+    enum Role: String, Codable, Sendable {
+        case heading, button, link
+        var title: String {
+            switch self { case .heading: "标题"; case .button: "按钮"; case .link: "链接" }
+        }
+    }
+    var role: Role
+    var label: String
+    var x: Double, y: Double, width: Double, height: Double
+    var rect: CGRect { CGRect(x: x, y: y, width: width, height: height) }
+    var isValid: Bool {
+        !label.isEmpty && label.utf8.count <= 480 && !label.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) } &&
+            [x, y, width, height].allSatisfy(\.isFinite) && x >= 0 && y >= 0 &&
+            width > 0 && height > 0 && x + width <= 1 && y + height <= 1
+    }
+    var corners: [CGPoint] { [CGPoint(x: x, y: y), CGPoint(x: x + width, y: y + height)] }
 }
 
 @MainActor struct AgentBrowserShot {
     var image: NSImage
     var source: AgentBrowserCapture
+    var annotationTargets: [AgentBrowserAnnotationTarget] = []
 
     private static func requireUnlockedSession() throws {
         let session = CGSessionCopyCurrentDictionary() as? [String: Any]
@@ -98,7 +126,10 @@ struct AgentBrowserCapture: Codable, Equatable, Sendable {
         let file = directory.appendingPathComponent("网页截图-" + String(UUID().uuidString.prefix(8)) + ".png")
         try png(marks: marks).write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        var capture = source; capture.annotations = marks.count
+        var capture = source
+        capture.annotations = marks.count
+        let elements = marks.compactMap(\.element)
+        capture.annotatedElements = elements.isEmpty ? nil : elements
         return try await AgentAttachments.importFile(file, store: store, taskID: taskID, draft: draft, capture: capture)
     }
 }
@@ -107,6 +138,7 @@ struct AgentBrowserMark: Codable, Equatable, Sendable {
     enum Kind: Int, CaseIterable, Codable, Sendable { case rectangle, arrow, pen }
     var kind: Kind
     var points: [CGPoint]
+    var element: AgentBrowserAnnotationTarget?
 
     @MainActor static func draw(_ marks: [Self], in rect: NSRect) {
         NSColor.systemRed.setStroke()

@@ -14,6 +14,7 @@ import AppKit
             let fixtureURL = output.appendingPathComponent("browser-recovery-fixture.json"), journal = AgentWorkspaceRecovery(profile: store.directory)
             let firstNote = "未添加标注 PUBLIC_BROWSER_NOTE_417", finalNote = "未添加标注 PUBLIC_BROWSER_NOTE_417 最后输入_618"
             let text = "网页草稿 PUBLIC_FORM_417 中文😀"
+            let reviewLink = "核对库存记录"
             func object(_ result: AgentToolResult) throws -> [String: Any] {
                 guard let start = result.text.firstIndex(of: "{") else { throw PetError("缺少真实网页结果") }; return try JSONSerialization.jsonObject(with: Data(result.text[start...].utf8)) as! [String: Any]
             }
@@ -27,6 +28,26 @@ import AppKit
             }
             func inspect(_ browser: AgentBrowserWindow) async throws -> [String: Any] {
                 try await browser.web.callAsyncJavaScript("return {url:location.href,note:document.getElementById('note')?.value,checked:document.getElementById('flag')?.checked,choice:document.getElementById('choice')?.value,password:document.getElementById('password')?.value,x:scrollX,y:scrollY,cookie:document.cookie};", arguments: [:], in: nil, contentWorld: .page) as? [String: Any] ?? [:]
+            }
+            @discardableResult func selectTool(_ label: String, in root: NSView?) throws -> NSSegmentedControl {
+                func segments(_ view: NSView?) -> NSSegmentedControl? {
+                    guard let view else { return nil }
+                    if let control = view as? NSSegmentedControl, control.accessibilityLabel() == "标注工具" { return control }
+                    return view.subviews.lazy.compactMap(segments).first
+                }
+                guard let control = segments(root), let index = (0..<control.segmentCount).first(where: { control.label(forSegment: $0) == label }),
+                      let action = control.action else { throw PetError("缺少实窗标注工具：" + label) }
+                control.selectedSegment = index
+                NSApp.sendAction(action, to: control.target, from: control)
+                return control
+            }
+            func saveWindow(_ window: NSWindow?, as name: String) throws {
+                guard let view = window?.contentView, window?.isVisible == true else { throw PetError("标注窗未显示") }
+                view.layoutSubtreeIfNeeded()
+                guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw PetError("标注窗尺寸无效") }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                guard let data = bitmap.representation(using: .png, properties: [:]) else { throw PetError("标注窗图像不可用") }
+                try data.write(to: output.appendingPathComponent(name + ".png"))
             }
             let fixture: BrowserRecoveryFixture
             if stage == "seed" {
@@ -64,16 +85,58 @@ import AppKit
                     guard let page = try? journal.loadPage(windowID: addressWindow, pageID: addressTab.id, taskID: id), let state = try? AgentBrowserRecoveryState.decode(page.saved.value) else { return false }
                     return state.addressSelection == .init(location: 7, length: 9)
                 }
+                let geometry = try await browser.web.callAsyncJavaScript("""
+                const rect = document.getElementById('review-link').getBoundingClientRect();
+                return [rect.left / innerWidth, rect.top / innerHeight, rect.width / innerWidth, rect.height / innerHeight];
+                """, arguments: [:], in: nil, contentWorld: .page) as? [Double]
                 await browser.checkWorkspace("annotate")
                 guard let annotation = browser.checkAnnotation else { throw PetError("未添加标注编辑器没有打开") }
-                await annotation.checkWorkspace(note: firstNote, mark: true)
+                let canvas = annotation.canvas
+                guard let target = canvas.shot.annotationTargets.first(where: { $0.label == reviewLink }), let geometry, geometry.count == 4,
+                      let window = annotation.presentingWindow else { throw PetError("捕获画面缺少固定的库存链接") }
+                checks["capturedElementMatchesIndependentVisibleWebGeometry"] = target.role == .link &&
+                    zip([target.x, target.y, target.width, target.height], geometry).allSatisfy { abs($0.0 - $0.1) < 0.002 } &&
+                    !canvas.shot.annotationTargets.contains { ["隐藏标注对象", "透明容器对象"].contains($0.label) || $0.label.contains("DUMMY_PASSWORD") }
+                if !interactive {
+                    window.appearance = NSAppearance(named: .darkAqua)
+                    window.setContentSize(NSSize(width: 780, height: 540))
+                }
+                let tools = try selectTool("元素", in: annotation.pageContentView)
+                window.contentView?.layoutSubtreeIfNeeded()
+                checks["allElementToolbarLabelsFitInTheActualWindow"] = tools.bounds.width >= CGFloat(tools.segmentCount * 44) && !tools.hasAmbiguousLayout
+                report["narrowAnnotationWindow"] = [window.frame.width, window.frame.height]
+                let image = canvas.imageRect
+                let click = canvas.convert(NSPoint(x: image.minX + target.rect.midX * image.width, y: image.minY + target.rect.midY * image.height), to: nil)
+                guard let event = NSEvent.mouseEvent(with: .leftMouseDown, location: click, modifierFlags: [], timestamp: 0,
+                                                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { throw PetError("无法触发截图元素点选") }
+                canvas.mouseDown(with: event)
+                canvas.mouseDown(with: event)
+                checks["visibleCanvasClickAddsOneExactRectangleWithoutActivatingLink"] = canvas.selectsElements && canvas.marks.count == 1 &&
+                    canvas.marks.first?.element == target && canvas.marks.first?.points == target.corners && browser.web.url?.absoluteString == base + "first/form"
+                await annotation.checkWorkspace(note: firstNote)
+                if !interactive {
+                    try saveWindow(window, as: "selected-browser-element")
+                    window.appearance = NSAppearance(named: .aqua)
+                    window.setContentSize(NSSize(width: 1320, height: 800))
+                    try saveWindow(window, as: "selected-browser-element-wide")
+                    report["wideAnnotationWindow"] = [window.frame.width, window.frame.height]
+                }
+                try selectTool("箭头", in: annotation.pageContentView)
                 annotation.canvas.kind = .arrow; annotation.canvas.beginMark(at: CGPoint(x: 0.55, y: 0.65)); annotation.canvas.continueMark(at: CGPoint(x: 0.8, y: 0.4)); annotation.canvas.endMark()
+                try selectTool("元素", in: annotation.pageContentView)
                 guard await flushWorkspaceWindows(), let window = control.workspaceSession?.id, let otherWindow = child.workspaceSession?.id,
                       let tab = control.taskWorkspace.recoveryLayouts.first(where: { $0.taskID == id })?.tabs.first(where: { $0.root == "browser" }) else { throw PetError("浏览器实际检查点未保存") }
                 let loaded = try journal.loadPage(windowID: window, pageID: tab.id, taskID: id)!, state = try AgentBrowserRecoveryState.decode(loaded.saved.value)
                 checks["threeRealPagesAndSelectedTabPersist"] = state.pages.count == 3 && state.selected == 0 && state.pages[0].url == base + "first/form" && state.pages[2].url == base + "posted"
                 checks["realHistoryAndNonzeroScrollPersist"] = browser.pages[0].web.canGoBack && state.pages[0].interaction?.isEmpty == false && abs(state.pages[0].y - 900) < 2
                 checks["unsentScreenshotMarksAndNotePersistTogether"] = loaded.saved.value.dirty && state.annotation?.marks.count == 2 && state.annotation?.note == firstNote && state.annotation?.source.tabID == firstID && loaded.asset == nil
+                checks["elementModeAndSourceGeometryPersistInSnapshot"] = state.annotation?.elementTool == true &&
+                    state.annotation?.elementTargets?.contains(target) == true && state.annotation?.marks.first?.element == target
+                var legacy = state
+                legacy.annotation?.elementTargets = nil
+                legacy.annotation?.elementTool = nil
+                legacy.annotation?.marks[0].element = nil
+                checks["manualMarkerRecoveryWithoutElementFieldsStillLoads"] = try AgentBrowserRecoveryState.decode(legacy.encodedPage()) == legacy
                 checks["browserAndAnnotationAreBothEligibleForHotExit"] = [ObjectIdentifier(browser), ObjectIdentifier(annotation)].allSatisfy { control.workspaceSession?.preservedEditors.contains($0) == true }
                 let pageURL = store.directory.appendingPathComponent("workspace-recovery/" + window + "/pages/" + tab.id + ".json"), original = try Data(contentsOf: pageURL)
                 try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: pageURL.path)
@@ -128,6 +191,9 @@ import AppKit
                     let state = try AgentBrowserRecoveryState.decode(load(fixture).saved.value)
                     let restoredAnnotation = try annotation.captureWorkspaceRecovery()
                     checks["capturedImageMarksAndLatestNoteRestoreWithoutRecapture"] = annotation.workspaceReadback()["note"] as? String == fixture.note && annotation.canvas.marks == state.annotation?.marks && AgentFiles.hash(restoredAnnotation.image) == fixture.imageHash
+                    checks["restoredCanvasCanStillSelectItsFrozenPageElements"] = annotation.canvas.selectsElements &&
+                        annotation.canvas.shot.annotationTargets == state.annotation?.elementTargets &&
+                        annotation.canvas.marks.first?.element?.label == reviewLink
                     checks["noteSelectionRestoresAcrossProcessRestart"] = restoredAnnotation.selection == .init(location: 6, length: 23)
                     let stale = try JSONSerialization.jsonObject(with: Data(fixture.oldAction.utf8)) as! [String: Any]
                     checks["oldTabAndRevisionCannotAuthorizeRestoredPages"] = !browser.pages.contains { $0.id == stale["tab_id"] as? String }
@@ -148,6 +214,11 @@ import AppKit
                         guard await flushWorkspaceWindows(), let attached = tasks.task(fixture.taskID)?.attachments?.last else { throw PetError("恢复的标注没有添加到原任务") }
                         let source = try AgentAttachments.source(store: tasks, taskID: fixture.taskID, id: attached.id)
                         checks["actualRestoredAnnotationAddsOnceToOriginalDraft"] = tasks.task(fixture.taskID)?.draft == "保留主任务输入 PUBLIC_BROWSER_DRAFT_417\n" + fixture.note && tasks.task(fixture.taskID)?.draftAttachmentIDs == [attached.id] && attached.browserCapture?.annotations == 2 && attached.browserCapture?.url == fixture.base + "first/form" && tasks.task(fixture.taskID)?.messages.isEmpty == true
+                        let target = restoredAnnotation.marks.first?.element
+                        let content = try AgentAttachments.content(store: tasks, taskID: fixture.taskID, id: attached.id)
+                        checks["attachedImageKeepsSelectedElementNameAndGeometry"] = target?.label == reviewLink &&
+                            attached.browserCapture?.annotatedElements == target.map { [$0] } &&
+                            content.notes.contains { $0.contains(reviewLink) } && attached.notes == content.notes
                         checks["attachedImageHashMatchesRealExport"] = try AgentFiles.hash(Data(contentsOf: source)) == attached.sha256
                         checks["successfulAddClearsRecoveryAnnotationAndDirtyState"] = try !load(fixture).saved.value.dirty && AgentBrowserRecoveryState.decode(load(fixture).saved.value).annotation == nil
                         report["attachment"] = ["path": source.path, "sha256": attached.sha256]

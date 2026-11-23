@@ -87,12 +87,13 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             }()
             let scratch = stage.appendingPathComponent("parser-tmp", isDirectory: true)
             try fm.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let document: AgentDocumentContent
+            var document: AgentDocumentContent
             if let appShotText {
                 document = AgentDocumentContent(format: "image", parts: [.init(title: "窗口可访问文字", text: appShotText, partial: desktopCapture?.textTruncated == true)], totalParts: 1, partial: desktopCapture?.textTruncated == true, notes: appShotText.isEmpty ? ["窗口未提供可访问文字"] : [])
             } else if mcpSource != nil, AgentMCPContent.opaqueTypes.contains(type) {
                 document = AgentDocumentContent(format: type, parts: [.init(title: "文件", text: "")], totalParts: 1, notes: [type == "gz" ? "压缩数据未展开，不能据此推断文件内容" : ["wav", "mp3", "m4a", "ogg", "flac", "aac"].contains(type) ? "音频尚未转写或发送给模型，不能声称已经收听" : "二进制内容未解析，不能据此推断内容"])
             } else { document = try await AgentDocument.extract(local, scratch: scratch) }
+            if let summary = capture?.elementSummary, !summary.isEmpty { document.notes.append(summary) }
             try Task.checkCancellation()
             let cache = stage.appendingPathComponent("content.json")
             try JSONEncoder().encode(document).write(to: cache, options: .atomic); try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cache.path)

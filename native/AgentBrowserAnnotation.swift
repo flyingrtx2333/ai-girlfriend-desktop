@@ -3,11 +3,13 @@ import AppKit
 @MainActor final class AgentBrowserAnnotationView: NSView {
     let shot: AgentBrowserShot
     var kind = AgentBrowserMark.Kind.rectangle
+    var selectsElements = false
     var isEnabled = true
     var imageSize: NSSize = .zero { didSet { if oldValue != imageSize { needsDisplay = true } } }
     private(set) var marks: [AgentBrowserMark] = []
     private var current: AgentBrowserMark?
     var onChange: (() -> Void)?
+    var onElementPick: ((AgentBrowserAnnotationTarget?) -> Void)?
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     var imageRect: NSRect {
@@ -17,7 +19,7 @@ import AppKit
     init(shot: AgentBrowserShot) {
         self.shot = shot; super.init(frame: .zero)
         setAccessibilityElement(true); setAccessibilityRole(.image); setAccessibilityLabel("网页标注画布")
-        setAccessibilityHelp("选择框选、箭头或画笔，然后在图片上拖动。")
+        setAccessibilityHelp("选择绘图工具后在图片上拖动。元素模式可点选截图里的按钮、链接或标题。")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func draw(_ dirtyRect: NSRect) {
@@ -31,10 +33,22 @@ import AppKit
     }
     override func mouseDown(with event: NSEvent) {
         guard isEnabled, imageRect.contains(convert(event.locationInWindow, from: nil)) else { return }
-        window?.makeFirstResponder(self); beginMark(at: point(event))
+        window?.makeFirstResponder(self)
+        if selectsElements { onElementPick?(markElement(at: point(event))) }
+        else { beginMark(at: point(event)) }
     }
-    override func mouseDragged(with event: NSEvent) { if isEnabled { continueMark(at: point(event)) } }
-    override func mouseUp(with event: NSEvent) { if isEnabled { continueMark(at: point(event)); endMark() } }
+    override func mouseDragged(with event: NSEvent) { if isEnabled && !selectsElements { continueMark(at: point(event)) } }
+    override func mouseUp(with event: NSEvent) { if isEnabled && !selectsElements { continueMark(at: point(event)); endMark() } }
+    func markElement(at point: CGPoint) -> AgentBrowserAnnotationTarget? {
+        guard isEnabled, let target = shot.annotationTargets.filter({ $0.rect.contains(point) }).min(by: {
+            $0.width * $0.height < $1.width * $1.height
+        }) else { return nil }
+        if !marks.contains(where: { $0.element == target }) {
+            marks.append(AgentBrowserMark(kind: .rectangle, points: target.corners, element: target))
+            changed()
+        }
+        return target
+    }
     func beginMark(at point: CGPoint) {
         guard isEnabled, point.x.isFinite, point.y.isFinite, (0...1).contains(point.x), (0...1).contains(point.y) else { return }
         current = AgentBrowserMark(kind: kind, points: [point]); needsDisplay = true
@@ -130,6 +144,7 @@ import AppKit
 
 @MainActor final class AgentBrowserAnnotationWindow: AgentSettingsPageController, NSWindowDelegate, NSTextFieldDelegate {
     private typealias Viewport = AgentBrowserRecoveryState.Annotation.Viewport
+    private let elementSegment = AgentBrowserMark.Kind.allCases.count
     let canvas: AgentBrowserAnnotationView
     private let scroll: AgentBrowserAnnotationScroll
     private let mode = NSSegmentedControl(labels: ["框选", "箭头", "画笔"], trackingMode: .selectOne, target: nil, action: nil)
@@ -154,8 +169,14 @@ import AppKit
         window.title = "标注 · " + String(shot.source.title.prefix(80)); window.minSize = NSSize(width: 640, height: 480)
         window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
+        let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface); window.contentView = content
+        if !shot.annotationTargets.isEmpty {
+            mode.segmentCount += 1
+            mode.setLabel("元素", forSegment: elementSegment)
+        }
         mode.selectedSegment = 0; mode.target = self; mode.action = #selector(annotationToolChanged); mode.setAccessibilityLabel("标注工具")
+        for index in 0..<mode.segmentCount { mode.setWidth(46, forSegment: index) }
+        mode.setContentCompressionResistancePriority(.required, for: .horizontal)
         zoom.addItems(withTitles: Viewport.scales.map { $0 == 1 ? "适应窗口" : "\(Int($0 * 100))%" })
         zoom.target = self; zoom.action = #selector(changeZoom)
         zoom.setAccessibilityLabel("标注缩放")
@@ -168,16 +189,35 @@ import AppKit
         note.placeholderString = "补充要求"; note.setAccessibilityLabel("标注补充要求"); note.delegate = self
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         if shot.source.method == "webkit-software" { state.stringValue = "软件快照可能缺少视频和 3D 内容" }
-        let header = NSStackView(views: [mode, undo, clear, NSView(), zoomControl, copy]); header.spacing = 8
+        let drawing = NSStackView(views: [mode, undo, clear]), imageActions = NSStackView(views: [zoomControl, copy])
+        for group in [drawing, imageActions] {
+            group.alignment = .centerY
+            group.spacing = 8
+            group.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        }
+        let spacer = NSView()
+        let header = NSStackView(views: [drawing, spacer, imageActions])
+        header.alignment = .centerY
+        header.spacing = 6
+        content.onResize = { [weak content, weak header, weak spacer] in
+            guard let width = content?.bounds.width, let header, let spacer else { return }
+            let compact = width < 550
+            header.orientation = compact ? .vertical : .horizontal
+            header.alignment = compact ? .leading : .centerY
+            spacer.isHidden = compact
+        }
         let footer = NSStackView(views: [state, NSView(), cancel, add]); footer.spacing = 8
         for view in [header, scroll, note, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), header.topAnchor.constraint(equalTo: content.topAnchor, constant: 12), header.heightAnchor.constraint(equalToConstant: 28),
+            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), header.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
             scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12), scroll.bottomAnchor.constraint(equalTo: note.topAnchor, constant: -12),
             note.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), note.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), note.heightAnchor.constraint(equalToConstant: 24), note.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
             footer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)
         ])
         canvas.onChange = { [weak self] in self?.updateControls() }; updateControls()
+        canvas.onElementPick = { [weak self] target in
+            self?.showElementStatus(target, whenEmpty: "此处没有可选元素")
+        }
         scroll.onChange = { [weak self] in self?.onWorkspaceChange?() }
         NotificationCenter.default.addObserver(self, selector: #selector(noteSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(restoreNoteFocusIfNeeded(_:)), name: NSWindow.didBecomeKeyNotification, object: nil)
@@ -216,13 +256,31 @@ import AppKit
         add.title = enabled ? "添加到对话" : "添加中…"
         onWorkspaceChange?()
     }
-    @objc private func annotationToolChanged() { canvas.kind = AgentBrowserMark.Kind(rawValue: mode.selectedSegment) ?? .rectangle; onWorkspaceChange?() }
+    private func showElementStatus(_ target: AgentBrowserAnnotationTarget?, whenEmpty: String = "点击截图中的按钮、链接或标题") {
+        state.textColor = AgentWorkbenchTheme.secondaryText
+        state.stringValue = target.map { "已标注\($0.role.title)「\($0.label)」" } ?? whenEmpty
+    }
+    private func applyTool() {
+        canvas.selectsElements = mode.selectedSegment == elementSegment
+        canvas.kind = AgentBrowserMark.Kind(rawValue: mode.selectedSegment) ?? .rectangle
+        if canvas.selectsElements { showElementStatus(canvas.marks.last?.element) }
+        else if state.textColor != .systemRed {
+            state.stringValue = canvas.shot.source.method == "webkit-software" ? "软件快照可能缺少视频和 3D 内容" : ""
+        }
+    }
+    @objc private func annotationToolChanged() { applyTool(); onWorkspaceChange?() }
     @objc private func changeZoom() {
         guard Viewport.scales.indices.contains(zoom.indexOfSelectedItem) else { return }
         scroll.setZoom(Viewport.scales[zoom.indexOfSelectedItem])
     }
-    @objc private func undoMark() { canvas.undoMark() }
-    @objc private func clearMarks() { canvas.clearMarks() }
+    @objc private func undoMark() {
+        canvas.undoMark()
+        if canvas.selectsElements { showElementStatus(canvas.marks.last?.element) }
+    }
+    @objc private func clearMarks() {
+        canvas.clearMarks()
+        if canvas.selectsElements { showElementStatus(nil) }
+    }
     @objc private func cancelEdit() { close() }
     @objc private func copyImage() {
         do {
@@ -271,13 +329,17 @@ import AppKit
         if recoveryImage == nil { recoveryImage = try canvas.shot.png() }
         let editor = note.currentEditor() as? NSTextView
         let selected = editor.map { AgentBrowserRecoveryState.Selection(location: $0.selectedRange().location, length: $0.selectedRange().length) }
-        return .init(source: canvas.shot.source, image: recoveryImage!, marks: canvas.recoveryMarks(), note: editor?.string ?? note.stringValue, tool: mode.selectedSegment,
+        return .init(source: canvas.shot.source, image: recoveryImage!, marks: canvas.recoveryMarks(), note: editor?.string ?? note.stringValue,
+                     tool: canvas.selectsElements ? AgentBrowserMark.Kind.rectangle.rawValue : mode.selectedSegment,
                      focusNote: editor != nil && presentingWindow?.firstResponder === editor, selection: selected ?? restoredNoteSelection,
-                     frame: hasIndependentWindow ? window.map { .init($0) } : nil, viewport: scroll.viewport.scale > 1 ? scroll.viewport : nil)
+                     frame: hasIndependentWindow ? window.map { .init($0) } : nil, viewport: scroll.viewport.scale > 1 ? scroll.viewport : nil,
+                     elementTargets: canvas.shot.annotationTargets.isEmpty ? nil : canvas.shot.annotationTargets,
+                     elementTool: canvas.selectsElements ? true : nil)
     }
     func restoreWorkspaceRecovery(_ value: AgentBrowserRecoveryState.Annotation) {
-        recoveryImage = value.image; mode.selectedSegment = value.tool; canvas.kind = AgentBrowserMark.Kind(rawValue: value.tool) ?? .rectangle
+        recoveryImage = value.image; mode.selectedSegment = value.elementTool == true ? elementSegment : value.tool
         canvas.restoreMarks(value.marks); note.stringValue = value.note; restoredNoteSelection = value.selection; restoreNoteFocus = value.focusNote; updateControls()
+        applyTool()
         let viewport = value.viewport ?? Viewport()
         zoom.selectItem(at: Viewport.scales.firstIndex(of: viewport.scale) ?? 0)
         scroll.setViewport(viewport)

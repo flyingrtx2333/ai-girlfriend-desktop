@@ -1,6 +1,41 @@
 import Foundation
 
 enum AgentBrowserScript {
+    static let annotationTargets = #"""
+    const viewport = [innerWidth, innerHeight, scrollX, scrollY];
+    const targets = [];
+    if (innerWidth <= 0 || innerHeight <= 0 || document.hidden)
+      return {url: location.href, viewport, targets};
+    const selector = 'a[href],button,h1,h2,h3,h4,h5,h6,[role="link"],[role="button"],[role="heading"]';
+    for (const el of document.querySelectorAll(selector)) {
+      if (targets.length >= limit) break;
+      if (el.matches('input,textarea,select') || el.closest('[inert],[aria-hidden="true"],[contenteditable]')) continue;
+      const style = getComputedStyle(el);
+      if (style.visibility !== 'visible' || style.opacity === '0') continue;
+      const r = el.getBoundingClientRect();
+      const left = Math.max(0, r.left), top = Math.max(0, r.top);
+      const right = Math.min(innerWidth, r.right), bottom = Math.min(innerHeight, r.bottom);
+      if (right - left < 4 || bottom - top < 4) continue;
+      const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+      if (!hit || !el.contains(hit)) continue;
+      let transparent = false;
+      for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        if (getComputedStyle(ancestor).opacity === '0') { transparent = true; break; }
+      }
+      if (transparent) continue;
+      const label = (el.innerText?.trim() || el.getAttribute('aria-label') || '')
+        .replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, 120).replace(/[\uD800-\uDBFF]$/, '');
+      if (!label) continue;
+      const role = el.getAttribute('role') || (el.matches('a[href]') ? 'link' : el.matches('button') ? 'button' : 'heading');
+      if (!['link', 'button', 'heading'].includes(role)) continue;
+      const x = left / innerWidth, y = top / innerHeight;
+      const width = Math.min(1 - x, (right - left) / innerWidth);
+      const height = Math.min(1 - y, (bottom - top) / innerHeight);
+      targets.push({role, label, x, y, width, height});
+    }
+    return {url: location.href, viewport, targets};
+    """#
+
     // This runs in a separate JavaScript world. Page scripts cannot replace the
     // reference map or supply executable code to the native tool.
     static let body = #"""
