@@ -42,6 +42,8 @@ enum AgentSpreadsheetNotes {
     private static let vmlURI = "urn:schemas-microsoft-com:vml"
     private static let vmlOfficeURI = "urn:schemas-microsoft-com:office:office"
     private static let vmlExcelURI = "urn:schemas-microsoft-com:office:excel"
+    // Spreadsheet color indices put the light color before the dark color in each pair.
+    private static let themeSlots = ["lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"]
     static let noteAuthor = "小鲸"
     struct Relation {
         let id: String, kind: String, target: String, type: String
@@ -125,8 +127,11 @@ enum AgentSpreadsheetNotes {
 
         func sheets() async throws -> [Sheet] {
             let path = try await workbookPart()
+            return try await sheets(in: path, links: relationships(path))
+        }
+
+        fileprivate func sheets(in path: String, links: [Relation]) async throws -> [Sheet] {
             let manifest = try await xml(path)
-            let links = try await relationships(path)
             let target = Dictionary(uniqueKeysWithValues: links.filter { $0.kind == "worksheet" }.map { ($0.id, $0.target) })
             return try children(children(manifest.rootElement(), "sheets").first, "sheet").compactMap { node in
                 let id = node.attribute(forLocalName: "id", uri: relationshipURI)?.stringValue ?? node.attribute(forName: "r:id")?.stringValue
@@ -146,7 +151,7 @@ enum AgentSpreadsheetNotes {
             return (path, document)
         }
 
-        fileprivate func notes(on sheet: Sheet, relations: [Relation]) async throws -> (part: String, document: XMLDocument, entries: [Note])? {
+        fileprivate func notes(on sheet: Sheet, relations: [Relation], theme: [String?] = []) async throws -> (part: String, document: XMLDocument, entries: [Note])? {
             guard let legacy = try await legacyComments(on: sheet, relations: relations) else { return nil }
             let root = legacy.document.rootElement()
             let authorList = children(children(root, "authors").first, "author").map { $0.stringValue ?? "" }
@@ -165,7 +170,7 @@ enum AgentSpreadsheetNotes {
                 let knownElements = elements(content).count == direct.count + runs.count
                 let plain = knownElements && direct.count == 1 && runs.isEmpty && elements(direct[0]).isEmpty
                 let displayRuns = !runs.isEmpty ? direct.map { runStyle(nil, text: $0.stringValue ?? "") } + runs.map { run in
-                    runStyle(children(run, "rPr").first, text: children(run, "t").first?.stringValue ?? "")
+                    runStyle(children(run, "rPr").first, text: children(run, "t").first?.stringValue ?? "", theme: theme)
                 } : nil
                 let rich = knownElements && direct.count <= 1 && direct.allSatisfy { $0.uri == sheetURI && elements($0).isEmpty } &&
                     !runs.isEmpty && content.uri == sheetURI && runs.allSatisfy(validRun)
@@ -187,13 +192,16 @@ enum AgentSpreadsheetNotes {
 
     static func catalog(_ archive: URL) async throws -> AgentSpreadsheetNoteCatalog {
         let package = try await Package(archive)
+        let workbook = try await package.workbookPart()
+        let workbookLinks = try await package.relationships(workbook)
+        let theme = try await noteTheme(in: package, workbook: workbook, links: workbookLinks)
         var result: [AgentSpreadsheetNote] = [], bytes = 0
         var unavailable: [String] = []
-        for sheet in try await package.sheets() where sheet.visible {
+        for sheet in try await package.sheets(in: workbook, links: workbookLinks) where sheet.visible {
             try Task.checkCancellation()
             let links = try await package.relationships(sheet.part)
             if !sheet.supportsCreation || hasThreadedComments(links) { unavailable.append(sheet.name) }
-            guard let entry = try await package.notes(on: sheet, relations: links) else { continue }
+            guard let entry = try await package.notes(on: sheet, relations: links, theme: theme) else { continue }
             let notes = entry.entries.map(\.value)
             bytes += notes.reduce(0) { size, note in
                 size + note.text.utf8.count + note.author.utf8.count + note.sheet.utf8.count +
@@ -446,12 +454,57 @@ enum AgentSpreadsheetNotes {
             elements(run).count == text.count + preferences.count
     }
 
-    private static func runStyle(_ properties: XMLElement?, text: String) -> AgentSpreadsheetNoteRun {
+    private static func noteTheme(in package: Package, workbook: String, links: [Relation]) async throws -> [String?] {
+        let themes = links.filter { $0.kind == "theme" }
+        guard themes.count == 1, let relation = themes.first else { return [] }
+        do {
+            let path = try part(relation.target, from: workbook)
+            let document = try await package.xml(path)
+            guard let root = document.rootElement(), root.localName == "theme", let namespace = root.uri,
+                  ["http://schemas.openxmlformats.org/drawingml/2006/main", "http://purl.oclc.org/ooxml/drawingml/main"].contains(namespace) else { return [] }
+            func member(_ parent: XMLElement?, _ name: String) -> XMLElement? {
+                let matches = children(parent, name).filter { $0.uri == namespace }
+                return matches.count == 1 ? matches.first : nil
+            }
+            let palette = member(member(root, "themeElements"), "clrScheme")
+            return themeSlots.map { name in
+                let slot = member(palette, name)
+                if let color = member(slot, "srgbClr") { return hexColor(attribute(color, "val"), digits: 6) }
+                if let color = member(slot, "sysClr") { return hexColor(attribute(color, "lastClr"), digits: 6) }
+                return nil
+            }
+        } catch is CancellationError { throw CancellationError() }
+        catch { try Task.checkCancellation(); return [] }
+    }
+
+    private static func hexColor(_ value: String?, digits: Int) -> String? {
+        guard let value, value.utf8.count == digits,
+              value.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else { return nil }
+        return String(value.suffix(6)).uppercased()
+    }
+
+    private static func previewColor(_ node: XMLElement, theme: [String?]) -> String? {
+        let themed = attribute(node, "theme").flatMap(Int.init).flatMap { theme.indices.contains($0) ? theme[$0] : nil }
+        guard let rgb = themed ?? hexColor(attribute(node, "rgb"), digits: 8) else { return nil }
+        guard let tint = attribute(node, "tint").flatMap(Double.init), (-1...1).contains(tint), tint != 0,
+              let packed = UInt32(rgb, radix: 16) else { return rgb }
+        let channels = [Double((packed >> 16) & 255), Double((packed >> 8) & 255), Double(packed & 255)]
+        let lightness = (min(channels[0], channels[1], channels[2]) + max(channels[0], channels[1], channels[2])) / 2
+        let adjusted = tint < 0 ? lightness * (1 + tint) : lightness + (255 - lightness) * tint
+        // In HSL the hue and saturation stay fixed, so the channels' offsets from lightness scale together.
+        let range = min(lightness, 255 - lightness)
+        let scale = range > 0 ? min(adjusted, 255 - adjusted) / range : 0
+        return channels.map { channel in
+            let value = min(255, max(0, adjusted + (channel - lightness) * scale))
+            return String(format: "%02X", Int(value.rounded()))
+        }.joined()
+    }
+
+    private static func runStyle(_ properties: XMLElement?, text: String, theme: [String?] = []) -> AgentSpreadsheetNoteRun {
         func member(_ key: String) -> XMLElement? { children(properties, key).first }
         func value(_ key: String) -> String? { member(key).flatMap { attribute($0, "val") } }
         func enabled(_ key: String) -> Bool { member(key) != nil && !["0", "false", "off", "none"].contains(value(key) ?? "") }
-        let rgb = member("color").flatMap { attribute($0, "rgb") }
-        let color = rgb.flatMap { $0.range(of: "^[0-9a-fA-F]{8}$", options: .regularExpression) != nil ? String($0.suffix(6)) : nil }
+        let color = member("color").flatMap { previewColor($0, theme: theme) }
         return .init(text: text, bold: enabled("b"), italic: enabled("i"), underline: enabled("u"),
                      doubleUnderline: ["double", "doubleAccounting"].contains(value("u") ?? ""), strike: enabled("strike"),
                      font: value("rFont"), size: value("sz").flatMap(Double.init).flatMap { $0.isFinite && $0 > 0 ? $0 : nil },

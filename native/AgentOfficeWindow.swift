@@ -686,11 +686,15 @@ import Darwin
             }
             const frame = panel.getBoundingClientRect(), grid = document.getElementById('office-root').getBoundingClientRect();
             const marks = selector => Array.from(text.querySelectorAll(selector), node => node.textContent);
+            const sources = Array.from(text.querySelectorAll('[data-note-source]'));
             return {entries: Array.from(list.querySelectorAll('button')).map(b => b.title), value: text.textContent,
                     author: panel.querySelector('.spreadsheet-note-author').textContent,
                     focused: document.activeElement === text, readOnly: text.getAttribute('aria-readonly') === 'true',
                     bold: marks('strong'), italic: marks('em'), underline: marks('u'),
                     doubleUnderline: marks('.spreadsheet-note-double u'), selection: getSelection().toString(),
+                    runColors: sources.map(node => node.style.getPropertyValue('--note-run-color').trim().toUpperCase()),
+                    resolvedRunColors: sources.map(node => getComputedStyle(node).color),
+                    dark: matchMedia('(prefers-color-scheme: dark)').matches,
                     grid: grid.width, left: frame.left, right: frame.right, width: innerWidth};
             """, args: args) as? [String: Any] else { throw PetError("无法读取当前备注栏") }
         return value

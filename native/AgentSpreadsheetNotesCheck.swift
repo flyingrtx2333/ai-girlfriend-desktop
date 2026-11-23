@@ -4,6 +4,10 @@ import AppKit
     private struct SpreadsheetNotesFixture: Codable {
         let task: String, window: String, tab: String, hash: String
     }
+    private struct SpreadsheetNoteColors: Decodable {
+        let editor: [String]
+        let palette: [String?], unavailable: [String?]
+    }
 
     func runSpreadsheetRichNoteCheck(_ output: URL) async {
         let args = CommandLine.arguments
@@ -17,7 +21,7 @@ import AppKit
         let finished = "核对订单 🌊，复核\n  对齐日期"
         let plain = "核对税前金额\n保留样例"
         let newNote = "补充凭据"
-        var checks: [String: Bool] = [:], failure: String?, modelRequests = 0
+        var checks: [String: Bool] = [:], failure: String?, modelRequests = 0, preview: [String: Any] = [:]
 
         do {
             ensureAgent()
@@ -27,6 +31,9 @@ import AppKit
             }
             runtime.modelRequestCheck = { modelRequests += 1; throw PetError("备注验收禁止模型请求") }
             let files = try AgentFiles(workspace: project.path)
+            let colorsFile = output.appendingPathComponent("note-colors.json")
+            let colors: SpreadsheetNoteColors? = FileManager.default.fileExists(atPath: colorsFile.path)
+                ? try JSONDecoder().decode(SpreadsheetNoteColors.self, from: Data(contentsOf: colorsFile)) : nil
             if stage == "seed" {
                 let hash = try files.fileHash(document)
                 let task = tasks.create(title: "公开富文本备注", workspace: project.path, draft: "保留原任务输入")
@@ -42,6 +49,20 @@ import AppKit
                 checks["originalNoteShowsItsOwnInlineFormatting"] = opened["value"] as? String == original && opened["readOnly"] as? Bool == false &&
                     opened["bold"] as? [String] == ["核对合同 🌊"] && opened["italic"] as? [String] == ["，复查日期"] &&
                     opened["doubleUnderline"] as? [String] == ["，复查日期"]
+                if let colors {
+                    let resolved = colors.editor.compactMap { value -> String? in
+                        guard let rgb = UInt32(value, radix: 16) else { return nil }
+                        return "rgb(\((rgb >> 16) & 255), \((rgb >> 8) & 255), \(rgb & 255))"
+                    }
+                    checks["customThemeTintAndExplicitColorRenderInLightWindow"] = opened["runColors"] as? [String] == colors.editor.map { "#" + $0 } &&
+                        opened["resolvedRunColors"] as? [String] == resolved && opened["dark"] as? Bool == false
+                    for (name, expected) in [("theme-palette", colors.palette), ("theme-unavailable", colors.unavailable)] {
+                        let file = output.appendingPathComponent(name + ".xlsx")
+                        let note = try await AgentSpreadsheetNotes.read(file).first { $0.sheet == "审阅" && $0.cell == "E35" }
+                        checks[name] = note?.editable == true && note?.runs?.map(\.rgb) == expected
+                    }
+                    preview = opened.filter { ["runColors", "resolvedRunColors", "dark"].contains($0.key) }
+                }
                 let typed = try await editor.checkSpreadsheetNotes(edit: "订单", range: 2..<4)
                 checks["typingInsideBoldRunKeepsTheOtherRuns"] = typed["value"] as? String == draft &&
                     typed["bold"] as? [String] == ["核对订单 🌊"] && typed["italic"] as? [String] == ["，复查日期"]
@@ -87,6 +108,12 @@ import AppKit
                 checks["narrowWindowShowsNoteAndGrid"] = (visible["grid"] as? Double ?? 0) > 230 &&
                     (visible["right"] as? Double ?? 0) - (visible["left"] as? Double ?? 0) >= 180
                 checks["restoredNoteStillLocatesItsCell"] = try await editor.checkSpreadsheetNoteVisible(sheet: "审阅", cell: "E35")
+                if let colors {
+                    let inks = visible["resolvedRunColors"] as? [String] ?? []
+                    checks["reopenedNoteDisplaysBothOriginalColorsInDarkWindow"] = visible["dark"] as? Bool == true &&
+                        Set(visible["runColors"] as? [String] ?? []) == Set(colors.editor.map { "#" + $0 }) && Set(inks).count == 2
+                    preview = visible.filter { ["runColors", "resolvedRunColors", "dark"].contains($0.key) }
+                }
                 if stage == "resume" {
                     checks["styledDraftReopensWithOriginalSelection"] = try editor.dirty && visible["value"] as? String == draft &&
                         visible["underline"] as? [String] == ["核对", "，复查日期"] && visible["selection"] as? String == "核对" &&
@@ -138,6 +165,7 @@ import AppKit
         var report: [String: Any] = ["stage": stage, "pid": getpid(), "checks": checks, "modelRequests": modelRequests,
                                      "success": failure == nil && checks.values.allSatisfy { $0 }]
         report["error"] = failure
+        if !preview.isEmpty { report["preview"] = preview }
         if let bytes = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? bytes.write(to: output.appendingPathComponent("spreadsheet-rich-notes-" + stage + ".json"), options: .atomic)
         }
