@@ -15,7 +15,10 @@ import AppKit
             }
         }
     }
-    private struct Definition { let name: String, document: String }
+    private struct Definition {
+        let name: String, document: String, type: String?
+        var transport: String? { ["stdio": "本机程序", "http": "HTTP", "streamable-http": "HTTP", "sse": "SSE"][type ?? ""] }
+    }
     private struct Recovery: Codable {
         var version = 1
         let source: Source, selected: String?, listY: Double, selectedVisible: Bool
@@ -27,8 +30,11 @@ import AppKit
     private let state = AgentSettingsStatusField("MCP 导入状态")
     private let retry = AgentDialogButton(title: "重新读取", target: nil, action: nil)
     private let load = AgentDialogButton(title: "载入草稿", target: nil, action: nil)
+    private let importAll = AgentDialogButton(title: "导入全部", target: nil, action: nil)
     private var finished = false, pending: Recovery?, restoreScheduled = false
     var onLoad: ((String) -> Void)?
+    var onImportBatch: (([String]) throws -> Void)? { didSet { updateActions() } }
+    var onBatchSaved: ((Int) -> Void)?
     override var minimumSettingsContentHeight: CGFloat { 220 }
     override var usesInternalScrolling: Bool { true }
 
@@ -53,7 +59,7 @@ import AppKit
         guard data.count <= 64_000 else { throw PetError("配置文件需小于 64KB") }
         let object = try AgentConfigurationJSON.object(data)
         guard let raw = object["mcpServers"] else {
-            return [Definition(name: object["name"] as? String ?? label, document: String(decoding: data, as: UTF8.self))]
+            return [Definition(name: object["name"] as? String ?? label, document: String(decoding: data, as: UTF8.self), type: object["type"] as? String)]
         }
         guard let servers = raw as? [String: [String: Any]] else { throw PetError("mcpServers 须为连接器对象") }
         guard (1...64).contains(servers.count) else { throw PetError("mcpServers 需包含 1 至 64 个连接器") }
@@ -70,7 +76,7 @@ import AppKit
             }
             if let command = value["command"] as? String { value["command"] = AgentMCP.configurationCommand(command) }
             let document = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-            return Definition(name: name, document: String(decoding: document, as: UTF8.self))
+            return Definition(name: name, document: String(decoding: document, as: UTF8.self), type: value["type"] as? String)
         }
     }
 
@@ -85,28 +91,36 @@ import AppKit
         sourceName.lineBreakMode = .byTruncatingMiddle; sourceName.toolTip = source.path
         sourceName.setAccessibilityLabel("MCP 导入来源")
         list.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("import")))
-        list.headerView = nil; list.rowHeight = 36; list.delegate = self; list.dataSource = self
+        list.headerView = nil; list.rowHeight = 44; list.delegate = self; list.dataSource = self; list.backgroundColor = .clear
         list.setAccessibilityLabel("待导入 MCP 连接器")
-        listScroll.documentView = list; listScroll.hasVerticalScroller = true
-        preview.isEditable = false; preview.isSelectable = true; preview.isRichText = false
+        listScroll.documentView = list; listScroll.hasVerticalScroller = true; listScroll.drawsBackground = false
+        preview.isEditable = false; preview.isSelectable = true; preview.isRichText = false; preview.drawsBackground = false
         preview.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         preview.textContainerInset = NSSize(width: 12, height: 12); preview.isVerticallyResizable = true
         preview.autoresizingMask = [.width]; preview.textContainer?.widthTracksTextView = true
         preview.setAccessibilityLabel("MCP 导入配置预览")
-        previewScroll.documentView = preview; previewScroll.hasVerticalScroller = true
-        let split = NSStackView(views: [listScroll, previewScroll]); split.spacing = 12; split.alignment = .top
+        previewScroll.documentView = preview; previewScroll.hasVerticalScroller = true; previewScroll.drawsBackground = false
+        let divider = AgentThemeView(fill: AgentWorkbenchTheme.line)
+        let split = NSStackView(views: [listScroll, divider, previewScroll]); split.spacing = 0; split.alignment = .top
+        let reviewCard = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
+        reviewCard.layer?.cornerRadius = 12; reviewCard.layer?.borderWidth = 1
+        reviewCard.addSubview(split); split.translatesAutoresizingMaskIntoConstraints = false
         let cancel = AgentDialogButton(title: "取消", target: self, action: #selector(cancelImport)); cancel.keyEquivalent = "\u{1b}"
         AgentDialogStyle.action(cancel)
         retry.target = self; retry.action = #selector(reloadSource); retry.isHidden = true; AgentDialogStyle.action(retry)
         load.target = self; load.action = #selector(loadSelected); AgentSettingsStyle.primaryAction(load)
-        let actions = AgentSettingsDetailActions([retry, cancel, load]); detailActionRow = actions
-        let layout = NSStackView(views: [sourceName, state, split, actions]); layout.orientation = .vertical; layout.alignment = .leading; layout.spacing = 8
+        importAll.target = self; importAll.action = #selector(importBatch); AgentSettingsStyle.primaryAction(importAll)
+        let actions = AgentSettingsDetailActions([retry, cancel, load, importAll]); detailActionRow = actions
+        let layout = NSStackView(views: [sourceName, state, reviewCard, actions]); layout.orientation = .vertical; layout.alignment = .leading; layout.spacing = 8
         let root = AgentThemeView(); window.contentView = root; root.addSubview(layout); layout.translatesAutoresizingMaskIntoConstraints = false
-        for view in [sourceName, state, split, actions] { view.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true }
+        for view in [sourceName, state, reviewCard, actions] { view.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true }
         NSLayoutConstraint.activate([
             layout.leadingAnchor.constraint(equalTo: root.leadingAnchor), layout.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             layout.topAnchor.constraint(equalTo: root.topAnchor, constant: 8), layout.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
-            listScroll.widthAnchor.constraint(equalToConstant: 164), listScroll.heightAnchor.constraint(equalTo: split.heightAnchor),
+            split.leadingAnchor.constraint(equalTo: reviewCard.leadingAnchor, constant: 1), split.trailingAnchor.constraint(equalTo: reviewCard.trailingAnchor, constant: -1),
+            split.topAnchor.constraint(equalTo: reviewCard.topAnchor, constant: 1), split.bottomAnchor.constraint(equalTo: reviewCard.bottomAnchor, constant: -1),
+            listScroll.widthAnchor.constraint(equalToConstant: 184), listScroll.heightAnchor.constraint(equalTo: split.heightAnchor),
+            divider.widthAnchor.constraint(equalToConstant: 1), divider.heightAnchor.constraint(equalTo: split.heightAnchor),
             previewScroll.heightAnchor.constraint(equalTo: split.heightAnchor), split.heightAnchor.constraint(greaterThanOrEqualToConstant: 100)
         ])
         for clip in [listScroll.contentView, previewScroll.contentView] {
@@ -127,9 +141,14 @@ import AppKit
     func numberOfRows(in tableView: NSTableView) -> Int { definitions.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard definitions.indices.contains(row) else { return nil }
-        let name = NSTextField(labelWithString: definitions[row].name)
-        name.font = .systemFont(ofSize: 12); name.lineBreakMode = .byTruncatingMiddle; name.toolTip = name.stringValue
-        return name
+        let definition = definitions[row]
+        let name = NSTextField(labelWithString: definition.name)
+        name.font = .systemFont(ofSize: 12, weight: .medium); name.lineBreakMode = .byTruncatingMiddle; name.toolTip = definition.name
+        guard let transport = definition.transport else { return name }
+        let kind = NSTextField(labelWithString: transport)
+        kind.font = .systemFont(ofSize: 11); kind.textColor = AgentWorkbenchTheme.secondaryText
+        let labels = NSStackView(views: [name, kind]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 3
+        return labels
     }
     func tableViewSelectionDidChange(_ notification: Notification) { pending = nil; showSelection(); readingChanged() }
     private func showRows(selected: String? = nil) {
@@ -145,7 +164,18 @@ import AppKit
         preview.string = definition?.document ?? ""
         preview.setSelectedRange(NSRange(location: 0, length: 0))
         AgentSettingsRecovery.restoreScroll(0, to: previewScroll)
-        load.isEnabled = retry.isHidden && definition != nil
+        updateActions()
+    }
+    private func updateActions() {
+        let canBatch = definitions.count > 1 && onImportBatch != nil
+        load.isEnabled = retry.isHidden && definitions.indices.contains(list.selectedRow)
+        load.prominent = !canBatch
+        importAll.isHidden = !canBatch
+        importAll.title = "导入 \(definitions.count) 项"
+        importAll.isEnabled = canBatch && retry.isHidden
+        if canBatch, state.stringValue.isEmpty {
+            state.stringValue = "导入到用户设置，初始停用。含凭据的条目需要补填。"
+        }
     }
     @objc private func readingChanged(_ notification: Notification? = nil) { if pending == nil, isPageVisible { onSettingsRecoveryChange?() } }
 
@@ -201,7 +231,7 @@ import AppKit
         }
     }
     private func sourceProblem(_ message: String) {
-        state.showSaveFailure(PetError(message)); retry.isHidden = false; load.isEnabled = false
+        state.showSaveFailure(PetError(message)); retry.isHidden = false; updateActions()
         readingChanged()
     }
     @objc private func reloadSource() {
@@ -218,16 +248,28 @@ import AppKit
         } catch { sourceProblem("来源文件无法读取或不是有效的连接器 JSON，请核对后重试。") }
     }
     @objc private func cancelImport() { close() }
-    @objc private func loadSelected() {
-        guard !finished, retry.isHidden, definitions.indices.contains(list.selectedRow) else { return }
+    private func sourceIsCurrent() -> Bool {
         if case .file(let path, let digest) = source {
             let data: Data
             do { data = try Self.readFile(path) }
-            catch { sourceProblem("来源文件暂不可读。恢复文件后可重新读取。"); return }
-            guard AgentFiles.hash(data) == digest else { sourceProblem("来源文件已变化，请重新读取并审阅。"); return }
+            catch { sourceProblem("来源文件暂不可读。恢复文件后可重新读取。"); return false }
+            guard AgentFiles.hash(data) == digest else { sourceProblem("来源文件已变化，请重新读取并审阅。"); return false }
         }
+        return true
+    }
+    @objc private func loadSelected() {
+        guard !finished, load.isEnabled, sourceIsCurrent() else { return }
         finished = true
         let document = definitions[list.selectedRow].document
         close(); onLoad?(document)
+    }
+    @objc private func importBatch() {
+        guard !finished, importAll.isEnabled, let onImportBatch, sourceIsCurrent() else { return }
+        do {
+            try onImportBatch(definitions.map(\.document))
+            finished = true
+            close()
+            onBatchSaved?(definitions.count)
+        } catch { state.showSaveFailure(error) }
     }
 }

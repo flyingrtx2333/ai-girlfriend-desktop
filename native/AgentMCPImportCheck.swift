@@ -202,8 +202,9 @@ import AppKit
             restoredText.selectedRange() == range && host.firstResponder === restoredText && (restoredText.enclosingScrollView?.documentVisibleRect.minY ?? 0) > 200
 
         try edited.write(to: source, options: .atomic)
-        try press("载入草稿", page: returned)
-        checks["mcpImportRejectsSourceChangedWhileReading"] = !loadEnabled(returned) && pane.currentController === returned && text(returned.pageContentView).contains("来源文件已变化")
+        try press("导入 23 项", page: returned)
+        checks["mcpImportRejectsSourceChangedWhileReading"] = try !loadEnabled(returned) && pane.currentController === returned &&
+            text(returned.pageContentView).contains("来源文件已变化") && Data(contentsOf: registry) == originalRegistry
         let changed = try await reopen(saved)
         checks["mcpImportChangedSourceKeepsReviewAndCheckpoint"] = try !loadEnabled(changed) && text(changed.pageContentView).contains("来源文件已变化") && capture().pages.last == saved.pages.last
         let held = source.deletingLastPathComponent().appendingPathComponent("mcp-review-recovery-held.json")
@@ -232,7 +233,7 @@ import AppKit
         let pasted = #"{"mcpServers":{"env":{"command":"/usr/bin/true","timeout":3500},"headers":{"url":"https://example.com/second","bearerToken":"${INPUT_REQUIRED}"}}}"#
         let editor = try control(NSTextView.self, "MCP 配置 JSON", page: detail)
         editor.string = pasted; manager.textDidChange(.init(name: NSText.didChangeNotification, object: editor))
-        try press("载入 JSON", page: detail)
+        try press("预览导入", page: detail)
         let pastePage = try current()
         try control(NSTableView.self, "待导入 MCP 连接器", page: pastePage).selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         let pasteState = try capture(), pasteRestored = try await reopen(pasteState)
@@ -243,6 +244,46 @@ import AppKit
         checks["mcpImportPastedCancelRestoresExactUnsavedJSON"] = try control(NSTextView.self, "MCP 配置 JSON", page: parent).string == pasted && Data(contentsOf: registry) == originalRegistry
         let concealed = #"{"mcpServers":{"duplicated":{"bearerToken":""# + secret + #""},"duplicated":{"bearerToken":"${KEYCHAIN}"}}}"#
         checks["mcpImportPastedDuplicateKeysCannotConcealUnmaskedCredentials"] = !AgentMCPConfigForm.canPreserveDocument(concealed, allowingImport: true)
+        pane.finish()
+
+        let batchManager = try root()
+        let creation = try control(NSPopUpButton.self, "新建 MCP 连接器", page: batchManager)
+        guard let entry = creation.menu?.items.first(where: { $0.title == "粘贴 JSON…" }), let action = entry.action else {
+            throw PetError("缺少粘贴 JSON 入口")
+        }
+        NSApp.sendAction(action, to: entry.target, from: entry)
+        guard let batchDetail = pane.currentController, batchDetail !== batchManager else { throw PetError("粘贴未进入设置详情") }
+        let batchEditor = try control(NSTextView.self, "MCP 配置 JSON", page: batchDetail)
+        checks["mcpDirectPasteOpensTheEmptyJSONEditorWithoutWriting"] = try batchEditor.string.isEmpty && batchEditor.isEditable &&
+            !batchEditor.isHiddenOrHasHiddenAncestor && find(NSButton.self, in: batchDetail.pageContentView, matching: { $0.title == "预览导入" })?.isEnabled == false &&
+            Data(contentsOf: registry) == originalRegistry
+        func pasteBatch(_ documents: [String: [String: String]]) throws -> AgentMCPImportPage {
+            batchEditor.string = try encode(["mcpServers": documents])
+            batchManager.textDidChange(.init(name: NSText.didChangeNotification, object: batchEditor))
+            try press("预览导入", page: batchDetail)
+            return try current()
+        }
+        let conflicting = try pasteBatch([existing.name.lowercased(): ["command": "/usr/bin/true"], "public-batch-http": ["url": "http://127.0.0.1:55999/mcp"]])
+        try press("导入 2 项", page: conflicting)
+        checks["mcpBatchConflictKeepsTheReviewAndWritesNoEntries"] = try pane.currentController === conflicting &&
+            text(conflicting.pageContentView).contains("同名连接器") && Data(contentsOf: registry) == originalRegistry
+        try press("取消", page: conflicting)
+        batchEditor.string = try encode(["mcpServers": [
+            "public-batch-http": ["type": "http", "url": "http://127.0.0.1:55999/mcp"],
+            "public-batch-stdio": ["command": "/usr/bin/true", "env": ["PUBLIC_BATCH_TOKEN": secret]]
+        ]])
+        batchManager.textDidChange(.init(name: NSText.didChangeNotification, object: batchEditor))
+        try press("预览导入", page: batchDetail)
+        let ready = try current()
+        try press("导入 2 项", page: ready)
+        let savedRegistry = try Data(contentsOf: registry)
+        let servers = try JSONDecoder().decode([AgentMCPServer].self, from: savedRegistry)
+        let added = servers.filter { ["public-batch-http", "public-batch-stdio"].contains($0.name) }
+        checks["mcpBatchSavesBothDisabledInTheUserScopeAndReturnsToTheList"] = pane.currentController === batchManager && host.attachedSheet == nil &&
+            added.count == 2 && added.allSatisfy { !$0.enabled && $0.workspace == nil } &&
+            added.contains { $0.name == "public-batch-http" && $0.url == "http://127.0.0.1:55999/mcp" && $0.configured == true }
+        checks["mcpBatchKeepsCredentialNamesWithoutPersistingImportedValues"] = !String(decoding: savedRegistry, as: UTF8.self).contains(secret) &&
+            added.contains { $0.name == "public-batch-stdio" && $0.command == "/usr/bin/true" && $0.environmentKeys == ["PUBLIC_BATCH_TOKEN"] && $0.configured == false }
         pane.finish()
         return checks
     }

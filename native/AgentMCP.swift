@@ -320,16 +320,30 @@ struct AgentMCPServer: Codable, Identifiable {
         availableServers(workspace: workspace).contains { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
     }
     func addImported(_ server: AgentMCPServer) throws {
+        try addImportedBatch([server], checking: server.workspace)
+    }
+    func addImportedBatch(_ servers: [AgentMCPServer], checking workspace: String?) throws {
+        guard let first = servers.first else { return }
         if let loadError { throw PetError(loadError) }
-        guard UUID(uuidString: server.id) != nil, !server.enabled, server.plugin == nil,
-              !savedServers.contains(where: { $0.id == server.id }) else { throw PetError("连接器导入编号已占用") }
-        let used = savedServers.filter { $0.plugin == nil }
-        guard !hasImportName(server.name, workspace: server.workspace) else {
-            throw PetError("同名连接器已存在，保留现有配置")
+        let scope = first.workspace
+        let ids = Set(servers.map(\.id))
+        guard ids.count == servers.count, ids.isDisjoint(with: savedServers.map(\.id)),
+              servers.allSatisfy({ UUID(uuidString: $0.id) != nil && !$0.enabled && $0.plugin == nil && $0.workspace == scope }) else {
+            throw PetError("连接器导入编号或范围无效")
         }
-        guard savedServers.count < 128, used.count < 64 else { throw PetError("连接器数量超过限制") }
-        let updated = (savedServers + [server]).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        try persist(updated, project: server.workspace != nil); savedServers = updated; notify()
+        let used = savedServers.filter { $0.plugin == nil }.count
+        guard savedServers.count + servers.count <= 128, used + servers.count <= 64 else { throw PetError("连接器数量超过限制") }
+        var names = availableServers(workspace: workspace).map(\.name)
+        for server in servers {
+            guard !names.contains(where: { $0.localizedCaseInsensitiveCompare(server.name) == .orderedSame }) else {
+                throw PetError("同名连接器已存在，保留现有配置：" + server.name)
+            }
+            names.append(server.name)
+        }
+        let updated = (savedServers + servers).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        try persist(updated, project: scope != nil)
+        savedServers = updated
+        notify()
     }
     func setEnabled(_ id: String, _ enabled: Bool, workspace: String? = nil) throws {
         guard let index = savedServers.firstIndex(where: { $0.id == id && ($0.workspace == nil || $0.workspace == workspace) }) else { throw PetError("请先保存当前范围的连接器配置") }

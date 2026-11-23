@@ -16,7 +16,7 @@ import UniformTypeIdentifiers
     private let service: AgentMCP, workspace: String?, sessionOwner = "manager-" + UUID().uuidString
     private let table = AgentMCPSettingsTable(), editor = NSTextView(), tools = AgentMCPToolCatalog()
     private let configurationKind = NSSegmentedControl(labels: ["表单", "JSON"], trackingMode: .selectOne, target: nil, action: nil)
-    private let configurationHost = NSView(), jsonScroll = NSScrollView(), loadJSON = AgentDialogButton(title: "载入 JSON", target: nil, action: nil)
+    private let configurationHost = NSView(), jsonScroll = NSScrollView(), loadJSON = AgentDialogButton(title: "预览导入", target: nil, action: nil)
     private let jsonCard = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
     private var form: AgentMCPConfigForm?
     private var displayedConfiguration = 0
@@ -32,7 +32,7 @@ import UniformTypeIdentifiers
     private let detailActions = NSPopUpButton(frame: .zero, pullsDown: true)
     private let remove = NSMenuItem(title: "移除", action: nil, keyEquivalent: "")
     private let clearOAuth = NSMenuItem(title: "移除本机授权", action: nil, keyEquivalent: "")
-    private let add = NSPopUpButton(frame: .zero, pullsDown: true), importButton = NSButton(title: "导入 JSON", target: nil, action: nil)
+    private let add = NSPopUpButton(frame: .zero, pullsDown: true), importButton = NSButton(title: "导入 JSON 文件…", target: nil, action: nil)
     private lazy var state = AgentSettingsJSONFeedback("MCP 保存与连接状态", editor: editor)
     private let access = AgentSettingsStatusField("MCP 访问范围")
     var scopeWorkspace: String? { workspace }
@@ -55,6 +55,9 @@ import UniformTypeIdentifiers
         for (title, type) in [("本机程序", "stdio"), ("HTTP", "http"), ("SSE", "sse")] {
             let item = NSMenuItem(title: title, action: #selector(create(_:)), keyEquivalent: ""); item.target = self; item.representedObject = type; add.menu?.addItem(item)
         }
+        let paste = NSMenuItem(title: "粘贴 JSON…", action: #selector(pasteConfiguration), keyEquivalent: "")
+        paste.target = self
+        add.menu?.addItem(.separator()); add.menu?.addItem(paste)
         importButton.target = self; importButton.action = #selector(importJSON)
         search.placeholderString = "搜索连接器"; search.setAccessibilityLabel("搜索连接器"); search.target = self; search.action = #selector(filterCatalog); search.sendsSearchStringImmediately = true
         let actions = NSStackView(views: [search, NSView(), add, importButton]); actions.spacing = 8
@@ -371,7 +374,8 @@ import UniformTypeIdentifiers
         let current = items.first { $0.id == selected?.id }
         let connected = selected.map { service.connected($0.id, owner: sessionOwner) } ?? false
         editor.isEditable = (creating || selected != nil) && job == nil
-        form?.setEnabled(editor.isEditable, pluginLocked: selected?.plugin != nil); configurationKind.isEnabled = job == nil; loadJSON.isEnabled = job == nil
+        form?.setEnabled(editor.isEditable, pluginLocked: selected?.plugin != nil); configurationKind.isEnabled = job == nil
+        loadJSON.isEnabled = editor.isEditable && !editor.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         enabled.isEnabled = current != nil && current?.configured != false && current?.pluginEnabled != false && !dirty && job == nil; enabled.state = current?.enabled == true ? .on : .off
         let canDisconnect = selected != nil && (connected || job != nil)
         if connected { connection.title = "断开" }
@@ -393,12 +397,18 @@ import UniformTypeIdentifiers
         do { loadDraft(try service.document(type == "stdio" ? nil : AgentMCPServer(name: "新的连接器", type: type))) }
         catch { state.stringValue = error.localizedDescription }
     }
-    private func loadDraft(_ document: String) {
-        selected = nil; creating = true; dirty = true; select(nil); tools.string = ""; editor.string = document
+    @objc private func pasteConfiguration() {
+        guard job == nil, canLeave() else { return }
+        loadDraft("", json: true)
+    }
+    private func loadDraft(_ document: String, json: Bool = false) {
+        selected = nil; creating = true; dirty = !document.isEmpty
+        select(nil); tools.string = ""; editor.string = document
         draftViewport.reset()
-        configurationKind.selectedSegment = 0; prepareConfiguration()
+        configurationKind.selectedSegment = json ? 1 : 0; prepareConfiguration()
         editor.undoManager?.removeAllActions(); tabs.selectTabViewItem(at: 0); editor.scrollRangeToVisible(NSRange(location: 0, length: 0))
-        refreshState(); state.stringValue = "待保存"; showDetail(); focusDetail()
+        refreshState(); state.stringValue = dirty ? "待保存" : ""
+        showDetail(); focusDetail()
     }
     @objc private func saveConfig() {
         do {
@@ -466,6 +476,18 @@ import UniformTypeIdentifiers
     }
     private func bindImport(_ page: AgentMCPImportPage) {
         page.onLoad = { [weak self] document in self?.loadDraft(document) }
+        page.onImportBatch = { [weak self] documents in
+            guard let self, job == nil else { throw PetError("请先等待连接操作完成") }
+            let servers = try AgentMCPDataImport.prepareSettingsBatch(documents)
+            try service.addImportedBatch(servers, checking: workspace)
+        }
+        page.onBatchSaved = { [weak self] count in
+            guard let self else { return }
+            dirty = false
+            reload()
+            editingPage?.close()
+            listState.stringValue = "已导入 \(count) 项，初始停用"
+        }
     }
     private func canLeave() -> Bool {
         guard !dirty else { return AgentUnsavedChanges.discard("放弃未保存的配置？", discardTitle: "放弃") }

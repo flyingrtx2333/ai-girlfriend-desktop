@@ -199,6 +199,17 @@ enum AgentMCPDataImport {
         return value
     }
 
+    static func prepareSettingsBatch(_ documents: [String]) throws -> [AgentMCPServer] {
+        try documents.map { document in
+            let row = try AgentConfigurationJSON.object(Data(document.utf8))
+            guard let name = row["name"] as? String else { throw PetError("连接器缺少名称") }
+            let extra = Set(row.keys).subtracting(AgentMCP.configurationKeys)
+            guard extra.isEmpty else { throw PetError("\(name) 含未知配置字段：" + extra.sorted().joined(separator: ", ")) }
+            do { return try qoder(name, raw: row).server(id: UUID().uuidString, workspace: nil) }
+            catch { throw PetError(name + "：" + error.localizedDescription) }
+        }
+    }
+
     private static func declarations(_ source: AgentImportSource, data: Data) throws -> [String: Result<Definition, Error>] {
         if source == .qoder {
             let object: [String: Any]
