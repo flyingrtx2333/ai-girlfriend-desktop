@@ -9,7 +9,10 @@ struct AgentWorkspaceScope: Codable, Equatable, Sendable {
         guard (1...16).contains(paths.count), paths.contains(primary) else { throw PetError("请选择1至16个源文件夹，并指定其中一个为主文件夹") }
         let canonical = try paths.map { path -> String in
             guard path.hasPrefix("/"), path != "/", path.utf8.count < 8192, !path.contains("\0") else { throw PetError("请选择具体的项目文件夹") }
-            return try AgentFiles(workspace:path).root.path
+            guard let files = try? AgentFiles(workspace: path) else {
+                throw PetError("无法访问源文件夹“" + URL(fileURLWithPath: path).lastPathComponent + "”\n" + path)
+            }
+            return files.root.path
         }
         guard Set(canonical).count == canonical.count else { throw PetError("源文件夹重复，请保留一项") }
         for a in canonical { for b in canonical where a != b { guard !a.hasPrefix(b + "/") else { throw PetError("源文件夹不能互相包含，请选择独立目录") } } }

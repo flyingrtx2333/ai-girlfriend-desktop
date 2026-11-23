@@ -175,6 +175,41 @@ import Darwin
             } == true
         runtime.cancel(slotB)
         _ = await until { !alive(pidA) && !alive(pidB) }
+        let offline = seed("最后一轮批准后源目录失联", mode: .goal)
+        let offlineCall = command("offline-approved-goal", "printf 'checked\\n' >> offline-proof.txt\n/usr/bin/uname -s")
+        let secondary = root.appendingPathComponent("原次源文件夹"), parked = root.appendingPathComponent("暂离次源文件夹")
+        try FileManager.default.createDirectory(at: secondary, withIntermediateDirectories: false)
+        let scope = AgentWorkspaceScope(group: workspace.path, folders: [workspace.path, secondary.path], primary: workspace.path)
+        pending(offline, call: offlineCall, waiting: true)
+        tasks.update(offline) {
+            $0.workspaceScope = scope; $0.approvals[0].workspaceScope = scope; $0.permission = .review
+            $0.goalExecution = AgentGoalExecution(maximumTurns: 5, usedTurns: 5)
+        }
+        let beforeOffline = blocked
+        let proof = workspace.appendingPathComponent("offline-proof.txt")
+        try FileManager.default.moveItem(at: secondary, to: parked)
+        runtime.decide(taskID: offline, callID: offlineCall.id, decision: "allow")
+        let failure = tasks.task(offline)
+        checks["OfflineApprovalRecordsActualSourceAndDoesNotStart"] = failure?.status == .failed &&
+            failure?.events.last?.detail.contains(secondary.path) == true && failure?.pendingCalls.first?.id == offlineCall.id &&
+            failure?.approvals.first?.decision == "allow" && blocked == beforeOffline && !FileManager.default.fileExists(atPath: proof.path)
+        let coldStore = AgentStore(directory: profile, legacy: [], extensionHome: home, mcpKeychain: keychain, hookKeychain: keychain)
+        let coldRuntime = AgentRuntime(store: coldStore, keychain: keychain) { preferences }
+        coldRuntime.taskSettings = { settings }; coldRuntime.modelRequestCheck = { blocked += 1; throw PetError("续跑检查禁止模型请求") }
+        defer { coldRuntime.stopAll() }
+        let saved = coldStore.task(offline)
+        checks["OfflineApprovalSurvivesReloadWithOriginalTurnAndScope"] = saved?.approvals.first?.id == failure?.approvals.first?.id &&
+            saved?.workspaceScope == scope && saved?.goalExecution?.maximumTurns == 5 && saved?.goalExecution?.usedTurns == 5 &&
+            saved?.pendingCalls.first?.id == offlineCall.id
+        try FileManager.default.moveItem(at: parked, to: secondary)
+        coldRuntime.start(offline)
+        _ = await until { !coldRuntime.isExecuting(offline) }
+        let continued = coldStore.task(offline)
+        checks["ReconnectedApprovalExecutesOnceWithoutRenewingGoalOrAddingAnInput"] = continued?.status == .stopped &&
+            continued?.goalExecution?.maximumTurns == 5 && continued?.goalExecution?.usedTurns == 5 && blocked == beforeOffline &&
+            continued?.messages.filter { $0.toolCallID == offlineCall.id && $0.content.contains("Darwin") }.count == 1 &&
+            continued?.messages.filter { $0.role == "user" }.count == 1 &&
+            (try? String(contentsOf: proof, encoding: .utf8)) == "checked\n"
         checks["RuntimeFixturesCreateNoModelRepliesOrUsage"] = tasks.tasks.allSatisfy { !$0.messages.contains(where: \.isReply) && ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
         return checks
     }

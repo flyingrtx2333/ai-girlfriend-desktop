@@ -335,7 +335,19 @@ import Foundation
             catch { submissionError = error.localizedDescription; notifyChange(id); return }
         }
         do { try store.sideTasks.requireCanRun(task) } catch { submissionError = error.localizedDescription; notifyChange(id); return }
-        do { if task.workspaceScope != nil { _ = try AgentWorkspaceScope.roots(task) } } catch { submissionError = error.localizedDescription; notifyChange(id); return }
+        do { if task.workspaceScope != nil { _ = try AgentWorkspaceScope.roots(task) } }
+        catch {
+            let reason = error.localizedDescription
+            submissionError = reason
+            if [.ready, .stopped, .failed].contains(task.status) {
+                store.update(id) { record in
+                    record.status = .failed
+                    record.events.append(AgentEvent(kind: "state", title: "任务尚未启动", detail: reason, status: "failed"))
+                }
+            }
+            notifyChange(id)
+            return
+        }
         do { try AgentMCPSelection.validate(task,store:store) } catch { submissionError = error.localizedDescription; notifyChange(id); return }
         guard task.pendingFileRollback == nil else { submissionError = "请先恢复未完成的文件撤回"; notifyChange(id); return }
         do { try store.projectKnowledge.checkTask(task) }
@@ -343,7 +355,9 @@ import Foundation
         if let reason = store.offices.unsavedReason(task:task) {
             store.update(id) { $0.status = .stopped; $0.events.append(AgentEvent(kind: "state", title: "办公文档未保存", detail: reason, status: "stopped")) }; notifyChange(id); return
         }
-        let launch = task.queuedRun ?? AgentQueuedRun(previousStatus: task.status, continuingGoal: continuingGoal)
+        // A pending tool batch belongs to a model turn already counted in the task record.
+        let launch = AgentQueuedRun(previousStatus: task.queuedRun?.previousStatus ?? task.status,
+                                    continuingGoal: (task.queuedRun?.continuingGoal ?? continuingGoal) || !task.pendingCalls.isEmpty)
         if !hasSlot(task) {
             if !queued.contains(id) {
                 queued.append(id)
@@ -368,7 +382,7 @@ import Foundation
                 let continuation = "继续完成原任务，保留之前的约束。"
                 let last = record.messages.dropFirst(AgentContext.offset(record)).last { $0.responseState == nil && $0.hookRejected != true }
                 let hasContinuation = last?.role == "user" && last?.nativeContext == true && last?.content == continuation
-                if task.queuedCount == 0, task.unansweredQueuedMessageID == nil || task.unansweredQueuedMessageID != latest?.id, !hasContinuation {
+                if task.pendingCalls.isEmpty, task.queuedCount == 0, task.unansweredQueuedMessageID == nil || task.unansweredQueuedMessageID != latest?.id, !hasContinuation {
                     record.messages.append(AgentMessage(role: "user", content: continuation, nativeContext: true))
                 }
                 record.goalAccepted = nil
