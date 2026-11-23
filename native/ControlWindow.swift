@@ -1203,6 +1203,8 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         sendButton.title = ""; sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: nil); sendButton.imagePosition = .imageOnly; sendButton.isBordered = false; sendButton.contentTintColor = .white; sendButton.wantsLayer = true; sendButton.layer?.backgroundColor = AgentWorkbenchTheme.accent.cgColor; sendButton.layer?.cornerRadius = 8; sendButton.setAccessibilityLabel("发送"); sendButton.target = self; sendButton.action = #selector(send)
         sendButton.widthAnchor.constraint(equalToConstant: 34).isActive = true; sendButton.heightAnchor.constraint(equalToConstant: 32).isActive = true
         executionLocation.isBordered = false; executionLocation.font = .systemFont(ofSize: 13); executionLocation.target = self; executionLocation.action = #selector(showExecutionLocation); executionLocation.imagePosition = .imageTrailing; executionLocation.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
+        executionLocation.cell?.lineBreakMode = .byTruncatingTail
+        executionLocation.setContentCompressionResistancePriority(.required, for: .horizontal)
         executionLocation.setAccessibilityLabel("执行位置")
         branchControl.isBordered = false; branchControl.font = .systemFont(ofSize: 12); branchControl.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil); branchControl.imagePosition = .imageLeading; branchControl.target = self; branchControl.action = #selector(showAgentGit); branchControl.setAccessibilityLabel("当前分支"); branchControl.cell?.lineBreakMode = .byTruncatingMiddle; branchControl.widthAnchor.constraint(lessThanOrEqualToConstant: 155).isActive = true
         entryLeading.orientation = .horizontal; entryLeading.spacing = 8; entryLeading.addArrangedSubview(attachmentButton); entryLeading.addArrangedSubview(taskMCPContext); entryLeading.addArrangedSubview(executionLocation); entryLeading.addArrangedSubview(branchControl); entryLeading.addArrangedSubview(AgentSettingsPopupFrame(modePopup, outlined: false)); entryLeading.addArrangedSubview(AgentSettingsPopupFrame(permissionPopup, outlined: false))
@@ -1977,6 +1979,8 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         checks["FindShortcutRevealsHistoryAndKeepsDocumentAndQuestion"] = visible(taskFind) && isMessageSearchVisible &&
             messageSearch?.messageID == tasks.task(question)?.messages.first?.id && !taskWorkspace.requested &&
             taskWorkspace.currentController === document && composer.string == draft && tasks.task(question)?.approvals.last?.decision == nil
+        checks["ExecutionLocationFitsOnOneLineAfterReturningFromDocument"] = visible(executionLocation) && executionLocation.cell?.wraps == false &&
+            executionLocation.bounds.width + 0.5 >= executionLocation.intrinsicContentSize.width
         taskFind.close()
         showTaskDocument("README.md")
 
@@ -7002,6 +7006,9 @@ extension ControlWindow {
             value["workspaceEditor"] = workspaceEditor?.checkState() ?? ["visible":false]
             value["unsavedConfirmation"] = AgentUnsavedChanges.checkState()
             value["taskFind"] = taskFind.checkState()
+            value["executionLocation"] = ["title": executionLocation.title, "enabled": executionLocation.isEnabled,
+                                          "visible": !executionLocation.isHiddenOrHasHiddenAncestor, "singleLine": executionLocation.cell?.wraps == false,
+                                          "width": executionLocation.bounds.width, "intrinsicWidth": executionLocation.intrinsicContentSize.width]
             value["mcpUserInput"] = ["visible": !mcpInputRow.isHidden, "requestID": agentTaskID.flatMap { companion?.agentStore?.mcp.userInputs.first(taskID: $0)?.id } as Any? ?? NSNull(), "sheet": false, "dialog": mcpInputPanel?.presentationState() ?? ["visible": false]] as [String: Any]
             if companion?.checkDirectory != nil {
                 value["terminalPanel"] = terminalPanel?.verificationSnapshot() ?? ["shown": false, "states": []]
