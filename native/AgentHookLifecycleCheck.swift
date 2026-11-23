@@ -189,6 +189,29 @@ import AppKit
         _ = try await settle(branchRuntime, manual)
         checks["manualContextReachesNextActualRequest"] = try lastRequest("PUBLIC_HOOK_compact") && lastRequest("PUBLIC_LATEST_REQUIREMENT") && lastRequest(summary)
 
+        let recoveryProfile = output.appendingPathComponent("interrupted-compaction-profile")
+        let liveRead = AgentStore(directory: recoveryProfile, legacy: [], extensionHome: home)
+        var interruption = compacted
+        interruption.events.append(AgentEvent(kind: "context", title: "整理上下文", detail: "记录 4...6", status: "running"))
+        let recoveryFile = liveRead.directory.appendingPathComponent(manual + ".json")
+        let interruptionBytes = try JSONEncoder().encode(interruption)
+        try interruptionBytes.write(to: recoveryFile, options: .atomic)
+        liveRead.archiveIsBusy = { $0 == manual }
+        checks["ReadingANonresidentTaskDoesNotInterruptItsLiveAnalysis"] = try liveRead.task(manual)?.events.last?.status == "running" &&
+            Data(contentsOf: recoveryFile) == interruptionBytes
+
+        let reopenedCompaction = AgentStore(directory: recoveryProfile, legacy: [], extensionHome: home)
+        guard let recovered = reopenedCompaction.task(manual) else { throw PetError("中断后的压缩任务未读回") }
+        checks["ColdReadStopsInterruptedCompactionAndKeepsSavedContext"] = recovered.status == compacted.status &&
+            recovered.contextSummary == compacted.contextSummary && recovered.contextThroughID == compacted.contextThroughID &&
+            recovered.contextManualThroughID == compacted.contextManualThroughID && recovered.messages.map(\.id) == originals &&
+            recovered.events.last?.id == interruption.events.last?.id && recovered.events.last?.status == "stopped" &&
+            recovered.events.dropLast().map(\.status) == compacted.events.map(\.status)
+        let recoveredBytes = try Data(contentsOf: recoveryFile)
+        let readAgain = AgentStore(directory: recoveryProfile, legacy: [], extensionHome: home)
+        checks["InterruptedCompactionRecoveryIsDurableAndIdempotent"] = try recoveredBytes != interruptionBytes &&
+            readAgain.task(manual)?.events.last?.detail == recovered.events.last?.detail && Data(contentsOf: recoveryFile) == recoveredBytes
+
         let (automatic, autoOriginals) = seed("公开自动压缩", exchanges: 7)
         guard branchRuntime.submit("PUBLIC_AFTER_AUTOMATIC", taskID: automatic) else { throw PetError("自动压缩样例未启动") }
         let auto = try await settle(branchRuntime, automatic), autoEvents = events(auto)

@@ -172,10 +172,11 @@ import Foundation
             (awaitingSlot || task.status == .running || hasWaitingSupplements || task.pendingFileCapture != nil ||
             !task.unfinishedResponseIDs.isEmpty || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
         let recoveredEventStates = Self.recoverLegacyToolEvents(&task)
+        let interruptedCompaction = archiveIsBusy?(id) != true && Self.recoverCompactionEvents(&task)
         if interrupted { Self.recover(&task) }
         cache[id] = task
         rememberStoredTask(id, hash: AgentFiles.hash(data))
-        if interrupted || recoveredEventStates {
+        if interrupted || recoveredEventStates || interruptedCompaction {
             if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index] = Self.metadata(task) }
             recoveringRecords.insert(id); defer { recoveringRecords.remove(id) }
             do { try save(id) } catch { writeError = error.localizedDescription }
@@ -219,6 +220,15 @@ import Foundation
         } catch { writeError = error.localizedDescription; return false }
     }
     private static let interruptedOperation = "应用中断，此操作的执行结果未知。继续前检查实际状态，不直接重放。"
+    private static func recoverCompactionEvents(_ task: inout AgentTaskRecord) -> Bool {
+        var recovered = false
+        for index in task.events.indices where task.events[index].kind == "context" && task.events[index].status == "running" {
+            task.events[index].status = "stopped"
+            task.events[index].detail += "\n应用中断，可重新压缩。原始记录已保留。"
+            recovered = true
+        }
+        return recovered
+    }
     private static func recoverLegacyToolEvents(_ task: inout AgentTaskRecord) -> Bool {
         guard task.events.contains(where: { $0.status == "waiting" && $0.toolCallID != nil }) else { return false }
         let interrupted = Set(task.messages.lazy.filter { $0.role == "tool" && $0.content == interruptedOperation }.compactMap(\.toolCallID))

@@ -230,7 +230,9 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
         action.toolTip = reason
         stop.isHidden = analysis == nil
         let problem = action.isHidden ? nil : runtime.analysisError(taskID, recap: recap)
-        let status = analysis ?? (action.isHidden ? "" : problem ?? reason ?? "")
+        let interrupted = !recap && task.events.last(where: { $0.kind == "context" })?.status == "stopped"
+        let lastCompactionStatus = interrupted ? "上次压缩已中断" : nil
+        let status = analysis ?? (action.isHidden ? "" : problem ?? reason ?? lastCompactionStatus ?? "")
         if state.stringValue != status { state.stringValue = status }
         state.textColor = problem != nil && analysis == nil ? AgentDialogStyle.error : AgentWorkbenchTheme.secondaryText
         footer.isHidden = action.isHidden && stop.isHidden && state.isHidden
