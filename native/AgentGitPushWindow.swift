@@ -14,8 +14,9 @@ import AppKit
     private lazy var commitFrame = AgentSettingsPopupFrame(inspectCommit, outlined: true, maximumWidth: nil)
     private var remotes: [AgentGitRemote] = [], remoteHash = "", review: AgentGitPushReview?, job: Task<Void, Never>?, sending = false
     private var remotePage: AgentGitRemotePage?, pushContent: NSView?
+    private var standaloneChild: AgentSettingsPageController?
     private var draft: AgentGitDraftRecovery.Push?, scope: AgentGitDraftRecovery.Scope?
-    private var restoreDraftFocus = false
+    private var restoreDraftFocus = false, returnToPush = false
     private let activityOwner = UUID()
     private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: taskID, busy: busy) } } }
     var onReceipt: ((AgentGitPushReceipt) -> Void)?
@@ -70,7 +71,8 @@ import AppKit
     override func settingsDidAppear() {
         super.settingsDidAppear()
         if restoreDraftFocus { requestDraftFocus() }
-        else if !busy { presentingWindow?.makeFirstResponder(add) }
+        else if !busy { presentingWindow?.makeFirstResponder(returnToPush && push.isEnabled ? push : add) }
+        returnToPush = false
     }
     var hasDraft: Bool { draft != nil }
     var recoveryRemoteForm: AgentGitRemotePage? { remotePage }
@@ -89,7 +91,7 @@ import AppKit
         displayMode.isHidden = review == nil; displayMode.isEnabled = !busy
         wrap.isHidden = diffView.patch.isEmpty; wrap.isEnabled = !busy
         changeDisplay()
-        push.title = review?.rewrite == nil ? "推送" : "强制推送…"
+        push.title = review?.rewrite == nil ? "推送…" : "强制推送…"
         push.hasDestructiveAction = review?.rewrite != nil
         push.isEnabled = !busy && writable && review?.requiresUpdate == true
         verify.isHidden = store.task(taskID)?.gitPushReceipt == nil; verify.isEnabled = !busy
@@ -100,7 +102,7 @@ import AppKit
     func windowDidBecomeKey(_ notification: Notification) { controls() }
     func windowWillClose(_ notification: Notification) { parkDraft(); restorePushPage(); job?.cancel(); git.cancel(); busy = false }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if settingsHostWindow == nil, let remotePage, !remotePage.canLeaveSettings() { return false }
+        if let standaloneChild, !standaloneChild.canLeaveSettings() { return false }
         guard sending else { return true }
         let alert = AgentConfirmation(); alert.messageText = "停止等待并关闭？"; alert.informativeText = "远端可能已收到提交。关闭后请核对上次结果。"; alert.addButton(withTitle: "停止并关闭").hasDestructiveAction = true; alert.addButton(withTitle: "继续等待")
         return alert.runModal() == .alertFirstButtonReturn
@@ -250,17 +252,39 @@ import AppKit
         do { try scope.requireCurrent(store.task(taskID), preserving: "请重新检查远端") }
         catch { invalidate(); showError(error); return }
         let rewriting = value.rewrite != nil
-        let alert = AgentConfirmation()
-        alert.messageText = rewriting ? "强制推送到 \(value.targetBranch)？" : "推送 \(value.commitCount) 项提交？"
-        alert.informativeText = value.summary
-        alert.addButton(withTitle: rewriting ? "强制推送" : "推送").hasDestructiveAction = rewriting
-        alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        var details = "远端地址\n\(value.endpoint.location)\n\n"
+        details += "本地分支\n\(value.sourceBranch)\n\(value.sourceHead)\n\n"
+        details += "目标分支\n\(value.targetBranch)\n\(value.remoteHead ?? "新分支")\n\n待推送提交 · \(value.commitCount) 项"
+        if value.uncommittedFiles > 0 { details += "\n未提交文件留在本地 · \(value.uncommittedFiles) 个" }
+        if value.setUpstream { details += "\n设为上游" }
+        let title = rewriting ? "确认强制推送" : "确认推送"
+        let notice = value.rewrite.map { "将从此远端分支移出 \($0.commitCount) 项提交。" } ?? ""
+        let page = AgentSettingsReviewPage(title: value.remote, metadata: value.targetBranch, notice: notice,
+                                           sections: [("推送详情", details)], applyTitle: title)
+        page.window?.title = title
+        page.useSafeConfirmation(destructive: rewriting)
+        page.onApply = { [weak self, weak page] in
+            guard let self else { throw PetError("推送审阅已关闭") }
+            do {
+                guard !busy, writable, review?.hash == value.hash else { throw PetError("推送审阅已变化，请返回后检查远端") }
+                try scope.requireCurrent(store.task(taskID), preserving: "请返回后检查远端")
+            } catch {
+                invalidate(); showError(error); page?.showPreviewFailure(error)
+                throw error
+            }
+        }
+        page.onApplied = { [weak self] in self?.executePush(value, scope: scope) }
+        do {
+            try presentPushChild(page)
+            returnToPush = true
+        } catch { showError(error) }
+    }
+    private func executePush(_ value: AgentGitPushReview, scope: AgentGitDraftRecovery.Scope) {
         busy = true; sending = true; controls(); state.textColor = AgentWorkbenchTheme.secondaryText; state.stringValue = "推送中…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
-                let receipt = try await git.push(reviewHash: value.hash, draftScope: scope, confirmRewrite: rewriting)
+                let receipt = try await git.push(reviewHash: value.hash, draftScope: scope, confirmRewrite: value.rewrite != nil)
                 if receipt.verified { discardDraft(); onDraftChange?() }
                 state.stringValue = receipt.verified ? "远端已核对 · " + String(receipt.sourceHead.prefix(12)) + (receipt.localUpdate.isEmpty ? "" : " · " + receipt.localUpdate) : "结果待核对，请核对上次结果"
                 count.stringValue = receipt.verified ? (value.rewrite.map { "已从远端分支移除 \($0.commitCount) 项 · 已推送 \(value.commitCount) 项" } ?? "已推送 \(value.commitCount) 项") : ""
@@ -313,29 +337,36 @@ import AppKit
             guard let self else { return }
             remotePage = nil; onDraftChange?()
         }
+        try presentPushChild(page)
+        remotePage = page; onDraftChange?()
+    }
+    private func presentPushChild(_ page: AgentSettingsPageController) throws {
         if settingsHostWindow != nil {
             presentSettingsChild(page)
-            guard page.settingsHostWindow != nil else { page.endSettingsHosting(); throw PetError("工作区当前无法打开远端草稿") }
-            remotePage = page; onDraftChange?(); return
+            guard page.settingsHostWindow != nil else { page.endSettingsHosting(); throw PetError("当前无法打开推送详情") }
+            return
         }
-        guard let window, let original = window.contentView, let body = page.settingsContent(in: window) else { throw PetError("无法打开添加远端表单") }
-        let back = NSButton(title: "返回推送", target: self, action: #selector(closeRemotePage))
+        guard standaloneChild == nil, let window, let original = window.contentView,
+              let body = page.settingsContent(in: window) else { throw PetError("当前无法打开推送详情") }
+        let back = NSButton(title: "返回推送", target: self, action: #selector(closeStandaloneChild))
         back.isBordered = false; back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil); back.imagePosition = .imageLeading; back.setAccessibilityLabel("返回推送"); back.keyEquivalent = "\u{1b}"
-        let heading = NSTextField(labelWithString: "添加 Git 远端"); heading.font = .systemFont(ofSize: 18, weight: .semibold)
+        let heading = NSTextField(labelWithString: page.window?.title ?? "推送详情"); heading.font = .systemFont(ofSize: 18, weight: .semibold)
         let column = NSStackView(views: [back, heading, body]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 12; column.distribution = .fill
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18), column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18), back.heightAnchor.constraint(equalToConstant: 28), body.widthAnchor.constraint(equalTo: column.widthAnchor)])
-        pushContent = original; remotePage = page
-        page.onSettingsClose = { [weak self] in self?.closeRemotePage() }
+        pushContent = original; standaloneChild = page
+        page.onSettingsClose = { [weak self] in self?.closeStandaloneChild() }
         window.contentView = content; content.layoutSubtreeIfNeeded(); page.settingsDidAppear()
     }
-    @objc private func closeRemotePage() {
-        guard remotePage?.canLeaveSettings() == true else { return }; restorePushPage()
-        if add.isEnabled { presentingWindow?.makeFirstResponder(add) }
+    @objc private func closeStandaloneChild() {
+        guard standaloneChild?.canLeaveSettings() == true else { return }
+        restorePushPage()
+        settingsDidAppear()
     }
     private func restorePushPage() {
-        guard let pushContent, let page = remotePage else { return }
-        self.pushContent = nil; page.endSettingsHosting(); window?.contentView = pushContent
+        guard let pushContent, let page = standaloneChild else { return }
+        self.pushContent = nil; standaloneChild = nil
+        page.endSettingsHosting(); window?.contentView = pushContent
     }
     func checkLayout(_ output: URL) async -> [String: Bool] {
         let deadline = Date().addingTimeInterval(20)

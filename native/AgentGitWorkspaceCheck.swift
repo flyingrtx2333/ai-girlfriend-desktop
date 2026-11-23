@@ -106,7 +106,30 @@ import AppKit
             let pushState = push.workspaceReadback(); report["preparedPush"] = pushState
             checks["inlinePushPreparationReadsRealRemote"] = pushState["usesMainWindow"] as? Bool == true && pushState["pushEnabled"] as? Bool == true && (pushState["reviewHash"] as? String)?.isEmpty == false
             guard let pushContent = push.pageContentView,
-                  let targetField = gitReviewSubviews(pushContent).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == "推送目标分支" }),
+                  let action = gitReviewSubviews(pushContent).compactMap({ $0 as? NSButton }).first(where: { $0.title == "推送…" }),
+                  let diff = gitReviewSubviews(pushContent).compactMap({ $0 as? NSTextView }).first(where: { $0.accessibilityLabel() == "待推送 实际差异" }) else {
+                throw PetError("实际推送审阅入口或差异不可用")
+            }
+            let diffSelection = (diff.string as NSString).range(of: "selected-staged")
+            guard diffSelection.location != NSNotFound else { throw PetError("待推送差异缺少实际提交内容") }
+            diff.setSelectedRange(diffSelection); diff.scrollRangeToVisible(diffSelection)
+            action.performClick(nil)
+            guard let confirmation = host.currentController as? AgentSettingsReviewPage, let page = confirmation.pageContentView,
+                  let cancel = gitReviewSubviews(page).compactMap({ $0 as? NSButton }).first(where: { $0.title == "取消" }),
+                  let reader = gitReviewSubviews(page).compactMap({ $0 as? NSTextView }).first(where: { $0.accessibilityLabel() == "设置审阅正文" }) else {
+                throw PetError("确认推送未进入原工作区")
+            }
+            checks["pushConfirmationShowsFullDestinationAndHeadInSameWindow"] = confirmation.presentingWindow === control.window &&
+                control.window?.hasBlockingDialog == false && reader.string.contains(head) &&
+                (pushState["address"] as? String).map { !$0.isEmpty && reader.string.contains($0) } == true
+            checks["pushConfirmationDefaultsToCancel"] = control.window?.firstResponder === cancel && tasks.task(fixture.taskID)?.gitPushReceipt == nil
+            await inspect("push-confirmation")
+            cancel.performClick(nil)
+            let cancelled = push.workspaceReadback()
+            checks["pushConfirmationCancelKeepsReviewAndSelection"] = host.currentController === push && diff.selectedRange() == diffSelection &&
+                cancelled["diff"] as? String == pushState["diff"] as? String && cancelled["reviewHash"] as? String == pushState["reviewHash"] as? String &&
+                control.window?.firstResponder === action && tasks.task(fixture.taskID)?.gitPushReceipt == nil
+            guard let targetField = gitReviewSubviews(pushContent).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == "推送目标分支" }),
                   control.window?.makeFirstResponder(targetField) == true,
                   let targetEditor = targetField.currentEditor() as? NSTextView else { throw PetError("推送目标分支输入框不可用") }
             let target = "release/中文😀", selection = (target as NSString).range(of: "中文😀")

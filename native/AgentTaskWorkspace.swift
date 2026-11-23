@@ -2,7 +2,17 @@ import AppKit
 
 @MainActor final class AgentWorkspacePageView: AgentThemeView {
     var onResize: (() -> Void)?
+    var onReturn: (() -> Void)?
     private var previousSize: NSSize?
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if let onReturn, event.charactersIgnoringModifiers == "\r",
+           event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+           (window?.firstResponder as? NSView)?.isDescendant(of: self) == true {
+            onReturn()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         if previousSize != bounds.size { needsUpdateConstraints = true }

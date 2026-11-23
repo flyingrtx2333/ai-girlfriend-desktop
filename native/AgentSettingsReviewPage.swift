@@ -152,6 +152,11 @@ import AppKit
         sections = values; contentReady = true; status.stringValue = ""
         reload(selectedTitle: selected)
     }
+    func useSafeConfirmation(destructive: Bool) {
+        prefersCancelFocus = true
+        apply.hasDestructiveAction = destructive
+        (pageContentView as? AgentWorkspacePageView)?.onReturn = { [weak self] in self?.cancelReview() }
+    }
     func setApplyTitle(_ title: String) { apply.title = title }
     func showPreviewFailure(_ error: Error) {
         status.showSaveFailure(error); contentReady = false; updateApply()
