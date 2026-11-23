@@ -174,7 +174,7 @@ enum AgentGitDiffRows {
     var onSplitScroll: (() -> Void)?
     override init(frame: NSRect) {
         super.init(frame: frame)
-        fill = AgentWorkbenchTheme.line
+        fill = AgentWorkbenchTheme.surface
         measuringCell.font = font; measuringCell.wraps = true; measuringCell.isScrollable = false; measuringCell.usesSingleLineMode = false; measuringCell.lineBreakMode = .byCharWrapping
         text.isEditable = false; text.isSelectable = true; text.isRichText = false; text.font = font; text.textContainerInset = NSSize(width: 12, height: 12)
         text.isVerticallyResizable = true; text.backgroundColor = AgentWorkbenchTheme.surface; text.setAccessibilityLabel("Git 实际差异")
@@ -198,7 +198,20 @@ enum AgentGitDiffRows {
             NSLayoutConstraint.activate([scroll.topAnchor.constraint(equalTo: split.topAnchor), scroll.bottomAnchor.constraint(equalTo: split.bottomAnchor)])
         }
         for scroll in [unified, oldScroll, newScroll] { scroll.borderType = .noBorder; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false }
-        NSLayoutConstraint.activate([oldScroll.leadingAnchor.constraint(equalTo: split.leadingAnchor), newScroll.leadingAnchor.constraint(equalTo: oldScroll.trailingAnchor, constant: 1), newScroll.trailingAnchor.constraint(equalTo: split.trailingAnchor), oldScroll.widthAnchor.constraint(equalTo: newScroll.widthAnchor)])
+        let splitDivider = AgentThemeView(fill: AgentWorkbenchTheme.line)
+        split.addSubview(splitDivider)
+        splitDivider.translatesAutoresizingMaskIntoConstraints = false
+        splitDivider.setAccessibilityElement(false)
+        NSLayoutConstraint.activate([
+            oldScroll.leadingAnchor.constraint(equalTo: split.leadingAnchor),
+            splitDivider.leadingAnchor.constraint(equalTo: oldScroll.trailingAnchor),
+            splitDivider.widthAnchor.constraint(equalToConstant: 1),
+            splitDivider.topAnchor.constraint(equalTo: split.topAnchor),
+            splitDivider.bottomAnchor.constraint(equalTo: split.bottomAnchor),
+            newScroll.leadingAnchor.constraint(equalTo: splitDivider.trailingAnchor),
+            newScroll.trailingAnchor.constraint(equalTo: split.trailingAnchor),
+            oldScroll.widthAnchor.constraint(equalTo: newScroll.widthAnchor)
+        ])
         for view in [unifiedHost, split] {
             addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: leadingAnchor), view.trailingAnchor.constraint(equalTo: trailingAnchor), view.topAnchor.constraint(equalTo: topAnchor), view.bottomAnchor.constraint(equalTo: bottomAnchor)])

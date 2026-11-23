@@ -296,6 +296,11 @@ import AppKit
                 checks[key + "-largeSplitNumbersFitAndRowsStayAligned"] = (viewer.readingReadback()["splitNumberWidth"] as? CGFloat ?? 0) >= ceil(("100004" as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)]).width) + 12 && viewer.checkSplitLayout().values.allSatisfy { $0 }
                 viewer.splitMode = false; viewer.show("此来源没有变更", oldTitle: "HEAD", newTitle: "工作区"); await settle()
                 checks[key + "-plainStatusDoesNotShowPhantomLineNumbers"] = viewer.readingReadback()["gutterVisible"] as? Bool == false && viewer.patch == "此来源没有变更"
+                viewer.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    viewer.updateLayer()
+                    checks[key + "-shortDiffCanvasUsesEditorSurface"] =
+                        viewer.layer?.backgroundColor == AgentThemeContext.resolve(AgentWorkbenchTheme.surface, in: viewer).cgColor
+                }
                 viewer.show(patch, oldTitle: "HEAD", newTitle: "工作区"); await settle()
                 display.selectedSegment = 1; display.sendAction(display.action, to: display.target)
                 wrap.performClick(nil); await settle()
