@@ -117,7 +117,8 @@ import WebKit
     var workspaceHasUnsavedChanges: Bool { annotationWindow?.hasPendingChanges == true }
     var recoveryAnnotation: AgentBrowserAnnotationWindow? { annotationWindow.flatMap { $0.workspaceIsClosed ? nil : $0 } }
     var hasIndependentAnnotation: Bool { recoveryAnnotation?.hasIndependentWindow == true }
-    var canPreserveForQuit: Bool { !closed && !busy && !restoringRecovery && captureJob == nil && !capturingViewport && recoveryAnnotation?.canPreserveForQuit != false }
+    var canPreserveForQuit: Bool { !closed && !busy && !restoringRecovery && !hasPageDialog && captureJob == nil && !capturingViewport && recoveryAnnotation?.canPreserveForQuit != false }
+    private var hasPageDialog: Bool { pages.contains(where: \.hasPageDialog) }
     private var current: AgentBrowserPage { pages.first { $0.id == tabs.selectedTabViewItem?.identifier as? String } ?? pages[0] }
     var web: WKWebView { current.web }
 
@@ -204,6 +205,10 @@ import WebKit
         page.downloads = downloads
         page.onChange = { [weak self] in guard let self, !restoringRecovery else { return }; updateControls(); onWorkspaceChange?() }
         let parentID = page.id
+        page.allowsPageDialog = { [weak self] in
+            guard let self, !closed, !restoringRecovery, !pages.isEmpty, isPageVisible else { return false }
+            return current.id == parentID
+        }
         page.onNewWindow = { [weak self] configuration, _, origins in
             guard let self, !self.closed, self.pages.contains(where: { $0.id == parentID }) else { return nil }
             do { return try self.addPage(configuration: configuration, origins: origins, activate: self.current.id == parentID).web }
@@ -244,10 +249,15 @@ import WebKit
         return try await action()
     }
     func tabView(_ tabView: NSTabView, shouldSelect tabViewItem: NSTabViewItem?) -> Bool { selecting || !busy }
-    func tabView(_ tabView: NSTabView, willSelect tabViewItem: NSTabViewItem?) { if !pages.isEmpty { current.invalidate() } }
+    func tabView(_ tabView: NSTabView, willSelect tabViewItem: NSTabViewItem?) {
+        guard !pages.isEmpty else { return }
+        if tabViewItem?.identifier as? String != current.id { current.dismissPageDialog() }
+        current.invalidate()
+    }
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) { if !pages.isEmpty { current.invalidate(); updateControls() } }
     func stop() { for page in pages { page.stop() }; updateControls() }
     func prepareWorkspaceNavigation() -> Bool {
+        if hasPageDialog { presentingWindow?.agentDialog?.focusDialog(); return false }
         guard !capturingViewport, captureJob == nil else { state.stringValue = "正在截取网页，请稍候"; return false }
         pages.forEach { $0.invalidate() }; return true
     }
@@ -455,6 +465,7 @@ import WebKit
     func captureWorkspaceRecovery() async throws -> AgentWorkspaceRecovery.Page {
         let deadline = Date().addingTimeInterval(30)
         while busy || captureJob != nil {
+            guard !hasPageDialog else { throw PetError("网页正等待输入或确认，上次恢复记录已保留") }
             try Task.checkCancellation(); guard !closed, Date() < deadline else { throw PetError("浏览器操作尚未结束，原恢复记录已保留") }
             try await Task.sleep(for: .milliseconds(50))
         }

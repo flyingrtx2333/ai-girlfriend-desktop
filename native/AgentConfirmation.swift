@@ -3,6 +3,7 @@ import AppKit
 @MainActor final class AgentConfirmation: AgentDialogController {
     var messageText = "", informativeText = ""
     var primaryButtonIndex: Int?, cancellationButtonIndex: Int?, defaultButtonIndex: Int?
+    var textInput: AgentDialogTextField?
     private(set) var buttons: [NSButton] = []
     private var built = false, cancelIndex = 0
     private var standalone: NSPanel?
@@ -43,6 +44,10 @@ import AppKit
             text.frame = NSRect(x: 0, y: 0, width: 392, height: max(20, ceil(height) + 4))
             scroll.heightAnchor.constraint(equalToConstant: min(160, max(20, ceil(height) + 4))).isActive = true; column.addArrangedSubview(scroll)
         }
+        if let textInput {
+            textInput.heightAnchor.constraint(equalToConstant: 32).isActive = true
+            column.addArrangedSubview(textInput)
+        }
         for (index, button) in buttons.enumerated() {
             if let button = button as? AgentDialogButton { AgentDialogStyle.action(button, prominent: index == primary) }
             if index == selected { button.keyEquivalent = "\r"; button.keyEquivalentModifierMask = [] }
@@ -54,7 +59,8 @@ import AppKit
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 24), column.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -24), column.topAnchor.constraint(equalTo: body.topAnchor, constant: 18), column.bottomAnchor.constraint(equalTo: body.bottomAnchor, constant: -20)])
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         preferredContentSize = NSSize(width: 440, height: max(150, column.fittingSize.height + 38))
-        initialFocus = buttons[selected]; defaultButton = buttons[selected]
+        initialFocus = (textInput as NSView?) ?? buttons[selected]
+        selectInitialText = textInput != nil; defaultButton = buttons[selected]
     }
     @discardableResult func runModal(for requestedOwner: NSWindow? = nil) -> NSApplication.ModalResponse {
         build()

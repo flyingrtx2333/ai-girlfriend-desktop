@@ -503,6 +503,7 @@ import WebKit
         }
         if CommandLine.arguments.contains("--browser-check") {
             if CommandLine.arguments.contains("--browser-visual") { await runAgentBrowserVisualCheck(output) }
+            else if CommandLine.arguments.contains("--browser-dialogs") { await runBrowserDialogCheck(output) }
             else { await runAgentBrowserCheck(output) }
             NSApp.terminate(nil); return
         }

@@ -6,6 +6,7 @@ import WebKit
     let web: WKWebView
     var onChange: (() -> Void)?
     var onNewWindow: ((WKWebViewConfiguration, WKNavigationAction, Set<String>) -> WKWebView?)?
+    var allowsPageDialog: (() -> Bool)?
     weak var downloads: AgentBrowserDownloads?
     private(set) var status = "" { didSet { onChange?() } }
     private var revision: String?, snapshot: [String: Any]?, lastObservation: [String: Any]?, pageError: String?, busy = false, closed = false
@@ -15,6 +16,8 @@ import WebKit
     private let recoveryEvents = AgentBrowserRecoveryEvents()
     private var pendingRecovery: AgentBrowserRecoveryState.Page?
     private var restoringView: Task<Void, Never>?
+    private weak var pageDialog: AgentConfirmation?
+    var hasPageDialog: Bool { pageDialog != nil }
     private struct DownloadIntent {
         let origin: String
         let fromAddress: Bool
@@ -25,7 +28,7 @@ import WebKit
     var recoveryURL: String? { web.url?.absoluteString ?? pendingRecovery?.url }
     var recoveryTitle: String { web.title.flatMap { $0.isEmpty ? nil : $0 } ?? pendingRecovery?.title ?? "" }
     var tabReference: AgentBrowserTabReference? {
-        guard !closed, !busy, !web.isLoading, pageError == nil, pendingRecovery == nil,
+        guard !closed, !busy, !web.isLoading, !hasPageDialog, pageError == nil, pendingRecovery == nil,
               let url = web.url, (try? AgentBrowser.url(url.absoluteString)) != nil else { return nil }
         let title = String((web.title ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(160))
         return AgentBrowserTabReference(id: id, documentID: documentID, url: url.absoluteString, title: title.isEmpty ? (url.host ?? url.absoluteString) : title)
@@ -74,13 +77,18 @@ import WebKit
     private func notify() { onChange?() }
     private func begin() throws {
         try Task.checkCancellation(); guard !closed, !busy else { throw PetError(closed ? "标签页已关闭，请重新打开" : "标签页正在执行操作") }
+        guard !hasPageDialog else { throw PetError("网页正等待输入或确认，请先处理当前对话框") }
         busy = true; pageError = nil; explicitAddress = nil; downloadIntent = nil; notify()
     }
     private func end() { busy = false; notify() }
-    func stop() { navigation = UUID(); explicitAddress = nil; downloadIntent = nil; web.stopLoading(); invalidate(); status = "已停止加载" }
+    func dismissPageDialog() { pageDialog?.endDialog(.abort) }
+    func stop() {
+        navigation = UUID(); explicitAddress = nil; downloadIntent = nil
+        web.stopLoading(); dismissPageDialog(); invalidate(); status = "已停止加载"
+    }
     func close() { closed = true; lastObservation = nil; titleObservation = nil; urlObservation = nil; restoringView?.cancel(); pendingRecovery = nil; recoveryEvents.onChange = nil; web.configuration.userContentController.removeScriptMessageHandler(forName: "workspaceRecovery", contentWorld: world); stop(); web.navigationDelegate = nil; web.uiDelegate = nil; web.removeFromSuperview() }
     func manualNavigation(_ action: String) {
-        invalidate(); pageError = nil
+        dismissPageDialog(); invalidate(); pageError = nil
         explicitAddress = nil; downloadIntent = nil
         switch action {
         case "back": pendingRecovery = nil; web.goBack()
@@ -96,7 +104,7 @@ import WebKit
     }
     func openManually(_ url: URL) {
         web.stopLoading()
-        invalidate()
+        dismissPageDialog(); invalidate()
         pageError = nil; pendingRecovery = nil; downloadIntent = nil
         allowedOrigins.insert(AgentBrowser.origin(url))
         explicitAddress = url
@@ -268,7 +276,9 @@ import WebKit
         status = web.title ?? ""
         downloads.start(download, origin: intent.origin)
     }
-    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { documentID = UUID(); invalidate(); lastObservation = nil; status = "加载中…" }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        documentID = UUID(); dismissPageDialog(); invalidate(); lastObservation = nil; status = "加载中…"
+    }
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { downloadIntent = nil; explicitAddress = nil; pageError = nil }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         status = pageError ?? web.title ?? ""
@@ -320,17 +330,44 @@ import WebKit
         panel.beginSheetModal(for: window) { response in completionHandler(response == .OK ? panel.urls : nil) }
     }
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
-        guard let window = web.window else { completionHandler(); return }
-        let alert = AgentConfirmation(); alert.messageText = frame.request.url?.host ?? "网页提示"; alert.informativeText = String(message.prefix(2000)); alert.beginModal(in: window) { _ in completionHandler() }
+        presentPageDialog(message, frame: frame) { _ in completionHandler() }
     }
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
-        guard let window = web.window else { completionHandler(false); return }
-        let alert = AgentConfirmation(); alert.messageText = frame.request.url?.host ?? "网页确认"; alert.informativeText = String(message.prefix(2000)); alert.addButton(withTitle: "允许"); alert.addButton(withTitle: "取消"); alert.beginModal(in: window) { completionHandler($0 == .alertFirstButtonReturn) }
+        presentPageDialog(message, frame: frame, confirmation: true, completion: completionHandler)
     }
-    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) { completionHandler(nil) }
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+        let input = AgentDialogTextField(frame: .zero)
+        input.font = .systemFont(ofSize: 13); input.outlined = true
+        input.setAccessibilityLabel("网页输入"); input.stringValue = defaultText ?? ""
+        presentPageDialog(prompt, frame: frame, input: input) { accepted in completionHandler(accepted ? input.stringValue : nil) }
+    }
+    private func presentPageDialog(_ message: String, frame: WKFrameInfo, input: AgentDialogTextField? = nil,
+                                   confirmation: Bool = false, completion: @escaping (Bool) -> Void) {
+        guard !closed, pendingRecovery == nil, !hasPageDialog, allowsPageDialog?() == true,
+              let owner = web.window, owner.isVisible, owner.isKeyWindow, !owner.hasBlockingDialog,
+              let value = frame.request.url, let url = try? AgentBrowser.url(value.absoluteString),
+              allowedOrigins.contains(AgentBrowser.origin(url)) else { completion(false); return }
+        let dialog = AgentConfirmation(); dialog.messageText = "网页 · " + AgentBrowser.origin(url)
+        let preview = message.prefix(2000)
+        dialog.informativeText = String(preview) + (preview.endIndex == message.endIndex ? "" : "…")
+        dialog.textInput = input
+        dialog.addButton(withTitle: input == nil ? "确定" : "提交")
+        if input != nil || confirmation { dialog.addButton(withTitle: "取消") }
+        if confirmation { dialog.defaultButtonIndex = 1 }
+        let document = documentID, scope = navigation
+        pageDialog = dialog; invalidate()
+        dialog.beginModal(in: owner) { [weak self, weak owner] response in
+            guard let self else { completion(false); return }
+            pageDialog = nil; invalidate()
+            completion(response == .alertFirstButtonReturn && !closed && documentID == document &&
+                       navigation == scope && web.window === owner && allowsPageDialog?() == true)
+            if !closed { notify() }
+        }
+    }
 
     func captureWorkspaceRecovery() async throws -> AgentBrowserRecoveryState.Page {
         guard !closed else { throw PetError("浏览器标签页已关闭") }
+        guard !hasPageDialog else { throw PetError("网页正等待输入或确认，上次恢复记录已保留") }
         if let restoringView { await restoringView.value }
         if let pendingRecovery { return pendingRecovery }
         guard let url = web.url else { return .init(id: id, title: "", origins: allowedOrigins.sorted(), zoom: web.pageZoom, x: 0, y: 0) }
