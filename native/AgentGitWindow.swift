@@ -34,6 +34,7 @@ import AppKit
     private var draftScope: AgentGitDraftRecovery.Scope?, currentDraftScope: AgentGitDraftRecovery.Scope?
     private var draftSelection: AgentTextViewport.Selection?, pendingDraftPaths: [String]?
     private var draftFocused = false, restoreDraftFocus = false, applyingDraftFocus = false
+    private var returnToRestore = false
     private var generatingMessage = false
     var onWorkspaceChange: (() -> Void)?
     private let activityOwner = UUID()
@@ -199,7 +200,11 @@ import AppKit
     }
     override func settingsWillLeave() { onWorkspaceChange = nil }
     func windowDidResize(_ notification: Notification) { pageDidLayout() }
-    override func settingsDidAppear() { super.settingsDidAppear(); setBusy(busy) }
+    override func settingsDidAppear() {
+        super.settingsDidAppear(); setBusy(busy)
+        if returnToRestore, restoreButton.isEnabled { presentingWindow?.makeFirstResponder(restoreButton) }
+        returnToRestore = false
+    }
     override func pageDidLayout() {
         guard let content = pageContentView else { return }
         let compact = content.bounds.width < 620, shown = filesRequested ?? !compact
@@ -266,6 +271,7 @@ import AppKit
         let hasStaged = source == .staged || (source == .uncommitted && columns.count == 2 && columns[0] != " " && columns[0] != "?")
         stageButton.isEnabled = current && [.uncommitted, .unstaged, .lastTurn].contains(source) && hasUnstaged
         unstageButton.isEnabled = current && [.uncommitted, .staged].contains(source) && hasStaged
+        restoreButton.title = item?.status == "??" ? "移入废纸篓…" : "恢复未暂存"
         restoreButton.isEnabled = current && [.uncommitted, .unstaged].contains(source) && hasUnstaged
         undoRestoreButton.isEnabled = !value && writable() && restoreID != nil
         if !value {
@@ -484,27 +490,62 @@ import AppKit
     @objc private func stageFile() { performFileAction(.stage) }
     @objc private func unstageFile() { performFileAction(.unstage) }
     @objc private func restoreFile() {
-        guard !busy, writable(), let inspection, inspection.paths.count == 1 else { return }
-        let path = inspection.paths[0], untracked = changes.contains { $0.path == path && $0.status == "??" }
-        let alert = AgentConfirmation(); alert.messageText = untracked ? "移入废纸篓？" : "恢复未暂存内容？"
-        alert.informativeText = path + (untracked ? "\n可在访达的废纸篓中放回。" : "\n恢复为暂存区版本，保留已暂存内容。可通过“撤销恢复”或任务记录恢复本次改动。")
-        alert.addButton(withTitle: untracked ? "移入废纸篓" : "恢复").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }; performFileAction(.restore)
+        guard restoreButton.isEnabled, !busy, writable(), let git, let inspection, inspection.paths.count == 1 else { return }
+        guard let scope = currentDraftScope, scope.checkout != nil else {
+            showError(PetError("无法确认当前 Git 来源，请刷新后重新审阅")); return
+        }
+        let path = inspection.paths[0], untracked = inspection.changes.contains { $0.path == path && $0.status == "??" }
+        let before = state.stringValue
+        setBusy(true); state.stringValue = "读取未暂存差异…"
+        job = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let preview = inspection.source == .unstaged ? inspection : try await git.inspect(source: .unstaged, revision: "", requested: [path])
+                try Task.checkCancellation()
+                guard scope.matches(try? AgentGitDraftRecovery.Scope.current(store.task(taskID))),
+                      untracked == preview.changes.contains(where: { $0.path == path && $0.status == "??" }) else {
+                    throw PetError("文件或 Git 来源已变化，请刷新后重新审阅")
+                }
+                state.stringValue = before; setBusy(false)
+                guard isPageVisible else { return }
+                let page = AgentGitRestoreReview(path: path, patch: preview.diff, untracked: untracked, split: diffView.splitMode, wraps: diffView.wraps)
+                page.onApply = { [weak self] in
+                    guard let self, !busy, writable() else { throw PetError("请先停止或处理当前任务") }
+                    setBusy(true); defer { setBusy(false) }
+                    try await applyFileAction(.restore, using: preview, in: git, restoreScope: scope)
+                }
+                page.onApplied = { [weak self] in self?.refresh() }
+                presentSettingsChild(page)
+                returnToRestore = page.settingsHostWindow != nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                setBusy(false); showError(error)
+            }
+        }
     }
     private func performFileAction(_ action: AgentGitFileAction) {
         guard !busy, writable(), let git, let inspection else { return }
-        let untracked = inspection.changes.contains { $0.path == inspection.paths.first && $0.status == "??" }
-        let title = action == .stage ? "已暂存" : action == .unstage ? "已取消暂存" : untracked ? "已移入废纸篓" : "已恢复未暂存内容"
         setBusy(true); state.stringValue = "处理中…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
-                let result = try await git.apply(action, inspection: inspection)
-                if action == .restore { restoreID = result.checkpointID; undoRestoreButton.title = "撤销恢复"; undoRestoreButton.isHidden = result.checkpointID == nil }
-                lastResult = title + " · " + inspection.paths.joined(separator: ", "); log(title, result: inspection.paths.joined(separator: "\n"))
+                try await applyFileAction(action, using: inspection, in: git)
                 setBusy(false); refresh()
             } catch { showError(error); setBusy(false) }
         }
+    }
+    private func applyFileAction(_ action: AgentGitFileAction, using inspection: AgentGitInspection, in git: AgentGit,
+                                 restoreScope: AgentGitDraftRecovery.Scope? = nil) async throws {
+        let untracked = inspection.changes.contains { $0.path == inspection.paths.first && $0.status == "??" }
+        let title = action == .stage ? "已暂存" : action == .unstage ? "已取消暂存" : untracked ? "已移入废纸篓" : "已恢复未暂存内容"
+        let result = try await git.apply(action, inspection: inspection, restoreScope: restoreScope)
+        if action == .restore {
+            restoreID = result.checkpointID
+            undoRestoreButton.title = "撤销恢复"
+            undoRestoreButton.isHidden = result.checkpointID == nil
+        }
+        lastResult = title + " · " + inspection.paths.joined(separator: ", ")
+        log(title, result: inspection.paths.joined(separator: "\n"))
     }
     @objc private func undoRestore() {
         guard !busy, writable(), let id = restoreID, let change = store.task(taskID)?.changes.first(where: { $0.id == id }) else { return }

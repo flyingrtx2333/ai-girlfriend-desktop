@@ -106,13 +106,20 @@ struct AgentGitFileResult { var checkpointID: String?; var trashedPath: String? 
         }
         return AgentGitInspection(source: source, revision: revision, paths: selected, changes: changes, head: state.head, hash: hash, diff: diff, additions: additions, deletions: deletions, binaryFiles: diff.components(separatedBy: "GIT binary patch").count - 1)
     }
-    func apply(_ action: AgentGitFileAction, inspection: AgentGitInspection) async throws -> AgentGitFileResult {
+    func apply(_ action: AgentGitFileAction, inspection: AgentGitInspection, restoreScope: AgentGitDraftRecovery.Scope? = nil) async throws -> AgentGitFileResult {
         try validateWorkspace()
         guard let task = store.task(taskID), !task.archived, ![.running, .waiting].contains(task.status) else { throw PetError("请先停止或处理当前任务") }
         guard inspection.paths.count == 1, !inspection.source.usesRevision else { throw PetError("请选择一个当前文件") }
         let current = try await inspect(source: inspection.source, revision: inspection.revision, requested: inspection.paths)
         guard current.hash == inspection.hash else { throw PetError("文件、暂存区或 HEAD 已变化，请重新审阅") }
         let path = current.paths[0], state = try await status()
+        if let restoreScope {
+            let task = store.task(taskID)
+            guard restoreScope.matches(try? AgentGitDraftRecovery.Scope.current(task)) else {
+                throw PetError("仓库或分支已变化，请返回后刷新 Git")
+            }
+            guard let task, !task.archived, ![.running, .waiting].contains(task.status) else { throw PetError("请先停止或处理当前任务") }
+        }
         guard let change = state.changes.first(where: { $0.path == path || $0.previousPath == path }) else { throw PetError("文件状态已变化，请刷新后重新审阅") }
         guard !change.status.contains("U"), !["AA", "DD"].contains(change.status) else { throw PetError("请先处理文件冲突") }
         let selected = try paths(current.source == .uncommitted ? [change.path] + (change.previousPath.map { [$0] } ?? []) : [path])
