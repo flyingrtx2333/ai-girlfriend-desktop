@@ -49,6 +49,9 @@ private actor AgentWorkspaceJournal {
     func saveTaskMonitor(_ record: AgentTaskMonitor.Recovery, layoutHash: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTaskMonitor.Recovery> {
         try storage.saveTaskMonitor(record, layoutHash: layoutHash, expected: expected)
     }
+    func saveTaskSidebar(_ record: AgentTaskSidebarRecovery, layoutHash: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTaskSidebarRecovery> {
+        try storage.saveTaskSidebar(record, layoutHash: layoutHash, expected: expected)
+    }
     func saveDraftViewports(_ record: AgentDraftViewports, layoutHash: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentDraftViewports> {
         try storage.saveDraftViewports(record, layoutHash: layoutHash, expected: expected)
     }
@@ -92,6 +95,8 @@ private actor AgentWorkspaceJournal {
     private var archivedTaskNavigationReadOnly = false
     private var savedTaskMonitor: AgentWorkspaceRecovery.Saved<AgentTaskMonitor.Recovery>?
     private var taskMonitorReadOnly = false
+    private var savedTaskSidebar: AgentWorkspaceRecovery.Saved<AgentTaskSidebarRecovery>?
+    private var taskSidebarReadOnly = false
     private var savedDraftViewports: AgentWorkspaceRecovery.Saved<AgentDraftViewports>?
     private var draftViewportsReadOnly = false
     var pendingSettingsCategory: String? { coldSettings?.category }
@@ -169,6 +174,13 @@ private actor AgentWorkspaceJournal {
             } catch {
                 taskMonitorReadOnly = true
                 owner.setStatus("任务监控位置未恢复，原记录已保留：" + error.localizedDescription, error: true)
+            }
+            do {
+                savedTaskSidebar = try recovery.loadTaskSidebar(windowID: id)
+                if let savedTaskSidebar { owner.restoreTaskSidebar(savedTaskSidebar.value.state) }
+            } catch {
+                taskSidebarReadOnly = true
+                owner.setStatus("任务侧栏位置未恢复，原记录已保留：" + error.localizedDescription, error: true)
             }
             do {
                 savedDraftViewports = try recovery.loadDraftViewports(windowID: id)
@@ -470,6 +482,7 @@ private actor AgentWorkspaceJournal {
                 let editorDrafts = workspaceEditorDrafts(including: editorDraft)
                 let archivedTaskNavigation = owner.captureArchivedTaskNavigation()
                 let monitorStates = owner.captureTaskMonitorStates()
+                let taskSidebar = owner.captureTaskSidebar()
                 let draftViewports = owner.captureDraftViewports()
                 let attention = owner.captureAttentionRecovery() ?? coldAttention ?? previous?.attention
                 if let legacy = previous?.attention, let layoutHash {
@@ -492,6 +505,10 @@ private actor AgentWorkspaceJournal {
                 if !taskMonitorReadOnly, monitorStates != (savedTaskMonitor?.value.tasks ?? [:]) {
                     let record = AgentTaskMonitor.Recovery(windowID: id, tasks: monitorStates)
                     savedTaskMonitor = try await journal.saveTaskMonitor(record, layoutHash: saved.hash, expected: savedTaskMonitor?.hash)
+                }
+                if !taskSidebarReadOnly, taskSidebar != savedTaskSidebar?.value.state {
+                    let record = AgentTaskSidebarRecovery(windowID: id, state: taskSidebar)
+                    savedTaskSidebar = try await journal.saveTaskSidebar(record, layoutHash: saved.hash, expected: savedTaskSidebar?.hash)
                 }
                 if !draftViewportsReadOnly, draftViewports != (savedDraftViewports?.value.tasks ?? [:]) {
                     let record = AgentDraftViewports(windowID: id, tasks: draftViewports)
@@ -588,6 +605,7 @@ private actor AgentWorkspaceJournal {
            workspaceEditorDrafts(including: owner.captureWorkspaceEditorDraft()) != (savedWorkspaceEditorDrafts?.value.drafts ?? [:]) { revision &+= 1 }
         if !archivedTaskNavigationReadOnly, let state = owner?.captureArchivedTaskNavigation(),
            state != savedArchivedTaskNavigation?.value.state { revision &+= 1 }
+        if !taskSidebarReadOnly, let state = owner?.captureTaskSidebar(), state != savedTaskSidebar?.value.state { revision &+= 1 }
         if attentionRecoveryError == nil, let owner, let attention = owner.captureAttentionRecovery(),
            attention != savedAttention?.value.state { revision &+= 1 }
         if !terminalRecoveryReadOnly, let owner, let terminals = owner.captureTerminalLayout(windowID: id) {

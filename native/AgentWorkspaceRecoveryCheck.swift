@@ -28,6 +28,27 @@ import AppKit
             do { _ = try journal.loadTabDirtyState(windowID: windowID, pageID: pageID, taskID: UUID().uuidString); checks["tabMetadataRejectsDifferentTask"] = false }
             catch { checks["tabMetadataRejectsDifferentTask"] = true }
             let layoutURL = try files.resolve("workspace-recovery/" + windowID + "/layout.json"), pageURL = try files.resolve("workspace-recovery/" + windowID + "/pages/" + pageID + ".json")
+            let sidebarURL = try files.resolve("workspace-recovery/" + windowID + "/task-sidebar.json")
+            let layoutBeforeSidebar = try files.readData(layoutURL)
+            let sidebar = AgentTaskSidebarRecovery(windowID: windowID, state: .init(mode: .coding, filter: 3,
+                collapsedGroups: ["coding\n" + source.path], expandedTasks: [owner],
+                search: .init(query: "说明🐋", selectedTask: owner, selection: .init(location: 2, length: 2)),
+                position: .init(row: "task:" + owner, offset: 6, y: 154)))
+            checks["olderWindowHasNoSidebarRecord"] = try journal.loadTaskSidebar(windowID: windowID) == nil
+            let savedSidebar = try journal.saveTaskSidebar(sidebar, layoutHash: savedWindow.hash, expected: nil)
+            let sidebarBytes = try files.readData(sidebarURL)
+            checks["sidebarRoundTripsAndLeavesOlderLayoutReadable"] = try journal.loadTaskSidebar(windowID: windowID)?.value == sidebar && files.readData(layoutURL) == layoutBeforeSidebar && journal.loadWindow(windowID)?.value == window
+            checks["sidebarRecordIsPrivateAndWindowScoped"] = try journal.loadTaskSidebar(windowID: UUID().uuidString) == nil && (FileManager.default.attributesOfItem(atPath: sidebarURL.path)[.posixPermissions] as? Int) == 0o600
+            do { _ = try journal.saveTaskSidebar(sidebar, layoutHash: savedWindow.hash, expected: nil); checks["sidebarRejectsStaleWriter"] = false }
+            catch { checks["sidebarRejectsStaleWriter"] = try files.readData(sidebarURL) == sidebarBytes }
+            do { _ = try journal.saveTaskSidebar(sidebar, layoutHash: AgentFiles.hash(Data()), expected: savedSidebar.hash); checks["sidebarRejectsChangedLayout"] = false }
+            catch { checks["sidebarRejectsChangedLayout"] = try files.readData(sidebarURL) == sidebarBytes }
+            var invalidSidebar = sidebar
+            invalidSidebar.state.search?.selection = .init(location: 3, length: 2)
+            let invalidBytes = try JSONEncoder().encode(invalidSidebar)
+            try invalidBytes.write(to: sidebarURL, options: .atomic)
+            do { _ = try journal.loadTaskSidebar(windowID: windowID); checks["invalidSidebarLeavesOtherWindowStateReadable"] = false }
+            catch { checks["invalidSidebarLeavesOtherWindowStateReadable"] = try files.readData(sidebarURL) == invalidBytes && journal.loadWindow(windowID)?.value == window }
             let pageBefore = try files.readData(pageURL), firstAssetURL = loaded.asset!
             try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: pageURL.path)
             do { _ = try journal.savePage(page, asset: secondAsset, windowID: windowID, pageID: pageID, expected: savedPage.hash); checks["readOnlyDraftRejectsWriteBeforeChangingResources"] = false }

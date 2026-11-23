@@ -2276,6 +2276,10 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         return false
     }
     func windowDidUpdate(_ notification: Notification) {
+        if let workspaceSession, let window,
+           taskSidebar.updateRecovery(canRestoreFocus: !chat.isHidden && !window.hasBlockingDialog) {
+            workspaceSession.changed()
+        }
         guard selectedTab == "settings", let window, window.isVisible, let responder = window.firstResponder else { return }
         rememberSettingsNavigationInput()
         guard settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -4062,6 +4066,8 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
     }
     func captureArchivedTaskNavigation() -> AgentArchivedTaskNavigation? { archivedTasksView?.captureNavigation() }
     func restoreArchivedTaskNavigation(_ value: AgentArchivedTaskNavigation) { archivedTasksView?.restoreNavigation(value) }
+    func captureTaskSidebar() -> AgentTaskSidebarRecovery.State { taskSidebar.captureRecovery() }
+    func restoreTaskSidebar(_ value: AgentTaskSidebarRecovery.State) { taskSidebar.restoreRecovery(value) }
     func captureWorkspaceEditorDraft() -> AgentWorkspaceEditorDraft? {
         let page = selectedTab == "settings" ? "chat" : selectedTab
         return workspaceEditor?.captureDraft(returnPage: page, knowledgeRoot: page == "knowledge" ? knowledgePageHost.selectedRoot : nil)

@@ -68,6 +68,10 @@ private final class AgentTaskTable: NSTableView {
     private var tasks: [AgentTaskRecord] = [], rows: [Row] = []
     private var selected: String?, signature = "", updating = false, searchVisible = false, filter = 0, attentionSelected = false, mainPage = "chat"
     private var collapsed = Set<String>(), expandedTasks = Set<String>()
+    private var observedRecovery: AgentTaskSidebarRecovery.State?
+    private var restoredPosition: AgentTaskSidebarRecovery.Position?
+    private var restoredSearchResult: String?
+    private var restoredSearchSelection: AgentTextViewport.Selection?
     private var searchTask: Task<Void, Never>?, searchGeneration = 0, searchQuery = "", searchScope = Set<String>()
     private var searchVersions: [String: String] = [:], searchHits: [String: AgentTaskSearch.Hit] = [:], searchIssues: [String: String] = [:]
     private var searchBusy = false, searchSelection: String?
@@ -133,6 +137,70 @@ private final class AgentTaskTable: NSTableView {
         table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: rows.indices))
     }
     var isSearchPresented: Bool { searchVisible }
+    private func rowAnchor(_ row: Row) -> String {
+        switch row {
+        case .task(let task, _): return "task:" + task.id
+        case .group(_, let path?): return "group:" + groupKey(path)
+        case .group(let title, nil): return "heading:" + title
+        }
+    }
+    private func captureListPosition() -> AgentTaskSidebarRecovery.Position? {
+        let viewport = table.visibleRect
+        guard !isHiddenOrHasHiddenAncestor, viewport.height > 1 else { return nil }
+        let first = table.rows(in: viewport).location
+        let y = max(0, viewport.minY)
+        guard rows.indices.contains(first) else { return .init(row: nil, offset: 0, y: y) }
+        return .init(row: rowAnchor(rows[first]), offset: y - table.rect(ofRow: first).minY, y: y)
+    }
+    func captureRecovery() -> AgentTaskSidebarRecovery.State {
+        var input: AgentTaskSidebarRecovery.Search?
+        if searchVisible {
+            let query = search.stringValue
+            let range = (search.currentEditor() as? NSTextView)?.selectedRange()
+            let selection = range.map { AgentTextViewport.Selection(location: $0.location, length: $0.length) }
+            input = .init(query: query, selectedTask: restoredSearchResult ?? searchSelection,
+                          selection: restoredSearchSelection ?? selection.flatMap { $0.valid(in: query.utf16.count) ? $0 : nil })
+        }
+        let previousPosition = observedRecovery?.mode == workMode ? observedRecovery?.position : nil
+        return .init(mode: workMode, filter: filter, collapsedGroups: collapsed.sorted(), expandedTasks: expandedTasks.sorted(),
+                     search: input, position: restoredPosition ?? captureListPosition() ?? previousPosition)
+    }
+    func restoreRecovery(_ state: AgentTaskSidebarRecovery.State) {
+        collapsed = Set(state.collapsedGroups); expandedTasks = Set(state.expandedTasks)
+        if state.mode == workMode {
+            filter = state.filter
+            searchVisible = state.search != nil; search.isHidden = !searchVisible
+            search.stringValue = state.search?.query ?? ""
+            restoredSearchResult = state.search?.selectedTask
+            restoredSearchSelection = state.search?.selection
+            restoredPosition = state.position
+        }
+        applyFilter(); onSearchVisibilityChanged?()
+        observedRecovery = captureRecovery()
+    }
+    func updateRecovery(canRestoreFocus: Bool) -> Bool {
+        guard let window, window.isVisible, !isHiddenOrHasHiddenAncestor else { return false }
+        if let position = restoredPosition, let scroll = table.enclosingScrollView, scroll.contentView.bounds.height > 1,
+           !searchBusy {
+            let rect = position.row.flatMap { anchor in rows.firstIndex { rowAnchor($0) == anchor } }.map { table.rect(ofRow: $0) }
+            let y = rect.map { $0.minY + min($0.height, position.offset) } ?? position.y
+            let clip = scroll.contentView
+            restoredPosition = nil
+            clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: NSPoint(x: clip.bounds.minX, y: max(0, y)), size: clip.bounds.size)).origin)
+            scroll.reflectScrolledClipView(clip)
+        }
+        if canRestoreFocus, window.isKeyWindow, let selection = restoredSearchSelection {
+            restoredSearchSelection = nil
+            if window.makeFirstResponder(search), let editor = search.currentEditor() as? NSTextView,
+               selection.valid(in: editor.string.utf16.count) { editor.setSelectedRange(selection.range) }
+        }
+        let state = captureRecovery()
+        guard observedRecovery != state else { return false }
+        observedRecovery = state; return true
+    }
+    private func clearPendingRecovery() {
+        restoredPosition = nil; restoredSearchResult = nil; restoredSearchSelection = nil
+    }
     func navigationReadback() -> [String: Any] {
         let viewport = table.enclosingScrollView
         var result: [String: Any] = ["actualUpper": upperNavigation.buttons.map { $0.identifier?.rawValue ?? "" }, "upperHeight": upperNavigation.frame.height, "upperDocumentHeight": upperNavigation.documentView?.frame.height ?? 0, "newTaskFixed": create.window === window && create.superview != nil, "taskListHeight": viewport?.frame.height ?? 0, "searchVisible": searchVisible]
@@ -159,7 +227,7 @@ private final class AgentTaskTable: NSTableView {
         let previous = self.selected; self.selected = selected
         let mode = values.first(where: { $0.id == selected })?.organizationMode ?? .coding
         let view = organization.taskView(mode)
-        if workMode != mode || taskView != view { draggingRows = false; bulkIDs.removeAll(); bulkSelecting = false }
+        if workMode != mode || taskView != view { draggingRows = false; bulkIDs.removeAll(); bulkSelecting = false; clearPendingRecovery() }
         workMode = mode; taskView = view
         workModePicker.selectItem(at: AgentWorkMode.allCases.firstIndex(of: workMode) ?? 0)
         add.toolTip = "添加" + workMode.directoryTitle; add.setAccessibilityLabel("添加" + workMode.directoryTitle)
@@ -183,7 +251,7 @@ private final class AgentTaskTable: NSTableView {
     func dismissSearch() { if searchVisible { closeSearch() } }
     @objc private func newWorkspace() { onNewWorkspace?() }
     @objc private func showSearch() { if searchVisible { closeSearch() } else { searchVisible = true; search.isHidden = false; applyFilter(); onSearchVisibilityChanged?(); window?.makeFirstResponder(search) } }
-    private func closeSearch() { searchVisible = false; search.isHidden = true; search.stringValue = ""; searchSelection = nil; applyFilter(); onSearchVisibilityChanged?() }
+    private func closeSearch() { clearPendingRecovery(); searchVisible = false; search.isHidden = true; search.stringValue = ""; searchSelection = nil; applyFilter(); onSearchVisibilityChanged?() }
     func setAttentionCount(_ count: Int, enabled: Bool) { attention.title = enabled && count > 0 ? "需要我  \(count)" : "需要我"; attention.toolTip = enabled ? nil : "需要我已关闭" }
     func setMainPage(_ page: String) {
         let active = page == "attention"
@@ -197,10 +265,10 @@ private final class AgentTaskTable: NSTableView {
         return attentionSelected && attention.state == .on && (attention.layer?.backgroundColor?.alpha ?? 0) > 0
     }
     @objc private func showAttention() { cancelBulkSelection(); if let onAttention { onAttention() } else { filter = filter == 1 ? 0 : 1; applyFilter() } }
-    @objc private func changeFilter(_ sender: NSMenuItem) { if sender.tag == 1, let onAttention { onAttention(); return }; cancelBulkSelection(); filter = sender.tag; applyFilter() }
+    @objc private func changeFilter(_ sender: NSMenuItem) { if sender.tag == 1, let onAttention { onAttention(); return }; clearPendingRecovery(); cancelBulkSelection(); filter = sender.tag; applyFilter() }
     @objc private func changeWorkMode() {
         guard AgentWorkMode.allCases.indices.contains(workModePicker.indexOfSelectedItem) else { return }
-        filter = 0; search.stringValue = ""; searchVisible = false; search.isHidden = true
+        clearPendingRecovery(); filter = 0; search.stringValue = ""; searchVisible = false; search.isHidden = true
         onWorkMode?(AgentWorkMode.allCases[workModePicker.indexOfSelectedItem]); workModePicker.selectItem(at: AgentWorkMode.allCases.firstIndex(of: workMode) ?? 0)
     }
     @objc private func changeDirectorySort(_ sender: NSMenuItem) { if let raw = sender.representedObject as? String, let sort = AgentDirectorySort(rawValue: raw) { onDirectorySort?(sort, workMode) } }
@@ -235,11 +303,14 @@ private final class AgentTaskTable: NSTableView {
          "tasks": rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil },
          "directories": rows.compactMap { row -> String? in if case .group(let name, let path) = row, path != nil { return name }; return nil }, "attention": attention.title, "grouping": taskView.grouping.rawValue, "workspaceFilter": taskView.workspace as Any? ?? NSNull(), "activityFilter": taskView.activity.rawValue, "sort": organization?.sorting(workMode).rawValue ?? "recent"]
         value["filter"] = filter; value["unreadTaskIDs"] = tasks.filter { organization?.isTaskUnread($0.id) == true }.map(\.id).sorted()
-        if CommandLine.arguments.contains("--manual-ui") { value["searchQuery"] = search.stringValue; value["searchVisible"] = searchVisible; value["searchBusy"] = searchBusy; value["searchSelection"] = searchSelection as Any? ?? NSNull(); value["searchIssues"] = searchIssues; value["searchMatches"] = searchHits.mapValues { ["messageID": $0.messageID, "role": $0.role, "excerpt": $0.excerpt] } }
+        if CommandLine.arguments.contains("--manual-ui") {
+            value["searchQuery"] = search.stringValue; value["searchVisible"] = searchVisible; value["searchBusy"] = searchBusy; value["searchSelection"] = searchSelection as Any? ?? NSNull(); value["searchIssues"] = searchIssues; value["searchMatches"] = searchHits.mapValues { ["messageID": $0.messageID, "role": $0.role, "excerpt": $0.excerpt] }
+            if let data = try? JSONEncoder().encode(captureRecovery()) { value["recovery"] = try? JSONSerialization.jsonObject(with: data) }
+        }
         if CommandLine.arguments.contains("--task-archive-check") || CommandLine.arguments.contains("--task-records-check") { value["bulkIDs"] = bulkIDs.sorted(); value["bulkAction"] = bulkAction.title; value["bulkVisible"] = !bulkBar.isHidden }
         if CommandLine.arguments.contains("--task-views-check") { value["drag"] = dragDiagnostics; value["draggingRows"] = draggingRows }; return value
     }
-    func controlTextDidChange(_ obj: Notification) { applyFilter() }
+    func controlTextDidChange(_ obj: Notification) { clearPendingRecovery(); applyFilter() }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         guard !textView.hasMarkedText() else { return false }
         if selector == #selector(NSResponder.insertNewline(_:)) { commitSearchSelection(); return true }
@@ -249,6 +320,7 @@ private final class AgentTaskTable: NSTableView {
         return false
     }
     private func moveSearchSelection(_ delta: Int) {
+        clearPendingRecovery()
         cancelBulkSelection()
         let indices = rows.indices.filter { if case .task = rows[$0] { return true }; return false }; guard !indices.isEmpty else { return }
         let current = indices.firstIndex(where: { if case .task(let task, _) = rows[$0] { return task.id == listSelection }; return false })
@@ -257,6 +329,7 @@ private final class AgentTaskTable: NSTableView {
     }
     private func commitSearchSelection() {
         guard !bulkSelecting, let row = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == listSelection }; return false }) ?? rows.firstIndex(where: { if case .task = $0 { return true }; return false }), case .task(let task, _) = rows[row] else { return }
+        clearPendingRecovery()
         searchSelection = task.id
         if let onOpenSearch, searchSnippet(task) != nil {
             onOpenSearch(task.id, search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), searchVersions[task.id] == searchVersion(task) ? searchHits[task.id]?.messageID : nil)
@@ -349,6 +422,11 @@ private final class AgentTaskTable: NSTableView {
         heading.stringValue = filter == 1 ? "需要我" : filter == 2 ? "归档" : filter == 3 ? "未读" : effectiveGrouping == .workspace ? workMode.directoryTitle : effectiveGrouping == .custom ? "自定义分组" : "最近会话"
         if filter != 1 { if taskView.grouping == .workspace, taskView.workspace != nil { heading.stringValue += " · 已筛选" }; if taskView.activity != .all { heading.stringValue += " · " + taskView.activity.title } }
         heading.toolTip = heading.stringValue; heading.lineBreakMode = .byTruncatingTail; rebuildViewMenu()
+        if let result = restoredSearchResult {
+            if rows.contains(where: { if case .task(let task, _) = $0 { return task.id == result }; return false }) {
+                searchSelection = result; restoredSearchResult = nil
+            } else if !searchBusy { restoredSearchResult = nil }
+        }
         if searchVisible, !query.isEmpty, !visible.contains(where: { $0.id == searchSelection }) {
             searchSelection = visible.first(where: { $0.id == selected })?.id ?? rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil }.first
         }
@@ -372,7 +450,7 @@ private final class AgentTaskTable: NSTableView {
             let changed = table.selectedRow != row
             if changed { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
             if reveal { layoutSubtreeIfNeeded() }
-            if changed || reveal { table.scrollRowToVisible(row) }
+            if restoredPosition == nil, changed || reveal { table.scrollRowToVisible(row) }
         } else { table.deselectAll(nil) }
         let visible = table.rows(in: table.visibleRect)
         if visible.location != NSNotFound { for row in visible.location..<min(rows.count, NSMaxRange(visible)) {
@@ -381,7 +459,7 @@ private final class AgentTaskTable: NSTableView {
         } }
     }
     func revealCurrentSelection() {
-        guard !bulkSelecting, !searchVisible, let task = listSelection, !workbenchSelectionIsVisible(task) else { return }
+        guard restoredPosition == nil, !bulkSelecting, !searchVisible, let task = listSelection, !workbenchSelectionIsVisible(task) else { return }
         selectCurrent(reveal: true)
     }
     func workbenchSelectionIsVisible(_ id: String) -> Bool {
@@ -407,6 +485,7 @@ private final class AgentTaskTable: NSTableView {
             bulkSelecting = true; bulkIDs = Set(table.selectedRowIndexes.compactMap { row in if rows.indices.contains(row), case .task(let task, _) = rows[row] { return task.id }; return nil }); updateBulkBar(); selectCurrent(); return
         }
         guard rows.indices.contains(table.selectedRow), case .task(let task, _) = rows[table.selectedRow] else { return }
+        clearPendingRecovery()
         if searchVisible { searchSelection = task.id; selectCurrent() } else { onSelect?(task.id) }
     }
     @objc private func openUnreadSelection() {
@@ -461,7 +540,7 @@ private final class AgentTaskTable: NSTableView {
             cell.toolTip = task.title + " · " + task.statusTitle + (unread ? " · 未读" : "") + (snippet.map { "\n" + $0 } ?? ""); cell.setAccessibilityLabel(task.title + "，" + task.statusTitle + (unread ? "，未读" : "") + (snippet.map { "，" + $0 } ?? "")); return cell
         }
     }
-    @objc private func toggleGroup(_ sender: NSButton) { guard rows.indices.contains(sender.tag), case .group(_, let path) = rows[sender.tag], let path else { return }; let key = groupKey(path); if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }; applyFilter() }
+    @objc private func toggleGroup(_ sender: NSButton) { guard rows.indices.contains(sender.tag), case .group(_, let path) = rows[sender.tag], let path else { return }; clearPendingRecovery(); let key = groupKey(path); if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }; applyFilter() }
     private func menu(_ row: Int) -> NSMenu? {
         guard rows.indices.contains(row) else { return nil }; let menu = NSMenu(); menu.autoenablesItems = false
         if case .group(_, let path) = rows[row], let path {
@@ -503,7 +582,7 @@ private final class AgentTaskTable: NSTableView {
     }
     @objc private func newInWorkspace(_ sender: NSMenuItem) { if let values = sender.representedObject as? [String], values.count == 2, let mode = AgentWorkMode(rawValue: values[1]) { onNewInWorkspace?(values[0], mode) } }
     @objc private func directoryAction(_ sender: NSMenuItem) { if let values = sender.representedObject as? [String], values.count == 3, let mode = AgentWorkMode(rawValue: values[1]) { onDirectoryAction?(values[0], mode, values[2]) } }
-    @objc private func toggleChildren(_ sender: NSMenuItem) { guard let id = sender.representedObject as? String else { return }; if expandedTasks.contains(id) { expandedTasks.remove(id) } else { expandedTasks.insert(id) }; applyFilter() }
+    @objc private func toggleChildren(_ sender: NSMenuItem) { guard let id = sender.representedObject as? String else { return }; clearPendingRecovery(); if expandedTasks.contains(id) { expandedTasks.remove(id) } else { expandedTasks.insert(id) }; applyFilter() }
     @objc private func taskAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? [String], value.count == 2 { onAction?(value[0], value[1]) } }
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         noteDrag("writer"); if CommandLine.arguments.contains("--task-views-check") { dragDiagnostics["writerRow"] = String(row) }
