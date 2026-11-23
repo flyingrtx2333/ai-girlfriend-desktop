@@ -254,7 +254,7 @@ import AppKit
         (controller as? AgentMCPContentWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentEditResendWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentGitWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
-        if controller is AgentAttachmentWindow || controller is AgentContextWindow {
+        if controller is AgentAttachmentWindow || controller is AgentContextWindow || controller is AgentWorktreeWindow {
             controller.onSettingsRecoveryChange = { [weak self] in self?.onRecoveryChange?() }
         }
         stacks[id, default: [:]][root, default: []].append(Entry(controller: controller, content: content))

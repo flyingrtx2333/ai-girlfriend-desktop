@@ -40,6 +40,9 @@ import AppKit
     override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? { try policy.captureRecovery() }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws { try policy.restoreRecovery(page) }
     override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        if page.kind == "worktree-manager" {
+            return try policy.restoreManager(JSONDecoder().decode(AgentWorktreeManagerRecovery.self, from: page.state))
+        }
         guard page.kind == "worktree-policy-review" else { return nil }
         let source = try PolicyReview.savedSource(page, kind: page.kind)
         try source.policy.validate()
@@ -244,9 +247,18 @@ import AppKit
     @objc private func openManager() {
         guard roots.indices.contains(projects.indexOfSelectedItem), let onOpenManager else { return }
         do {
-            let controller = try AgentWorktreeWindow(store: store, taskID: roots[projects.indexOfSelectedItem].taskID, allowsArchivedSource: true, workspace: roots[projects.indexOfSelectedItem].path, onSelectTask: onOpenTask)
+            let root = roots[projects.indexOfSelectedItem]
+            let controller = try AgentWorktreeWindow(store: store, taskID: root.taskID, allowsArchivedSource: true, workspace: root.path, onSelectTask: onOpenTask)
             onOpenManager(controller)
         } catch { showFailure(error) }
+    }
+    func restoreManager(_ recovery: AgentWorktreeManagerRecovery) throws -> AgentWorktreeWindow {
+        let source = recovery.source
+        guard recovery.valid, roots.contains(where: { $0.path == source.workspace && $0.metadata == source.metadata }) else {
+            throw PetError("原托管工作树项目已不可用，阅读记录已保留")
+        }
+        return try AgentWorktreeWindow(store: store, taskID: source.taskID, allowsArchivedSource: true,
+            workspace: source.workspace, recovery: recovery, onSelectTask: onOpenTask)
     }
     @objc private func openBackups() {
         let folder = store.directory.appendingPathComponent("worktrees")
@@ -256,22 +268,26 @@ import AppKit
     private struct Recovery: Codable {
         var version = 1
         var revision: String?
-        var draft: AgentWorktreeRetentionPolicy
+        var draft: AgentWorktreeRetentionPolicy?
         var project: String?
     }
     func captureRecovery() throws -> AgentSettingsRecovery.Page? {
-        guard hasPendingChanges else { return nil }
         let project = roots.indices.contains(projects.indexOfSelectedItem) ? roots[projects.indexOfSelectedItem].id : nil
-        return try AgentSettingsRecovery.page("worktrees", Recovery(revision: revision, draft: draftPolicy, project: project))
+        let draft = hasPendingChanges ? draftPolicy : nil
+        guard draft != nil || project != nil else { return nil }
+        return try AgentSettingsRecovery.page("worktrees", Recovery(revision: revision, draft: draft, project: project))
     }
     func restoreRecovery(_ page: AgentSettingsRecovery.Page) throws {
         let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "revision", "draft", "project"])
         let recovery = try JSONDecoder().decode(Recovery.self, from: page.state)
         guard page.kind == "worktrees", recovery.version == 1, AgentSettingsRecovery.validHash(recovery.revision),
-              AgentSettingsRecovery.validHash(recovery.project), let draft = raw["draft"] else { throw PetError("工作树设置草稿格式无效，原记录已保留") }
-        _ = try AgentWorktreeRetentionPolicy.read(JSONSerialization.data(withJSONObject: draft))
-        if recovery.draft != store.worktreeRetention.policy {
-            revision = recovery.revision; hasEdits = true; showPolicy(recovery.draft)
+              AgentSettingsRecovery.validHash(recovery.project),
+              recovery.draft != nil || recovery.project != nil else { throw PetError("工作树设置草稿格式无效，原记录已保留") }
+        if let draft = recovery.draft, let rawDraft = raw["draft"] {
+            _ = try AgentWorktreeRetentionPolicy.read(JSONSerialization.data(withJSONObject: rawDraft))
+            if draft != store.worktreeRetention.policy {
+                revision = recovery.revision; hasEdits = true; showPolicy(draft)
+            }
         }
         refreshState()
         if let project = recovery.project, let index = roots.firstIndex(where: { $0.id == project }) { projects.selectItem(at: index) }

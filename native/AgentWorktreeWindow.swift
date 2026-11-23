@@ -1,15 +1,75 @@
 import AppKit
 
+struct AgentWorktreeManagerRecovery: Codable, Equatable {
+    struct Source: Codable, Equatable {
+        let taskID: String, workspace: String, workspaceIdentity: String, metadata: String, metadataIdentity: String
+
+        @MainActor init(_ git: AgentGit) throws {
+            try git.validateWorkspace()
+            taskID = git.taskID; workspace = git.files.root.path
+            metadata = git.directory.resolvingSymlinksInPath().path
+            workspaceIdentity = try AgentFiles.directoryIdentity(git.files.root)
+            metadataIdentity = try AgentFiles.directoryIdentity(URL(fileURLWithPath: metadata))
+        }
+    }
+    struct Reading: Codable, Equatable {
+        let listY: Double
+        let text: AgentTextViewport?
+        var valid: Bool { AgentSettingsRecovery.validScroll(listY) && text?.valid != false }
+    }
+    struct Summary: Codable, Equatable {
+        struct Field: Codable, Equatable { let label: String, value: String }
+        let title: String, note: String
+        let fields: [Field]
+    }
+    struct Review: Codable, Equatable {
+        enum Kind: String, Codable { case recycle, backup, relink }
+        let kind: Kind, target: String, destination: String?
+        let summary: Summary
+        let text: AgentTextViewport?
+    }
+
+    var version = 1
+    let source: Source
+    let backups: Bool
+    let entryPath: String?, backupID: String?
+    let browsing: Reading
+    let review: Review?
+
+    var valid: Bool {
+        func path(_ value: String) -> Bool { value.hasPrefix("/") && value.utf8.count <= 16_384 && !value.contains("\0") }
+        func identity(_ value: String) -> Bool { !value.isEmpty && value.utf8.count <= 128 && !value.contains("\0") }
+        guard version == 1, UUID(uuidString: source.taskID) != nil, path(source.workspace), path(source.metadata),
+              identity(source.workspaceIdentity), identity(source.metadataIdentity), browsing.valid,
+              entryPath.map(path) != false, backupID.map({ UUID(uuidString: $0) != nil }) != false else { return false }
+        guard let review else { return true }
+        let summary = review.summary
+        guard review.text?.valid != false, !summary.title.isEmpty, summary.title.utf8.count <= 256,
+              summary.note.utf8.count <= 4_096, summary.fields.count <= 16,
+              summary.fields.allSatisfy({ $0.label.utf8.count <= 256 && $0.value.utf8.count <= 1_000_000 }) else { return false }
+        switch review.kind {
+        case .backup: return backups && review.target == backupID && review.destination == nil
+        case .recycle: return !backups && review.target == entryPath && review.destination == nil
+        case .relink: return !backups && review.target == entryPath && review.destination.map(path) == true
+        }
+    }
+}
+
 @MainActor final class AgentWorktreeWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
+    private typealias Recovery = AgentWorktreeManagerRecovery
     private let git: AgentGit, store: AgentStore, onSelectTask: (String) -> Void
+    private let recoverySource: Recovery.Source
     private let table = NSTableView(), detail = NSTextView(), state = AgentSettingsStatusField("工作树状态")
     private let heading = NSTextField(labelWithString: "")
     private let scope = NSSegmentedControl(labels: ["工作树", "回收记录"], trackingMode: .selectOne, target: nil, action: nil)
     private let refreshButton = AgentDialogButton(title: "刷新", target: nil, action: nil), openButton = AgentDialogButton(title: "打开任务", target: nil, action: nil)
     private let revealButton = AgentDialogButton(title: "在访达中显示", target: nil, action: nil), recycleButton = AgentDialogButton(title: "回收…", target: nil, action: nil), restoreButton = AgentDialogButton(title: "恢复…", target: nil, action: nil)
     private let cancelButton = AgentDialogButton(title: "取消", target: nil, action: nil), relinkButton = AgentDialogButton(title: "重新关联…", target: nil, action: nil)
+    private let reviewAgainButton = AgentDialogButton(title: "重新审阅", target: nil, action: nil)
     private var recycleReview: AgentWorktreeRecycleReview?, restoreReviewID: String?
     private var relinkReview: AgentWorktreeRelinkReview?
+    private var recoveredReview: Recovery.Review?, reviewSummary: Recovery.Summary?
+    private var unreadRecovery: Recovery?, applyingReading = false, readingScheduled = false
     private var entries: [AgentWorktreeEntry] = [], backups: [AgentWorktreeBackup] = [], job: Task<Void, Never>?
     private let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface), list = NSScrollView(), viewer = NSScrollView()
     private enum Layout: Hashable { case split, stacked, review }
@@ -21,11 +81,19 @@ import AppKit
     private var layout: Layout?, listHeight: NSLayoutConstraint!
     private var browsingPosition: BrowsingPosition?
     private var selectedEntryPath: String?, selectedBackupID: String?
+    var onLeave: (() -> Void)?
     private let activityOwner = UUID()
     private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: git.taskID, busy: busy) } } }
-    init(store: AgentStore, taskID: String, allowsArchivedSource: Bool = false, workspace: String? = nil, onSelectTask: @escaping (String) -> Void) throws {
+    init(store: AgentStore, taskID: String, allowsArchivedSource: Bool = false, workspace: String? = nil,
+         recovery: AgentWorktreeManagerRecovery? = nil, onSelectTask: @escaping (String) -> Void) throws {
         self.store = store; self.onSelectTask = onSelectTask
         git = try AgentGit(store: store, taskID: taskID, directory: AgentGit.metadata(workspace: workspace ?? store.task(taskID)?.workspace), allowsArchivedWorktreeSource: allowsArchivedSource, workspace: workspace, allowsExternalWorktrees: true)
+        recoverySource = try Recovery.Source(git)
+        if let recovery {
+            guard recovery.valid, recovery.source == recoverySource else { throw PetError("原工作树项目或 Git 目录已变化，阅读记录已保留") }
+            unreadRecovery = recovery; recoveredReview = recovery.review
+            selectedEntryPath = recovery.entryPath; selectedBackupID = recovery.backupID
+        }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 520), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "工作树 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 400); window.isReleasedWhenClosed = false
         window.center(); super.init(window: window); window.delegate = self
@@ -44,20 +112,21 @@ import AppKit
         detail.setAccessibilityLabel("工作树详情")
         viewer.documentView = detail; viewer.hasVerticalScroller = true; detail.drawsBackground = false
         for scroll in [list, viewer] { scroll.drawsBackground = false; scroll.scrollerStyle = .overlay }
-        scope.selectedSegment = 0; scope.target = self; scope.action = #selector(changeScope)
+        scope.selectedSegment = recovery?.backups == true ? 1 : 0; scope.target = self; scope.action = #selector(changeScope)
         scope.controlSize = .regular; scope.font = .systemFont(ofSize: 13); scope.segmentStyle = .roundRect; scope.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        for button in [refreshButton, openButton, revealButton, recycleButton, restoreButton, cancelButton, relinkButton] {
-            button.target = self; AgentDialogStyle.action(button, prominent: button === restoreButton || button === relinkButton)
+        for button in [refreshButton, openButton, revealButton, recycleButton, restoreButton, cancelButton, relinkButton, reviewAgainButton] {
+            button.target = self; AgentDialogStyle.action(button, prominent: button === restoreButton || button === relinkButton || button === reviewAgainButton)
         }
         recycleButton.hasDestructiveAction = true
         refreshButton.action = #selector(refresh); openButton.action = #selector(openTask); revealButton.action = #selector(reveal); recycleButton.action = #selector(recycle); restoreButton.action = #selector(restore)
         cancelButton.action = #selector(cancelReview)
         cancelButton.keyEquivalent = "\u{1b}"; cancelButton.keyEquivalentModifierMask = []
         relinkButton.action = #selector(relink)
+        reviewAgainButton.action = #selector(reviewAgain)
         state.font = .systemFont(ofSize: 12)
         let header = NSStackView(views: [heading, NSView(), scope, refreshButton]); header.spacing = 10
         heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let actions = NSStackView(views: [openButton, revealButton, NSView(), cancelButton, relinkButton, recycleButton, restoreButton]); actions.spacing = 8
+        let actions = NSStackView(views: [openButton, revealButton, NSView(), cancelButton, reviewAgainButton, relinkButton, recycleButton, restoreButton]); actions.spacing = 8
         let footer = NSStackView(views: [actions, state]); footer.orientation = .vertical; footer.alignment = .leading; footer.spacing = 8
         for row in footer.arrangedSubviews { row.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
         for view in [header, list, viewer, footer] { view.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(view) }
@@ -78,6 +147,11 @@ import AppKit
             .review: [list.widthAnchor.constraint(equalToConstant: 0), list.heightAnchor.constraint(equalToConstant: 0),
                 viewer.leadingAnchor.constraint(equalTo: list.leadingAnchor), viewer.topAnchor.constraint(equalTo: list.topAnchor)]
         ]
+        for clip in [list.contentView, viewer.contentView] {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(readingChanged), name: NSView.boundsDidChangeNotification, object: clip)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(readingChanged), name: NSTextView.didChangeSelectionNotification, object: detail)
         content.onResize = { [weak self] in self?.pageDidLayout() }; pageDidLayout(); refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -88,8 +162,11 @@ import AppKit
     override func settingsWillLeave() {
         job?.cancel(); git.cancel(); busy = false
         recycleReview = nil; restoreReviewID = nil; relinkReview = nil; browsingPosition = nil
+        recoveredReview = nil; unreadRecovery = nil
+        onLeave?(); onLeave = nil
     }
     func windowWillClose(_ notification: Notification) { settingsWillLeave() }
+    override func settingsDidAppear() { super.settingsDidAppear(); scheduleReading() }
     override func pageDidLayout() {
         let next: Layout = reviewing ? .review : content.bounds.width < 700 ? .stacked : .split
         if next != layout {
@@ -98,6 +175,7 @@ import AppKit
             NSLayoutConstraint.activate(layouts[next] ?? [])
         }
         listHeight?.constant = min(165, max(110, content.bounds.height * 0.28))
+        scheduleReading()
     }
     private var showingBackups: Bool { scope.selectedSegment == 1 }
     func numberOfRows(in tableView: NSTableView) -> Int { showingBackups ? backups.count : entries.count }
@@ -125,11 +203,12 @@ import AppKit
         return ["prepared": "备份已保留", "recycled": "已回收", "restoring": "恢复待核对", "restored": "已恢复"][item.state] ?? item.state
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
-        if let entry { selectedEntryPath = entry.path }; if let backup { selectedBackupID = backup.id }; showSelection()
+        if let entry { selectedEntryPath = entry.path }; if let backup { selectedBackupID = backup.id }
+        showSelection(); readingChanged()
     }
     private var entry: AgentWorktreeEntry? { !showingBackups && entries.indices.contains(table.selectedRow) ? entries[table.selectedRow] : nil }
     private var backup: AgentWorktreeBackup? { showingBackups && backups.indices.contains(table.selectedRow) ? backups[table.selectedRow] : nil }
-    private var reviewing: Bool { recycleReview != nil || restoreReviewID != nil || relinkReview != nil }
+    private var reviewing: Bool { recoveredReview != nil || recycleReview != nil || restoreReviewID != nil || relinkReview != nil }
     private func showSelection() {
         let enteringReview = reviewing && layout != .review
         if !reviewing && !busy { browsingPosition = nil }
@@ -137,7 +216,9 @@ import AppKit
         var title = git.files.root.lastPathComponent
         var note = ""
         var fields: [(String, String)] = []
-        if let review = relinkReview {
+        if let summary = recoveredReview?.summary {
+            title = summary.title; note = summary.note; fields = summary.fields.map { ($0.label, $0.value) }
+        } else if let review = relinkReview {
             title = "重新关联工作树"
             fields = [("新目录", review.destination), ("原目录", review.source), ("分支", branchName(review.branch)),
                       ("关联任务", taskNames(review.versions.keys.sorted()))]
@@ -170,12 +251,15 @@ import AppKit
         } else { note = showingBackups ? "暂无回收记录" : "暂无工作树" }
         heading.stringValue = title
         renderDetails(fields, note: note)
+        reviewSummary = reviewing ? .init(title: title, note: note, fields: fields.map { .init(label: $0.0, value: $0.1) }) : nil
         list.isHidden = reviewing; refreshButton.isHidden = reviewing; scope.isHidden = reviewing; openButton.isHidden = reviewing
         table.isEnabled = !busy && !reviewing; refreshButton.isEnabled = !busy && !reviewing; scope.isEnabled = !busy && !reviewing
         openButton.isEnabled = !busy && !reviewing && ids.contains { store.task($0)?.archived == false }
         revealButton.isEnabled = !busy && (backup != nil || entry.map { $0.canRelink != true } == true)
-        recycleButton.isHidden = showingBackups || relinkReview != nil; restoreButton.isHidden = !showingBackups
-        relinkButton.isHidden = entry?.canRelink != true || recycleReview != nil
+        revealButton.isHidden = recoveredReview != nil
+        recycleButton.isHidden = showingBackups || relinkReview != nil || recoveredReview != nil
+        restoreButton.isHidden = !showingBackups || recoveredReview != nil
+        relinkButton.isHidden = entry?.canRelink != true || recycleReview != nil || recoveredReview != nil
         relinkButton.isEnabled = !busy && !relinkButton.isHidden
         relinkButton.title = relinkReview == nil ? "重新关联…" : "确认关联目录"
         cancelButton.isHidden = !reviewing; cancelButton.isEnabled = !busy
@@ -187,6 +271,8 @@ import AppKit
         restoreButton.hasDestructiveAction = resumingRecycle
         recycleButton.isEnabled = !busy && entry?.unavailable == nil && entry != nil
         restoreButton.isEnabled = !busy && (resumingRecycle || backup?.canRestore == true)
+        reviewAgainButton.isHidden = recoveredReview == nil
+        reviewAgainButton.isEnabled = !busy && unreadRecovery == nil && recoveredReview.map(canReviewAgain) == true
         pageDidLayout()
         if enteringReview { detail.window?.makeFirstResponder(detail) }
     }
@@ -212,8 +298,72 @@ import AppKit
         detail.setSelectedRange(NSRange(location: 0, length: 0))
         viewer.contentView.scroll(to: .zero); viewer.reflectScrolledClipView(viewer.contentView)
     }
-    private func setBusy(_ value: Bool) { busy = value; if value { state.textColor = AgentWorkbenchTheme.secondaryText }; showSelection() }
+    private func setBusy(_ value: Bool) {
+        busy = value
+        if value { state.textColor = AgentWorkbenchTheme.secondaryText }
+        showSelection()
+        if !value { readingChanged() }
+    }
     private func showError(_ error: Error) { state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error }
+    @objc private func readingChanged() {
+        if !busy, !applyingReading, unreadRecovery == nil, isPageVisible { onSettingsRecoveryChange?() }
+    }
+    func captureManagerRecovery() throws -> AgentWorktreeManagerRecovery {
+        if let unreadRecovery { return unreadRecovery }
+        let viewport = try AgentTextViewport(detail)
+        let browsing = Recovery.Reading(listY: max(0, browsingPosition?.listOrigin.y ?? list.contentView.bounds.minY),
+            text: reviewing ? browsingPosition?.detail : viewport)
+        let review: Recovery.Review?
+        if let summary = reviewSummary, let saved = recoveredReview {
+            review = .init(kind: saved.kind, target: saved.target, destination: saved.destination, summary: summary, text: viewport)
+        } else if let summary = reviewSummary, let live = recycleReview {
+            review = .init(kind: .recycle, target: live.path, destination: nil, summary: summary, text: viewport)
+        } else if let summary = reviewSummary, let live = relinkReview {
+            review = .init(kind: .relink, target: live.source, destination: live.destination, summary: summary, text: viewport)
+        } else if let summary = reviewSummary, let id = restoreReviewID {
+            review = .init(kind: .backup, target: id, destination: nil, summary: summary, text: viewport)
+        } else { review = nil }
+        let record = Recovery(source: recoverySource, backups: showingBackups, entryPath: selectedEntryPath,
+            backupID: selectedBackupID, browsing: browsing, review: review)
+        guard record.valid else { throw PetError("工作树阅读记录无效，原记录已保留") }
+        return record
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        try AgentSettingsRecovery.page("worktree-manager", captureManagerRecovery())
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "worktree-manager",
+              try JSONDecoder().decode(Recovery.self, from: page.state) == captureManagerRecovery() else {
+            throw PetError("工作树阅读记录与原项目不一致")
+        }
+    }
+    private func scheduleReading() {
+        guard unreadRecovery != nil, !busy, !readingScheduled, isPageVisible else { return }
+        readingScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; readingScheduled = false
+            guard let saved = unreadRecovery, !busy, isPageVisible else { return }
+            content.layoutSubtreeIfNeeded()
+            guard viewer.contentSize.width > 0, viewer.contentSize.height > 0 else { return }
+            applyingReading = true
+            unreadRecovery = nil
+            showSelection()
+            if let review = saved.review {
+                browsingPosition = restoredBrowsingPosition(saved.browsing)
+                review.text?.apply(to: detail)
+            } else {
+                AgentSettingsRecovery.restoreScroll(saved.browsing.listY, to: list)
+                if saved.browsing.text?.focused != true { presentingWindow?.makeFirstResponder(table) }
+                saved.browsing.text?.apply(to: detail)
+            }
+            applyingReading = false
+            readingChanged()
+        }
+    }
+    private func restoredBrowsingPosition(_ reading: Recovery.Reading) -> BrowsingPosition {
+        .init(detail: reading.text, listOrigin: NSPoint(x: 0, y: reading.listY),
+            status: "\(entries.count) 个工作树 · \(backups.count) 条回收记录", statusColor: AgentWorkbenchTheme.secondaryText)
+    }
     private func rememberBrowsingPosition() {
         content.layoutSubtreeIfNeeded()
         browsingPosition = BrowsingPosition(detail: try? AgentTextViewport(detail), listOrigin: list.contentView.bounds.origin,
@@ -221,8 +371,9 @@ import AppKit
     }
     @objc private func cancelReview() {
         guard !busy, reviewing else { return }
-        let position = browsingPosition
-        recycleReview = nil; restoreReviewID = nil; relinkReview = nil
+        let position = browsingPosition ?? unreadRecovery.map { restoredBrowsingPosition($0.browsing) }
+        unreadRecovery = nil
+        recycleReview = nil; restoreReviewID = nil; relinkReview = nil; recoveredReview = nil
         state.stringValue = position?.status ?? ""; state.textColor = position?.statusColor ?? AgentWorkbenchTheme.secondaryText
         showSelection()
         content.layoutSubtreeIfNeeded()
@@ -231,20 +382,61 @@ import AppKit
             if position.detail?.focused != true { table.window?.makeFirstResponder(table) }
             position.detail?.apply(to: detail)
         }
+        readingChanged()
     }
     private func reloadRows() {
         let row = showingBackups ? backups.firstIndex { $0.id == selectedBackupID } : entries.firstIndex { $0.path == selectedEntryPath }
-        table.reloadData(); if numberOfRows(in: table) > 0 { table.selectRowIndexes(IndexSet(integer: row ?? 0), byExtendingSelection: false) }; showSelection()
+        let savedSelection = showingBackups ? selectedBackupID : selectedEntryPath
+        table.reloadData()
+        if let row { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+        else if savedSelection != nil && (unreadRecovery != nil || recoveredReview != nil) {
+            table.deselectAll(nil)
+            if showingBackups { selectedBackupID = savedSelection } else { selectedEntryPath = savedSelection }
+        } else if numberOfRows(in: table) > 0 {
+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+        showSelection()
     }
-    @objc private func changeScope() { reloadRows() }
+    @objc private func changeScope() { reloadRows(); readingChanged() }
     @objc func refresh() {
-        guard !busy, !reviewing else { return }; setBusy(true); state.stringValue = "读取工作树…"
+        guard !busy, !reviewing || unreadRecovery != nil else { return }
+        setBusy(true); state.stringValue = "读取工作树…"
         job = Task { [weak self] in
             guard let self else { return }
-            do { entries = try await git.worktrees(); backups = try git.worktreeBackups(); reloadRows(); state.stringValue = "\(entries.count) 个工作树 · \(backups.count) 条回收记录" }
+            do {
+                entries = try await git.worktrees(); backups = try git.worktreeBackups(); reloadRows()
+                if let review = recoveredReview {
+                    state.stringValue = canReviewAgain(review) ? "请重新审阅当前工作树。" : "原工作树或回收记录已不可用。"
+                } else { state.stringValue = "\(entries.count) 个工作树 · \(backups.count) 条回收记录" }
+            }
             catch { entries = []; backups = []; table.reloadData(); showError(error) }
             setBusy(false)
         }
+    }
+    private func canReviewAgain(_ review: Recovery.Review) -> Bool {
+        switch review.kind {
+        case .recycle: return entry?.path == review.target && entry?.unavailable == nil
+        case .backup: return backup.map { $0.id == review.target && ($0.canRestore || git.canResumeWorktreeRecycle($0)) } == true
+        case .relink: return entry?.path == review.target && entry?.canRelink == true
+        }
+    }
+    @objc private func reviewAgain() {
+        guard !busy, unreadRecovery == nil, let saved = recoveredReview, canReviewAgain(saved) else { return }
+        do {
+            guard try Recovery.Source(git) == recoverySource else { throw PetError("原工作树项目或 Git 目录已变化") }
+            switch saved.kind {
+            case .recycle: if let entry { previewRecycle(entry) }
+            case .backup: restoreReviewID = saved.target; showFreshReview()
+            case .relink: if let destination = saved.destination { previewRelink(from: saved.target, to: destination) }
+            }
+        } catch { showError(error) }
+    }
+    private func showFreshReview() {
+        let position = recoveredReview.flatMap { _ in try? AgentTextViewport(detail) }
+        recoveredReview = nil; state.stringValue = ""
+        setBusy(false)
+        position?.apply(to: detail)
+        readingChanged()
     }
     @objc private func openTask() {
         let ids = entry?.taskIDs ?? backup.map { Array($0.tasks.keys).sorted() } ?? []
@@ -260,7 +452,7 @@ import AppKit
         if let path { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
     }
     @objc private func relink() {
-        guard !busy, let item = entry, item.canRelink == true else { return }
+        guard !busy, recoveredReview == nil, let item = entry, item.canRelink == true else { return }
         if let review = relinkReview {
             setBusy(true); state.stringValue = "重新关联 Git 登记…"
             job = Task { [weak self] in
@@ -295,13 +487,12 @@ import AppKit
             guard let self else { return }
             do {
                 let review = try await git.prepareWorktreeRelink(from: old, to: destination)
-                try Task.checkCancellation(); relinkReview = review; state.stringValue = ""
-            } catch { showError(error) }
-            setBusy(false)
+                try Task.checkCancellation(); relinkReview = review; showFreshReview()
+            } catch { showError(error); setBusy(false) }
         }
     }
     @objc private func recycle() {
-        guard !busy, let item = entry, item.unavailable == nil else { return }
+        guard !busy, recoveredReview == nil, let item = entry, item.unavailable == nil else { return }
         if let review = recycleReview {
             setBusy(true)
             job = Task { [weak self] in
@@ -315,15 +506,17 @@ import AppKit
             }; return
         }
         rememberBrowsingPosition()
+        previewRecycle(item)
+    }
+    private func previewRecycle(_ item: AgentWorktreeEntry) {
         setBusy(true); state.stringValue = item.missingRegistration == true ? "检查 Git 登记…" : "检查文件与暂存状态…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
                 let review = try await (item.missingRegistration == true ? git.prepareMissingWorktreeRecycle(path: item.path) : git.prepareWorktreeRecycle(path: item.path))
                 try Task.checkCancellation()
-                recycleReview = review; state.stringValue = ""
-            } catch { showError(error) }
-            setBusy(false)
+                recycleReview = review; showFreshReview()
+            } catch { showError(error); setBusy(false) }
         }
     }
     private func recycleReviewed(_ review: AgentWorktreeRecycleReview) async throws {
@@ -333,12 +526,12 @@ import AppKit
         entries = try await git.worktrees(); backups = try git.worktreeBackups(); reloadRows()
     }
     @objc private func restore() {
-        guard !busy, let item = backup else { return }
+        guard !busy, recoveredReview == nil, let item = backup else { return }
         let resumingRecycle = git.canResumeWorktreeRecycle(item)
         guard resumingRecycle || item.canRestore else { return }
         guard restoreReviewID == item.id else {
             rememberBrowsingPosition()
-            restoreReviewID = item.id; state.stringValue = ""; showSelection(); return
+            restoreReviewID = item.id; showFreshReview(); return
         }
         setBusy(true)
         state.stringValue = resumingRecycle ? "继续回收工作树…" : item.registration == nil ? "恢复工作树…" : "恢复 Git 登记…"
@@ -365,7 +558,7 @@ import AppKit
     }
     func workspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        let controls = [scope, refreshButton, openButton, revealButton, recycleButton, restoreButton, cancelButton, relinkButton].filter { !$0.isHiddenOrHasHiddenAncestor }
+        let controls = [scope, refreshButton, openButton, revealButton, recycleButton, restoreButton, cancelButton, relinkButton, reviewAgainButton].filter { !$0.isHiddenOrHasHiddenAncestor }
         let listFrame = content.convert(list.bounds, from: list), detailFrame = content.convert(viewer.bounds, from: viewer)
         let usesCompact = layout == .stacked
         let layoutMatches: Bool
@@ -390,14 +583,16 @@ import AppKit
         if reviewing {
             checks["reviewFreesListHeight"] = listFrame.height < 1 && detailFrame.height >= content.bounds.height - 132
             checks["reviewKeepsCancelAndDecisionReachable"] = controls.contains(cancelButton) &&
-                [recycleButton, restoreButton, relinkButton].contains { controls.contains($0) && $0.isEnabled }
+                (recoveredReview != nil ? controls.contains(reviewAgainButton) :
+                    [recycleButton, restoreButton, relinkButton].contains { controls.contains($0) && $0.isEnabled })
             checks["reviewKeepsFullTextSelectable"] = detail.isSelectable && !detail.isEditable && viewer.hasVerticalScroller
         }
         let controlFrames = controls.map { view in
             let rect = content.convert(view.bounds, from: view)
             return ["label": (view as? NSButton)?.title ?? "工作树范围", "frame": [rect.minX, rect.minY, rect.width, rect.height]] as [String: Any]
         }
-        return ["taskID": git.taskID, "busy": busy, "scope": showingBackups ? "backups" : "worktrees", "selectedPath": entry?.path ?? "", "selectedBackupID": backup?.id ?? "", "detail": detail.string, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "controls": controlFrames, "stateFrame": NSStringFromRect(content.convert(state.bounds, from: state)), "rowHeight": table.rowHeight, "recycleEnabled": recycleButton.isEnabled, "restoreEnabled": restoreButton.isEnabled, "recycleReviewHash": recycleReview?.hash ?? "", "restoreReviewID": restoreReviewID ?? "", "selectionEnabled": table.isEnabled,
+        return ["taskID": git.taskID, "busy": busy, "scope": showingBackups ? "backups" : "worktrees", "selectedPath": entry?.path ?? "", "selectedBackupID": backup?.id ?? "", "detail": detail.string, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "controls": controlFrames, "stateFrame": NSStringFromRect(content.convert(state.bounds, from: state)), "rowHeight": table.rowHeight, "recycleEnabled": !recycleButton.isHidden && recycleButton.isEnabled, "restoreEnabled": !restoreButton.isHidden && restoreButton.isEnabled, "recycleReviewHash": recycleReview?.hash ?? "", "restoreReviewID": restoreReviewID ?? "", "selectionEnabled": table.isEnabled,
+                "needsReReview": recoveredReview != nil, "reviewAgainEnabled": !reviewAgainButton.isHidden && reviewAgainButton.isEnabled,
                 "relinkEnabled": !relinkButton.isHidden && relinkButton.isEnabled, "relinkDestination": relinkReview?.destination ?? "",
                 "entries": entries.map { ["path": $0.path, "branch": $0.branch ?? "", "owned": $0.owned, "unavailable": $0.unavailable ?? ""] as [String: Any] }, "backups": backups.map { ["id": $0.id, "state": $0.state, "path": $0.origin.path] }, "compact": usesCompact, "reviewing": reviewing, "heading": heading.stringValue,
                 "contentSize": [content.bounds.width, content.bounds.height], "listFrame": NSStringFromRect(listFrame), "detailFrame": NSStringFromRect(detailFrame),
@@ -411,6 +606,7 @@ import AppKit
         if action == "refresh" { refresh(); await job?.value }
         if action == "open" { openTask() }
         if action == "cancel" { cancelReview() }
+        if action == "review-again" { reviewAgain(); await job?.value }
         if action == "prepare-recycle" { recycle(); await job?.value }
         if action == "recycle" {
             recycle(); await job?.value

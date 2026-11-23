@@ -159,12 +159,13 @@ struct AgentGitDraftRecovery: Codable {
     var push: Push? = nil
     var remoteForm: RemoteForm? = nil
     var worktreeForm: WorktreeForm? = nil
+    var worktreeManager: AgentWorktreeManagerRecovery? = nil
 
     static func decode(_ page: AgentWorkspaceRecovery.Page) throws -> Self {
         let unsupported = PetError("Git 草稿恢复格式不受支持，原记录已保留")
         guard page.version == 1, page.kind == "git-draft", page.asset == nil, UUID(uuidString: page.taskID) != nil,
               let raw = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(raw.keys).isSubset(of: ["version", "scope", "message", "selection", "focused", "source", "revision", "paths", "push", "remoteForm", "worktreeForm"]) else { throw unsupported }
+              Set(raw.keys).isSubset(of: ["version", "scope", "message", "selection", "focused", "source", "revision", "paths", "push", "remoteForm", "worktreeForm", "worktreeManager"]) else { throw unsupported }
         let push = raw["push"] as? [String: Any]
         if let push, !Set(push.keys).isSubset(of: ["scope", "branch", "upstream", "remote", "addressHash", "selection", "focused", "opened"]) { throw unsupported }
         let remoteForm = raw["remoteForm"] as? [String: Any]
@@ -189,6 +190,7 @@ struct AgentGitDraftRecovery: Codable {
         let value = try JSONDecoder().decode(Self.self, from: page.state)
         guard value.version == 1, page.dirty == (!value.message.isEmpty || value.push != nil || value.remoteForm != nil || value.worktreeForm != nil),
               value.worktreeForm?.valid(for: page.taskID) != false, value.message.isEmpty == (value.scope == nil), value.scope?.valid != false,
+              value.worktreeManager.map({ $0.valid && $0.source.taskID == page.taskID }) != false,
               value.selection?.valid(in: value.message.utf16.count) != false,
               value.paths.count <= 100_000, Set(value.paths).count == value.paths.count,
               value.paths.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("/") && $0.utf8.count < 8192 && !$0.contains("\0") }) else { throw unsupported }

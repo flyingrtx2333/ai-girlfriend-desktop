@@ -5791,6 +5791,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             do {
                 try editor.restorePushPage()
                 if let form = recovery.worktreeForm { try editor.restoreWorktreeCreation(form) }
+                if let manager = recovery.worktreeManager { try editor.openWorktreeManager(recovery: manager) }
             }
             catch { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: editor); throw error }
             editor.window?.orderOut(nil)

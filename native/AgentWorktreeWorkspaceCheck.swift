@@ -163,6 +163,14 @@ import AppKit
             let recycle = manager.workspaceReadback(), reviewedText = recycle["detail"] as? String ?? ""
             checks["recycleReviewNamesActualTargetAndLocksSelection"] = !(recycle["recycleReviewHash"] as? String ?? "").isEmpty && recycle["selectionEnabled"] as? Bool == false && reviewedText.contains(fixture.child.path)
             checks["recycleReviewNamesAffectedTask"] = tasks.task(fixture.childID).map { reviewedText.contains($0.title) } == true && reviewedText.hasPrefix("备份包括忽略文件和暂存状态")
+            let reviewSelection = (reader.string as NSString).range(of: "备份包括忽略文件")
+            guard reviewSelection.location != NSNotFound else { throw PetError("缺少回收审阅正文") }
+            reader.setSelectedRange(reviewSelection)
+            guard let journal = try gitPage.captureWorkspaceRecovery(persistClean: false),
+                  let saved = try AgentGitDraftRecovery.decode(journal).worktreeManager else { throw PetError("工作树审阅未写入任务 Git 记录") }
+            checks["worktreeReviewJournalKeepsExactOwnerTargetAndSelection"] = saved.source.taskID == fixture.taskID &&
+                saved.entryPath == fixture.child.path && saved.review?.kind == .recycle &&
+                saved.review?.text?.selections.first?.range == reviewSelection
             control.window?.setContentSize(NSSize(width: 780, height: 540)); control.window?.contentView?.layoutSubtreeIfNeeded()
             await manager.checkWorkspace(action: "cancel")
             checks["cancelRecycleReviewKeepsCheckoutAndTask"] = FileManager.default.fileExists(atPath: fixture.child.path) && tasks.task(fixture.childID)?.archived == false && manager.workspaceReadback()["selectionEnabled"] as? Bool == true
@@ -172,12 +180,33 @@ import AppKit
             checks["cancelReviewRestoresSelectedTextScrollAndFocus"] = browsing.focused && browsing.y > 0 && returned.focused &&
                 returned.hash == browsing.hash && returned.selections == browsing.selections && abs(returned.y - browsing.y) < 2 &&
                 manager.workspaceReadback()["selectedPath"] as? String == fixture.child.path
+            do {
+                let recovered = try AgentWorktreeWindow(store: tasks, taskID: fixture.taskID, recovery: saved, onSelectTask: { _ in })
+                recovered.showWindow(nil); recovered.window?.makeKeyAndOrderFront(nil)
+                defer { recovered.close(); control.window?.makeKeyAndOrderFront(nil) }
+                await recovered.checkWorkspace(); await wait(0.08)
+                let restored = recovered.workspaceReadback()
+                let restoredReading = try recovered.captureManagerRecovery()
+                checks["recoveredReviewKeepsOriginalTextAndRequiresNewReview"] = restored["needsReReview"] as? Bool == true &&
+                    restored["reviewAgainEnabled"] as? Bool == true && restored["recycleEnabled"] as? Bool == false &&
+                    restored["detail"] as? String == reviewedText && restoredReading.review?.text?.selections.first?.range == reviewSelection
+                await recovered.checkWorkspace(action: "review-again")
+                let fresh = recovered.workspaceReadback()
+                let checkout = try AgentWorktreeSnapshot.read(fixture.child)
+                checks["freshReviewGetsNewGrantWithoutChangingCheckout"] = fresh["needsReReview"] as? Bool == false && fresh["recycleEnabled"] as? Bool == true &&
+                    fresh["recycleReviewHash"] as? String != recycle["recycleReviewHash"] as? String && checkout.hash == tree.hash
+                await recovered.checkWorkspace(action: "cancel")
+                checks["recoveredReviewCancelLeavesOriginalCheckoutSelected"] = recovered.workspaceReadback()["selectedPath"] as? String == fixture.child.path
+            }
             await manager.checkWorkspace(action: "recycle")
             checks["managerRecyclesActualCheckoutAndArchivesOnlyItsTask"] = !FileManager.default.fileExists(atPath: fixture.child.path) && tasks.task(fixture.childID)?.archived == true && tasks.task(fixture.taskID)?.archived == false && FileManager.default.fileExists(atPath: fixture.foreign.path)
             await manager.checkWorkspace(scope: 1)
             guard let backupID = manager.workspaceReadback()["selectedBackupID"] as? String, !backupID.isEmpty else { throw PetError("真实回收记录不可见") }
             checks["actualBackupCanBeRestoredFromSamePage"] = manager.workspaceReadback()["restoreEnabled"] as? Bool == true
             await inspectLayout("backups"); await manager.checkWorkspace(action: "prepare-restore"); await inspectLayout("restore-review")
+            let storedBackupReview = try manager.captureManagerRecovery()
+            checks["backupReviewJournalRetainsExactRecord"] = storedBackupReview.backups && storedBackupReview.backupID == backupID &&
+                storedBackupReview.review?.kind == .backup && storedBackupReview.review?.target == backupID
             checks["restoreReviewUsesSelectedActualBackup"] = manager.workspaceReadback()["restoreReviewID"] as? String == backupID && manager.workspaceReadback()["selectionEnabled"] as? Bool == false
             let restoredDetail = reader.string as NSString
             let taskName = tasks.task(fixture.childID)?.title ?? ""
@@ -464,6 +493,11 @@ import AppKit
         checks["globalPolicyReentryReadsSavedPolicy"] = reopened !== settings && reopened.policy.workspaceReadback()["idleSeconds"] as? Double == 7 * 86400 && !reopened.policy.hasPendingChanges
         reopened.policy.checkWorkspace(project: fixture.workspace.path, action: "manage")
         guard let nextManager = control.checkWorktreeSettingsPage(open: false) as? AgentWorktreeWindow else { throw PetError("再次打开全局管理失败") }
+        await nextManager.checkWorkspace(path: fixture.child.path)
+        let globalReading = try control.captureSettingsRecovery()
+        let globalManager = try nextManager.captureManagerRecovery()
+        checks["settingsManagerJournalsReadingWithCleanPolicy"] = globalReading?.pages.map(\.kind) == ["worktrees", "worktree-manager"] &&
+            globalManager.source.workspace == fixture.workspace.path && !reopened.policy.hasPendingChanges
         await nextManager.checkWorkspace(path: fixture.child.path, action: "open")
         let selected = await control.taskWorkspaceReadback()
         checks["globalManagerOpensAssociatedTaskAndLeavesSettings"] = control.agentTaskID == fixture.childID && selected["mainPage"] as? String == "chat" && reopened.settingsHostWindow == nil && nextManager.settingsHostWindow == nil

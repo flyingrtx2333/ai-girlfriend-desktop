@@ -144,7 +144,8 @@ enum AgentSettingsRecovery {
             case ("agents", "agents"), ("extensions", "agents"): return agentRoute([root])
             case ("git", "git"): return kinds == [root] && context.taskID == nil && context.workspace == nil
             case ("worktrees", "worktrees"):
-                return (kinds == [root] || kinds == [root, "worktree-policy-review"]) && context.taskID == nil && context.workspace == nil
+                return (kinds == [root] || kinds == [root, "worktree-policy-review"] || kinds == [root, "worktree-manager"])
+                    && context.taskID == nil && context.workspace == nil
             default: return false
             }
         }

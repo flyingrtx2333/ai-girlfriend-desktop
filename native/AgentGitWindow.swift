@@ -174,13 +174,14 @@ import AppKit
     func captureWorkspaceRecovery(persistClean: Bool) throws -> AgentWorkspaceRecovery.Page? {
         let text = draftText, push = pushWindow?.captureDraft() ?? parkedPush
         let remoteForm = recoveryRemoteForm?.captureDraft() ?? pendingRemoteForm, worktreeForm = recoveryWorktreeForm?.captureDraft()
+        let manager = try worktreeWindow?.captureManagerRecovery()
         let dirty = !text.isEmpty || push != nil || remoteForm != nil || worktreeForm != nil
-        guard dirty || persistClean else { return nil }
+        guard dirty || manager != nil || persistClean else { return nil }
         if !restoreDraftFocus, !busy { rememberDraftSelection() }
         let selection = draftSelection.flatMap { $0.valid(in: text.utf16.count) ? $0 : nil }
         let saved = AgentGitDraftRecovery(scope: text.isEmpty ? nil : try bindDraftScope(), message: text, selection: selection, focused: draftFocused,
                                           source: source, revision: revision.stringValue, paths: pendingDraftPaths ?? selectedPaths, push: push,
-                                          remoteForm: remoteForm, worktreeForm: worktreeForm)
+                                          remoteForm: remoteForm, worktreeForm: worktreeForm, worktreeManager: manager)
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "git-draft", state: try encoder.encode(saved), dirty: dirty, asset: nil)
         _ = try AgentGitDraftRecovery.decode(page); return page
@@ -634,9 +635,22 @@ import AppKit
         }
         onWorkspaceChange?()
     }
+    func openWorktreeManager(recovery: AgentWorktreeManagerRecovery? = nil) throws {
+        guard worktreeWindow == nil else { return }
+        let manager = try AgentWorktreeWindow(store: store, taskID: taskID, recovery: recovery, onSelectTask: onSelectTask)
+        presentSettingsChild(manager)
+        guard manager.settingsHostWindow != nil || manager.window?.isVisible == true else {
+            manager.endSettingsHosting(); throw PetError("工作区当前无法打开工作树管理")
+        }
+        worktreeWindow = manager
+        manager.onLeave = { [weak self] in
+            self?.worktreeWindow = nil
+            self?.onWorkspaceChange?()
+        }
+        onWorkspaceChange?()
+    }
     @objc private func openWorktrees() {
-        do { let manager = try AgentWorktreeWindow(store: store, taskID: taskID, onSelectTask: onSelectTask); worktreeWindow = manager; presentSettingsChild(manager) }
-        catch { showError(error) }
+        do { try openWorktreeManager() } catch { showError(error) }
     }
     @objc private func openWorktreeHandoff() {
         guard handoffButton.isEnabled, !handoffButton.isHidden else { return }
