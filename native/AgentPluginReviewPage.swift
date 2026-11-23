@@ -43,6 +43,7 @@ import AppKit
     struct Snapshot {
         let package: AgentPluginPackage, installed: AgentPluginInstallation?, oldFiles: [String: Data]
     }
+    private enum Tab { case readme, components, files }
     private struct ReviewRecovery: Codable {
         var version = 1
         let target: HistoryTarget?, draft: DraftTarget?
@@ -50,6 +51,7 @@ import AppKit
         let query: String, fullText: Bool, tableY: Double
         let selectedVisible: Bool?, readingSelectionVisible: Bool?
         let filterSelection: AgentTextViewport.Selection?, reading: AgentTextViewport?
+        let showingReadme: Bool?, readme: AgentMarkdownReader.ViewRecovery?
     }
     private struct Item { let title: String, detail: String }
     private struct FileChange: Sendable {
@@ -75,6 +77,8 @@ import AppKit
     private let types = NSSegmentedControl(), list = NSTableView(), search = NSSearchField()
     private let preview = NSTextView(), diff = AgentGitDiffView()
     private let full = NSScrollView(), localHeading = NSStackView(), reading = NSStackView(), controls = NSStackView()
+    private let split = NSStackView(), readmeView = AgentMarkdownReader()
+    private let readmeSurface = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
     private let heading = NSTextField(labelWithString: ""), scopeLabel = AgentPluginReviewPage.metadataLabel("")
     private let metadata = AgentPluginReviewPage.metadataLabel("")
     private let currentPath = NSTextField(labelWithString: "")
@@ -87,6 +91,9 @@ import AppKit
     private let draftTarget: DraftTarget?
     private var pendingReview: ReviewRecovery?, snapshot: Snapshot?
     private var components: [Item] = [], files: [FileChange] = [], visibleFiles: [FileChange] = []
+    private var tabs: [Tab] = [.components, .files]
+    private var readme: (path: String, source: String)?
+    private var readmePosition: AgentMarkdownReader.ViewRecovery?
     private var selectedComponent: Int = 0, selectedPath: String?
     private var selecting = false, working = false, finished = false
     private var comparisonJob: Task<Void, Never>?, reloadJob: Task<Void, Never>?
@@ -95,7 +102,12 @@ import AppKit
     var onReload: (() async throws -> Snapshot)?
     var onApply: ((Snapshot) throws -> AgentPluginInstallation)? { didSet { updateApply() } }
     var onApplied: ((AgentPluginInstallation) -> Void)?
-    private var showingFiles: Bool { types.selectedSegment == 1 }
+    private var selectedTab: Tab {
+        get { tabs.indices.contains(types.selectedSegment) ? tabs[types.selectedSegment] : .components }
+        set { types.selectedSegment = tabs.firstIndex(of: newValue) ?? 0 }
+    }
+    private var showingFiles: Bool { selectedTab == .files }
+    private var showingReadme: Bool { selectedTab == .readme }
     private var recoveryKind: String? {
         if historyTarget != nil { return "plugin-history-review" }
         return draftTarget.map { $0.marketCopyHash == nil ? "plugin-review" : "plugin-market-review" }
@@ -146,13 +158,36 @@ import AppKit
         comparison.setContentHuggingPriority(.required, for: .horizontal)
         let reader = NSStackView(views: [reading, detail])
         reader.orientation = .vertical; reader.alignment = .leading; reader.spacing = 8
-        let split = NSStackView(views: [index, reader]); split.spacing = 12; split.alignment = .top
+        split.addArrangedSubview(index); split.addArrangedSubview(reader); split.spacing = 12; split.alignment = .top
+        readmeView.text.setAccessibilityLabel("市场插件说明")
+        readmeView.text.drawsBackground = false
+        readmeView.text.enclosingScrollView?.drawsBackground = false
+        readmeView.onViewportChange = { [weak self] in self?.reviewChanged() }
+        readmeView.onLink = { url in
+            if ["https", "http"].contains(url.scheme?.lowercased()) { NSWorkspace.shared.open(url) }
+        }
+        readmeSurface.layer?.cornerRadius = 12; readmeSurface.layer?.borderWidth = 1
+        readmeSurface.addSubview(readmeView); readmeView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            readmeView.leadingAnchor.constraint(equalTo: readmeSurface.leadingAnchor, constant: 1),
+            readmeView.trailingAnchor.constraint(equalTo: readmeSurface.trailingAnchor, constant: -1),
+            readmeView.topAnchor.constraint(equalTo: readmeSurface.topAnchor, constant: 4),
+            readmeView.bottomAnchor.constraint(equalTo: readmeSurface.bottomAnchor, constant: -4)
+        ])
+        readmeSurface.isHidden = true
+        let content = NSView()
+        for view in [split, readmeSurface] {
+            content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: content.trailingAnchor), view.topAnchor.constraint(equalTo: content.topAnchor),
+                view.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
+        }
         apply.title = operation.confirmation; apply.target = self; apply.action = #selector(applyReview); apply.isEnabled = false
         cancel.target = self; cancel.action = #selector(cancelReview)
         retry.target = self; retry.action = #selector(reloadSource); retry.isHidden = true
         AgentSettingsStyle.primaryAction(apply); AgentDialogStyle.action(cancel); AgentDialogStyle.action(retry)
         let actions = AgentSettingsDetailActions(draftTarget == nil ? [cancel, apply] : [retry, cancel, apply]); detailActionRow = actions
-        let layout = NSStackView(views: [localHeading, metadata, consequence, status, controls, split, actions])
+        let layout = NSStackView(views: [localHeading, metadata, consequence, status, controls, content, actions])
         layout.orientation = .vertical; layout.alignment = .leading; layout.spacing = 8
         let root = AgentThemeView(); window.contentView = root; root.addSubview(layout); layout.translatesAutoresizingMaskIntoConstraints = false
         for view in layout.arrangedSubviews { view.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true }
@@ -186,7 +221,7 @@ import AppKit
     override func settingsDidAppear() {
         super.settingsDidAppear()
         if shouldReload { shouldReload = false; reloadSource() }
-        else if snapshot != nil { presentingWindow?.makeFirstResponder(list); scheduleReviewPosition() }
+        else if snapshot != nil { focusReviewContent(); scheduleReviewPosition() }
     }
     override func settingsWillLeave() { comparisonJob?.cancel(); reloadJob?.cancel() }
     func windowWillClose(_ notification: Notification) { comparisonJob?.cancel(); reloadJob?.cancel() }
@@ -203,7 +238,25 @@ import AppKit
         components += package.rules.map { Item(title: "规则 · " + $0.key, detail: $0.trigger.title + ($0.patterns.isEmpty ? "" : " · " + $0.patterns.joined(separator: ", ")) + "\n\n" + $0.body) }
         let paths = Set(oldFiles.keys).union(package.files.keys).sorted().filter { oldFiles[$0] != package.files[$0] }
         files = paths.map { FileChange(path: $0, before: oldFiles[$0], after: package.files[$0]) }
-        types.setLabel("组件（\(components.count)）", forSegment: 0); types.setLabel("文件变更（\(files.count)）", forSegment: 1)
+        readme = nil; readmeView.clear(); readmePosition = nil
+        if draftTarget?.marketCopyHash != nil {
+            for path in AgentPlugins.readmeNames {
+                guard let data = package.files[path], let text = Self.text(data),
+                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                readme = (path, String(text.prefix(80_000)))
+                break
+            }
+        }
+        tabs = readme == nil ? [.components, .files] : [.readme, .components, .files]
+        types.segmentCount = tabs.count
+        for (index, tab) in tabs.enumerated() {
+            switch tab {
+            case .readme: types.setLabel("说明", forSegment: index)
+            case .components: types.setLabel("组件（\(components.count)）", forSegment: index)
+            case .files: types.setLabel("文件变更（\(files.count)）", forSegment: index)
+            }
+        }
+        selectedTab = operation.comparesVersions ? .files : tabs[0]
         controls.isHidden = false
         let candidate = package.metadata.version.isEmpty ? "未标版本" : package.metadata.version
         let version = snapshot.installed.map { item in
@@ -235,7 +288,7 @@ import AppKit
                 reloadJob = nil
                 status.stringValue = ""
                 display(content)
-                presentingWindow?.makeFirstResponder(list)
+                focusReviewContent()
             } catch {
                 guard !Task.isCancelled, let self else { return }
                 reloadJob = nil
@@ -255,6 +308,7 @@ import AppKit
     @objc private func changeType() {
         guard snapshot != nil else { return }
         pendingReview = nil; updateList(); reviewChanged()
+        if showingReadme || presentingWindow?.firstResponder === readmeView.text { focusReviewContent() }
     }
     @objc private func changeComparison() {
         guard snapshot != nil else { return }
@@ -262,6 +316,18 @@ import AppKit
     }
     private func updateList() {
         search.isHidden = !showingFiles
+        split.isHidden = showingReadme
+        readmeSurface.isHidden = !showingReadme
+        if showingReadme, let readme, let snapshot {
+            comparisonJob?.cancel(); comparisonJob = nil
+            if readmeView.document == nil { readmeView.showPackage(readme.source, path: readme.path, files: snapshot.package.files) }
+            if let readmePosition {
+                do { try readmeView.restoreViewRecovery(readmePosition); self.readmePosition = nil }
+                catch { status.showSaveFailure(error) }
+            }
+            scheduleReviewPosition()
+            return
+        }
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         visibleFiles = query.isEmpty ? files : files.filter { $0.path.localizedCaseInsensitiveContains(query) }
         let row = showingFiles ? visibleFiles.firstIndex { $0.path == selectedPath } ?? 0 : selectedComponent
@@ -273,6 +339,10 @@ import AppKit
         } else { list.deselectAll(nil) }
         selecting = false
         showSelection()
+    }
+    private func focusReviewContent() {
+        if showingReadme { readmeView.activateRememberedView(force: true) }
+        else { presentingWindow?.makeFirstResponder(list) }
     }
     func controlTextDidChange(_ notification: Notification) { changeType() }
     func controlTextDidBeginEditing(_ notification: Notification) { reviewChanged() }
@@ -342,11 +412,13 @@ import AppKit
             filterSelection = selection.valid(in: query.utf16.count) ? selection : nil
         } else { filterSelection = nil }
         let reader = diff.isHidden ? preview : diff.text
-        let reading = comparisonJob == nil ? try AgentTextViewport(reader) : nil
+        let reading = !showingReadme && comparisonJob == nil ? try AgentTextViewport(reader) : nil
+        let readmeRecovery = try readmePosition ?? readme.flatMap { try readmeView.captureViewRecovery(source: $0.source) }
         return try AgentSettingsRecovery.page(recoveryKind, ReviewRecovery(target: historyTarget, draft: draftTarget, showingFiles: showingFiles,
             selectedPath: selectedPath, selectedComponent: selectedComponent, query: query, fullText: comparison.selectedSegment == 1,
             tableY: max(0, list.enclosingScrollView?.contentView.bounds.minY ?? 0), selectedVisible: AgentSettingsRecovery.selectionIsVisible(in: list),
-            readingSelectionVisible: reading?.focusedSelectionIsVisible(in: reader), filterSelection: filterSelection, reading: reading))
+            readingSelectionVisible: reading?.focusedSelectionIsVisible(in: reader), filterSelection: filterSelection, reading: reading,
+            showingReadme: showingReadme ? true : nil, readme: readmeRecovery))
     }
     static func recoveryTarget(_ page: AgentSettingsRecovery.Page) throws -> DraftTarget {
         guard ["plugin-review", "plugin-market-review"].contains(page.kind), let target = try decodeRecovery(page).draft,
@@ -355,7 +427,8 @@ import AppKit
     }
     private static func decodeRecovery(_ page: AgentSettingsRecovery.Page) throws -> ReviewRecovery {
         let object = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "target", "draft", "showingFiles", "selectedPath",
-            "selectedComponent", "query", "fullText", "tableY", "selectedVisible", "readingSelectionVisible", "filterSelection", "reading"])
+            "selectedComponent", "query", "fullText", "tableY", "selectedVisible", "readingSelectionVisible", "filterSelection", "reading",
+            "showingReadme", "readme"])
         if let target = object["target"] { _ = try AgentSettingsRecovery.object(target, keys: ["receiptHash", "revision"]) }
         if let draft = object["draft"] {
             let value = try AgentSettingsRecovery.object(draft, keys: ["path", "workspace", "name", "title", "sourceHash", "installed", "marketCopyHash"])
@@ -363,11 +436,14 @@ import AppKit
         }
         if let selection = object["filterSelection"] { _ = try AgentSettingsRecovery.object(selection, keys: ["location", "length"]) }
         if let text = object["reading"] { try AgentTextViewport.validateObject(text) }
+        if let readme = object["readme"] { try AgentMarkdownReader.ViewRecovery.validateObject(readme) }
         let value = try JSONDecoder().decode(ReviewRecovery.self, from: page.state)
         guard value.version == 1, (value.target == nil) != (value.draft == nil), value.draft?.valid != false,
               AgentSettingsRecovery.validScroll(value.tableY), value.selectedComponent >= 0, value.selectedComponent < 500,
               value.selectedPath.map(AgentArchive.validPath) != false,
-              value.filterSelection?.valid(in: value.query.utf16.count) != false, value.reading?.valid != false else {
+              value.filterSelection?.valid(in: value.query.utf16.count) != false, value.reading?.valid != false,
+              (value.showingReadme != true && value.readme == nil) || value.draft?.marketCopyHash != nil,
+              value.readme?.valid != false, value.readme?.editing != true, value.readme?.editor == nil else {
             throw PetError("原插件审阅记录无效，已保留")
         }
         return value
@@ -384,13 +460,16 @@ import AppKit
     }
     private func restoreControls(_ value: ReviewRecovery) {
         selectedPath = value.selectedPath; selectedComponent = value.selectedComponent
-        types.selectedSegment = value.showingFiles ? 1 : 0; comparison.selectedSegment = value.fullText ? 1 : 0
+        readmePosition = value.readme
+        selectedTab = value.showingReadme == true && readme != nil ? .readme : value.showingFiles ? .files : .components
+        comparison.selectedSegment = value.fullText ? 1 : 0
         search.stringValue = value.query; updateList()
     }
     private func scheduleReviewPosition() {
         guard pendingReview != nil, snapshot != nil else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, isPageVisible, comparisonJob == nil, let value = pendingReview else { return }
+            if showingReadme { pendingReview = nil; reviewChanged(); return }
             presentingWindow?.contentView?.layoutSubtreeIfNeeded()
             if let scroll = list.enclosingScrollView { AgentSettingsRecovery.restoreScroll(value.tableY, to: scroll) }
             if value.selectedVisible == true, list.selectedRow >= 0 { list.scrollRowToVisible(list.selectedRow) }

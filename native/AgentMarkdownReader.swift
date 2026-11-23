@@ -18,6 +18,7 @@ import AppKit
     var canAddSelection: (() -> Bool)? { didSet { selectionAction.canAdd = canAddSelection } }
     private(set) var document: AgentMarkdownDocument?
     private var file: URL?, source = "", workspace: String?, renderedWidth: CGFloat = 0
+    private var packageFiles: [String: Data]?
     private var pendingAnchor: NSRange?, revealScheduled = false
     private var diagramTask: Task<Void, Never>?, diagramRenderer: AgentMarkdownDiagrams?, generation = UUID()
     private(set) var drawings: [Int: AgentMarkdownDiagrams.Drawing] = [:], diagramErrors: [Int: String] = [:]
@@ -58,9 +59,17 @@ import AppKit
         selectionAction.update(); updateEditingState()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func clear() { pendingViewRecovery = nil; rememberedPreviewFocus = false; rememberedEditorFocus = false; inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); source = ""; file = nil; workspace = nil; document = nil; pendingAnchor = nil; outline.removeAllItems(); text.string = ""; selectionAction.update(); updateEditingState() }
+    func clear() { pendingViewRecovery = nil; rememberedPreviewFocus = false; rememberedEditorFocus = false; inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); source = ""; file = nil; workspace = nil; packageFiles = nil; document = nil; pendingAnchor = nil; outline.removeAllItems(); text.string = ""; selectionAction.update(); updateEditingState() }
     func show(_ source: String, file: URL, workspace: String, reuseIfUnchanged: Bool = false) {
         if reuseIfUnchanged, inlineEditor == nil, self.source == source, self.file == file, self.workspace == workspace, document != nil { isEditing = false; updateEditingState(); return }
+        packageFiles = nil
+        showDocument(source, file: file, workspace: workspace)
+    }
+    func showPackage(_ source: String, path: String, files: [String: Data]) {
+        packageFiles = files
+        showDocument(source, file: URL(fileURLWithPath: "/" + path), workspace: nil)
+    }
+    private func showDocument(_ source: String, file: URL, workspace: String?) {
         pendingViewRecovery = nil; inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); pendingAnchor = nil; self.source = source; self.file = file; self.workspace = workspace; outline.selectItem(at: 0); render(); updateEditingState()
         text.scrollRangeToVisible(NSRange(location: 0, length: 0))
     }
@@ -90,10 +99,17 @@ import AppKit
         text.layoutManager?.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
     }
     private func render(cachedImages: [String: NSImage] = [:], cachedDrawings: [String: AgentMarkdownDiagrams.Drawing] = [:]) {
-        guard let file, let files = try? AgentFiles(workspace: workspace) else { return }
+        guard let file else { return }
+        let width = max(220, bounds.width), result: AgentMarkdownDocument
+        if let packageFiles {
+            result = AgentMarkdownDocument.renderPackage(source, document: file, files: packageFiles, width: width)
+        } else {
+            guard let files = try? AgentFiles(workspace: workspace) else { return }
+            result = AgentMarkdownDocument.render(source, document: file, files: files, width: width, cachedImages: cachedImages)
+        }
         let selected = outline.indexOfSelectedItem, origin = scroll.contentView.bounds.origin
         renderedWidth = bounds.width
-        let result = AgentMarkdownDocument.render(source, document: file, files: files, width: max(220, bounds.width), cachedImages: cachedImages); document = result
+        document = result
         retryImages.isHidden = !result.canRetryImages
         for diagram in result.diagrams { if let cached = cachedDrawings[diagram.source] { diagram.attachment.image = cached.image; drawings[diagram.range.location] = cached } }
         text.textStorage?.setAttributedString(result.body)

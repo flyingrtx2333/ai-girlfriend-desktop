@@ -169,6 +169,7 @@ import AppKit
             let initialEntry = try entry("inventory-helper", first)
             let (v1, none) = try await market.prepare(initialEntry, in: first, scope: nil, plugins: plugins)
             checks["downloadAndReviewDoNotInstall"] = try none == nil && plugins.catalog().isEmpty && initialEntry.source?.matches(v1.receipt) == true
+            checks.merge(try AgentPluginReviewCheck.marketReadme(v1, plugins: plugins)) { _, new in new }
             let original = try plugins.install(v1)
             checks["installedArchiveStartsDisabledAndPinsOrigin"] = !original.enabled && original.metadata.version == "1.0.0"
                 && original.receipt.marketOrigin?.matches(first, entry: initialEntry.name) == true
@@ -281,7 +282,7 @@ import AppKit
             results.merge(privateMarket.results) { _, new in new }
         } catch { failure = error.localizedDescription }
         let report: [String: Any] = ["checks": checks, "results": results, "error": failure, "modelRequests": requests, "appPID": getpid(),
-            "success": failure.isEmpty && checks.count == 68 && checks.values.allSatisfy { $0 } && requests == 0]
+            "success": failure.isEmpty && checks.count == 72 && checks.values.allSatisfy { $0 } && requests == 0]
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("plugin-market-report.json"))
     }
 

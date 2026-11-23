@@ -51,14 +51,24 @@ import ImageIO
     private struct LegacyImageText {
         let current: NSRange, previous: String
     }
+    @MainActor private struct FileAccess {
+        let resolve: (URL) throws -> URL
+        let read: (URL) throws -> Data
+        var snapshotDocument: URL? = nil
+
+        static func workspace(_ document: URL, files: AgentFiles) -> Self {
+            Self(resolve: { try target($0, document: document, files: files) },
+                 read: { try files.readData($0, maximum: 20_000_000) })
+        }
+    }
     private struct ImageLoader {
         var images: [String: NSImage] = [:]
         var cached: [String: NSImage] = [:]
         var attempts = 0, pixels = 0
 
-        @MainActor mutating func read(_ reference: URL, document: URL, files: AgentFiles) -> Result<NSImage, ImageFailure> {
+        @MainActor mutating func read(_ reference: URL, access: FileAccess) -> Result<NSImage, ImageFailure> {
             let url: URL
-            do { url = try target(reference, document: document, files: files) }
+            do { url = try access.resolve(reference) }
             catch { return .failure(ImageFailure(.unsupported, previousMessage: error.localizedDescription)) }
             guard url.isFileURL else { return .failure(ImageFailure(.remote, previousMessage: "仅预览工作区内的图片")) }
             guard AgentDocument.imageTypes.contains(url.pathExtension.lowercased()) else {
@@ -71,7 +81,7 @@ import ImageIO
             if let previous = cached[url.path] { picture = previous }
             else {
                 let data: Data
-                do { data = try files.readData(url, maximum: 20_000_000) }
+                do { data = try access.read(url) }
                 catch let error as POSIXError where error.code == .ENOENT || error.code == .ENOTDIR {
                     return .failure(ImageFailure(.missing, previousMessage: error.localizedDescription))
                 }
@@ -90,9 +100,10 @@ import ImageIO
 
     mutating func retryImages(document: URL, files: AgentFiles) -> Bool {
         var loader = ImageLoader(images: images, pixels: images.values.reduce(0) { $0 + Int($1.size.width * $1.size.height) })
+        let access = FileAccess.workspace(document, files: files)
         var changed = false
         imageRetries = imageRetries.compactMap { entry in
-            switch loader.read(entry.reference, document: document, files: files) {
+            switch loader.read(entry.reference, access: access) {
             case .success(let picture):
                 entry.attachment.image = picture; changed = true
                 return nil
@@ -178,6 +189,32 @@ import ImageIO
     }
 
     static func render(_ source: String, document: URL, files: AgentFiles, width: CGFloat, cachedImages: [String: NSImage] = [:]) -> Self {
+        render(source, access: .workspace(document, files: files), width: width, cachedImages: cachedImages)
+    }
+
+    static func renderPackage(_ source: String, document: URL, files: [String: Data], width: CGFloat) -> Self {
+        // These file URLs name entries in the verified archive, with all reads served by its bytes.
+        let access = FileAccess(resolve: { link in
+            if ["https", "http"].contains(link.scheme?.lowercased()) { return link }
+            guard link.scheme == nil, link.host == nil,
+                  let parts = URLComponents(url: link, resolvingAgainstBaseURL: false), parts.query == nil,
+                  var path = parts.percentEncodedPath.removingPercentEncoding else { throw PetError("不支持此链接") }
+            if path.isEmpty { path = document.lastPathComponent }
+            while path.hasPrefix("./") { path.removeFirst(2) }
+            guard AgentArchive.validPath(path), !AgentFiles.sensitive(path), files[path] != nil else {
+                throw PetError("包内文件不可用")
+            }
+            var resolved = URLComponents(url: URL(fileURLWithPath: "/" + path), resolvingAgainstBaseURL: false)!
+            resolved.fragment = parts.fragment
+            return resolved.url!
+        }, read: { url in
+            guard let data = files[String(url.path.dropFirst())] else { throw PetError("包内图片不可用") }
+            return data
+        }, snapshotDocument: document)
+        return render(source, access: access, width: width)
+    }
+
+    private static func render(_ source: String, access: FileAccess, width: CGFloat, cachedImages: [String: NSImage] = [:]) -> Self {
         let output = NSMutableAttributedString(), font = NSFont.systemFont(ofSize: 14)
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 4; paragraph.paragraphSpacing = 9
         let sourceLines = AgentMarkdownEditing.lines(source), lines = sourceLines.map(\.text)
@@ -185,7 +222,13 @@ import ImageIO
         var diagrams: [Diagram] = []
         var regions: [AgentMarkdownEditing.Region] = []
         var loader = ImageLoader(cached: cachedImages), imageRetries: [ImageRetry] = [], legacyImageText: [LegacyImageText] = []
-        func resolveLink(_ link: URL) -> URL? { try? target(link, document: document, files: files) }
+        func resolveLink(_ link: URL) -> URL? {
+            guard let target = try? access.resolve(link) else { return nil }
+            if let document = access.snapshotDocument, target.isFileURL {
+                guard target.path == document.path, fragment(target) != nil else { return nil }
+            }
+            return target
+        }
         func inline(_ text: String, font: NSFont = font, style: NSParagraphStyle = paragraph) -> NSAttributedString {
             NativeMarkdown.inline(text, font: font, color: .labelColor, paragraph: style, resolveLink: resolveLink)
         }
@@ -240,12 +283,12 @@ import ImageIO
                 let attachment = NSTextAttachment()
                 let name = image.alt.isEmpty ? "图片" : image.alt
                 var previous: String?
-                switch loader.read(image.url, document: document, files: files) {
+                switch loader.read(image.url, access: access) {
                 case .success(let picture): attachment.image = picture
                 case .failure(let failure):
                     let issue = failure.issue
                     previous = inline(name + " · " + failure.previousMessage).string + "\n"
-                    if issue.retryable {
+                    if issue.retryable, access.snapshotDocument == nil {
                         attachment.image = issue.placeholder()
                         imageRetries.append(ImageRetry(reference: image.url, attachment: attachment, issue: issue))
                     } else {

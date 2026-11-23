@@ -19,6 +19,57 @@ import AppKit
         control.selectedSegment = segment
         if let action = control.action { NSApp.sendAction(action, to: control.target, from: control) }
     }
+    static func marketReadme(_ package: AgentPluginPackage, plugins: AgentPlugins) throws -> [String: Bool] {
+        let copy = AgentWorkspaceRecovery.MarketReviewCopy(try plugins.marketReviewData(package))
+        let target = AgentPluginReviewPage.DraftTarget(path: nil, workspace: nil, name: package.metadata.name,
+            title: package.metadata.title, sourceHash: package.receipt.sourceHash, installed: nil, marketCopyHash: copy.hash)
+        let page = AgentPluginReviewPage(operation: .install, workspace: nil, protectedData: plugins.profile, draftTarget: target)
+        defer { page.window?.close() }
+        page.display(.init(package: package, installed: nil, oldFiles: [:]))
+        let tabs = try control(NSSegmentedControl.self, "插件审阅内容", page: page)
+        let preview = try control(NSTextView.self, "市场插件说明", page: page)
+        let list = try control(NSTableView.self, "插件审阅列表", page: page)
+        let heading = (preview.textStorage?.length ?? 0) > 0 ? preview.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont : nil
+        let defaultsToReadme = tabs.segmentCount == 3 && tabs.label(forSegment: 0) == "说明" && tabs.selectedSegment == 0
+            && !preview.isHiddenOrHasHiddenAncestor && !preview.isEditable && preview.string.hasPrefix("库存速查 1.0.0")
+            && (heading?.pointSize ?? 0) > 18 && list.isHiddenOrHasHiddenAncestor
+        select(tabs, 1)
+        let components = list.numberOfRows == 1 && !list.isHiddenOrHasHiddenAncestor
+        select(tabs, 2)
+        let files = list.numberOfRows == package.files.count && preview.isHiddenOrHasHiddenAncestor
+        guard let saved = try page.captureSettingsRecovery() else { throw PetError("市场文件阅读位置未记录") }
+        var legacy = try AgentConfigurationJSON.object(saved.state)
+        legacy.removeValue(forKey: "showingReadme"); legacy.removeValue(forKey: "readme")
+        select(tabs, 0)
+        try page.restoreSettingsRecovery(.init(kind: saved.kind, state: JSONSerialization.data(withJSONObject: legacy)))
+        let restoresLegacy = tabs.selectedSegment == 2 && list.numberOfRows == package.files.count
+
+        guard let pixel = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1, bitsPerSample: 8,
+              samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32) else {
+            throw PetError("无法生成图片样例")
+        }
+        pixel.setColor(.systemGreen, atX: 0, y: 0)
+        guard let image = pixel.representation(using: .png, properties: [:]) else { throw PetError("无法编码图片样例") }
+        let markdown = """
+        # 说明
+        [返回章节](#说明) [主页](https://example.invalid/docs) [本机文件](file:///outside.png) [越界](../outside.png)
+        ![随包图片](./assets/sample.png)
+        ![外部图片](https://example.invalid/remote.png)
+        ![本机图片](/outside.png)
+        """
+        let document = AgentMarkdownDocument.renderPackage(markdown, document: URL(fileURLWithPath: "/README.md"),
+            files: ["README.md": Data(markdown.utf8), "assets/sample.png": image], width: 450)
+        var links: [URL] = []
+        document.body.enumerateAttribute(.link, in: NSRange(location: 0, length: document.body.length)) { value, _, _ in
+            if let url = value as? URL { links.append(url) }
+        }
+        let usesOnlyPackage = Set(document.images.keys) == ["/assets/sample.png"] && !document.canRetryImages
+            && document.body.string.contains("外部图片 · 远程图片未加载") && links.count == 2
+            && links.contains(where: { $0.isFileURL && $0.path == "/README.md" && $0.fragment?.removingPercentEncoding == "说明" })
+            && links.contains(where: { $0.absoluteString == "https://example.invalid/docs" })
+        return ["marketInstallsStartWithFormattedReadme": defaultsToReadme, "marketReadmeRetainsComponentAndFileReviews": components && files,
+                "marketLegacyReadbackStillOpensFiles": restoresLegacy, "marketReadmeUsesOnlyPackageImagesAndSafeLinks": usesOnlyPackage]
+    }
     private static func reveal(_ marker: String, in text: NSTextView, host: NSWindow) throws -> NSRange {
         let range = (text.string as NSString).range(of: marker)
         guard range.location != NSNotFound, host.makeFirstResponder(text) else { throw PetError("缺少可选择的公开审阅行") }

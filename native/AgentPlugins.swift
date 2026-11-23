@@ -46,6 +46,8 @@ struct AgentPluginInstallation: Identifiable {
 }
 
 @MainActor final class AgentPlugins {
+    static let readmeNames = ["README.md", "readme.md"]
+
     private struct MarketReview: Codable {
         var version = 1
         let origin: AgentPluginMarketOrigin
@@ -383,7 +385,7 @@ struct AgentPluginInstallation: Identifiable {
         try readmeSource(item).text
     }
     func readmeSource(_ item: AgentPluginInstallation) throws -> (text: String, file: URL?) {
-        for path in ["README.md", "readme.md"] where item.receipt.hashes[path] != nil {
+        for path in Self.readmeNames where item.receipt.hashes[path] != nil {
             let text = String(decoding: try content(path, installation: item), as: UTF8.self)
             return (String(text.prefix(80_000)), try payload(item).literalURL(path))
         }
