@@ -136,6 +136,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
     private let settingsNavigationScroll = NSScrollView()
     private var settingsCategoryViewport: (height: CGFloat, selectionVisible: Bool)?
     private var settingsColumn: NSStackView?
+    private var settingsHeader: AgentSettingsHeader?
     private let settingsWindowActions = NSStackView()
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
     private var restoredSettingsContext: AgentSettingsRecovery.Context?
@@ -580,6 +581,20 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         let original = window.contentView?.bounds.size ?? .zero, draft = composer.string
         var checks: [String: Bool] = [:], frames: [String: [String: Double]] = [:]
         func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        func headerActionsFit() -> Bool {
+            guard let header = settingsHeader, !settingsWindowActions.isHidden else { return false }
+            let frame = settingsWindowActions.convert(settingsWindowActions.bounds, to: header)
+            let title = settingsHeading.convert(settingsHeading.bounds, to: header)
+            let controls = settingsWindowActions.arrangedSubviews.filter { !$0.isHidden }
+            let sameRow = abs(frame.midY - title.midY) < 1 && frame.minX >= title.maxX + 10
+            let nextRow = frame.maxY + 4 <= title.minY
+            return (sameRow || nextRow) && abs(frame.maxX - header.bounds.maxX + 16) < 0.5 &&
+                header.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame) && !controls.isEmpty &&
+                controls.allSatisfy { control in
+                    let bounds = control.convert(control.bounds, to: header)
+                    return frame.insetBy(dx: -0.5, dy: -0.5).contains(bounds) && bounds.width > 0 && bounds.height > 0
+                }
+        }
         window.makeKeyAndOrderFront(nil)
         for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
             for category in settingsCategories.map({ $0.0 }) {
@@ -618,8 +633,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
                 }
                 let catalog = settingsPageHost.currentController?.pageContentView as? AgentSettingsCatalogPage
                 let shouldShowActions = !settingsPageHost.isHidden && (catalog != nil || category == "git")
-                let actionFrame = settingsWindowActions.convert(settingsWindowActions.bounds, to: contentSurface)
-                checks[key + "CatalogActionsStayInWindowHeader"] = shouldShowActions ? (!settingsWindowActions.isHidden && !settingsWindowActions.arrangedSubviews.isEmpty && abs(contentSurface.bounds.maxY - actionFrame.maxY - 6) < 0.5 && abs(contentSurface.bounds.maxX - actionFrame.maxX - 12) < 0.5 && actionFrame.minX >= 12 && actionFrame.minY > column.maxY) : settingsWindowActions.isHidden
+                checks[key + "CatalogActionsStayInContentHeader"] = shouldShowActions ? headerActionsFit() : settingsWindowActions.isHidden
                 if category == "appearance", let group = settingGroups.first(where: { $0.category == category })?.view {
                     func find(_ view: NSView) -> AgentAppearanceSettingsView? { (view as? AgentAppearanceSettingsView) ?? view.subviews.lazy.compactMap(find).first }
                     let width = find(group)?.bounds.width ?? 0
@@ -750,14 +764,30 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
                 backFrame.maxX <= titleFrame.minX && navigation?.isHidden == true
             let buttons = settingsWindowActions.arrangedSubviews.compactMap { $0 as? NSButton }
             let more = descendants(settingsWindowActions).compactMap { $0 as? NSPopUpButton }.first
-            let actionFrame = settingsWindowActions.convert(settingsWindowActions.bounds, to: contentSurface)
-            checks[kind + "CompactDetailActionsFitWindowHeader"] = window.frame.size == NSSize(width: 780, height: 540) &&
-                !settingsWindowActions.isHidden && buttons.map(\.title) == actions && (more?.menu?.items.count ?? 0) > 1 &&
-                contentSurface.bounds.insetBy(dx: -0.5, dy: -0.5).contains(actionFrame) && actionFrame.minY >= titleFrame.maxY
+            checks[kind + "CompactDetailActionsFitContentHeader"] = window.frame.size == NSSize(width: 780, height: 540) &&
+                buttons.map(\.title) == actions && (more?.menu?.items.count ?? 0) > 1 && headerActionsFit()
             let firstContent = descendants(content).first { $0.identifier?.rawValue == contentID || $0.accessibilityLabel() == contentID }
             let visibleContent = ((firstContent as? NSTextView)?.enclosingScrollView ?? firstContent)?.visibleRect.height ?? 0
             checks[kind + "CompactDetailShowsFirstContent"] = visibleContent >= 60 && firstContent?.isHiddenOrHasHiddenAncestor == false
             if kind == "mcp" {
+                if let originalHeading = detail.detailHeading {
+                    let longName = "华东共享库存与商品来源连接器 · 生产验收"
+                    let narrow = window.frame
+                    detail.detailHeading = .init(title: longName, scope: originalHeading.scope, location: originalHeading.location)
+                    window.contentView?.layoutSubtreeIfNeeded()
+                    let stacked = headerActionsFit() && settingsWindowActions.convert(settingsWindowActions.bounds, to: contentSurface).maxY <
+                        settingsHeading.convert(settingsHeading.bounds, to: contentSurface).minY
+                    window.setFrame(NSRect(origin: narrow.origin, size: NSSize(width: 1320, height: 800)), display: true)
+                    await Task.yield(); window.contentView?.layoutSubtreeIfNeeded()
+                    let inline = headerActionsFit() && abs(settingsWindowActions.convert(settingsWindowActions.bounds, to: contentSurface).midY -
+                        settingsHeading.convert(settingsHeading.bounds, to: contentSurface).midY) < 1
+                    checks["LongSettingsHeadingAdaptsWithoutMovingOrLosingActions"] = stacked && inline &&
+                        settingsHeading.stringValue == longName && settingsHeading.toolTip == longName && settingsPageHost.currentController === detail &&
+                        settingsWindowActions.arrangedSubviews.compactMap { $0 as? NSButton }.elementsEqual(buttons, by: { $0 === $1 })
+                    detail.detailHeading = originalHeading
+                    window.setFrame(narrow, display: true); window.contentView?.layoutSubtreeIfNeeded()
+                }
+                else { checks["LongSettingsHeadingAdaptsWithoutMovingOrLosingActions"] = false }
                 settingsSearch.stringValue = "连接器"; updateSettingsSections()
                 let hiddenForSearch = back?.isHidden == true && settingsHeading.stringValue == "搜索结果"
                 settingsSearch.stringValue = ""; updateSettingsSections()
@@ -1121,11 +1151,6 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         let columnWidth = settings.widthAnchor.constraint(equalToConstant: 764)
         // Keep the wide layout preferred while allowing the user to shrink it.
         columnWidth.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1); columnWidth.isActive = true
-        settingsWindowActions.identifier = .init("settings-window-actions"); settingsWindowActions.setAccessibilityLabel("设置操作")
-        settingsWindowActions.alignment = .centerY; settingsWindowActions.spacing = 8; settingsWindowActions.translatesAutoresizingMaskIntoConstraints = false
-        main.addSubview(settingsWindowActions)
-        NSLayoutConstraint.activate([settingsWindowActions.topAnchor.constraint(equalTo: main.topAnchor, constant: 6), settingsWindowActions.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -12), settingsWindowActions.leadingAnchor.constraint(greaterThanOrEqualTo: main.leadingAnchor, constant: 12), settingsWindowActions.heightAnchor.constraint(equalToConstant: 28)])
-        settingsPageHost.actionsHost = settingsWindowActions
         buildSettingsSidebar(in: content); buildSettings(); changeTab()
     }
     private func buildWorkbenchConversation() {
@@ -2682,9 +2707,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         modelDirectory.isHidden = !showingModelDirectory; modelDirectoryBack.isHidden = !showingModelDirectory
         archivedTasksView?.isHidden = !showingArchive
         sidebarMenuBack.isHidden = sidebarPanel == nil
-        if let title = settingsHeading.superview {
+        if let settingsHeader {
             let compactHeader = showingModelDirectory || showingArchive || sidebarPanel != nil || !query.isEmpty || managedSettings.contains(settingsCategory)
-            settingsColumn?.setCustomSpacing(compactHeader ? 16 : 30, after: title)
+            settingsColumn?.setCustomSpacing(compactHeader ? 16 : 30, after: settingsHeader)
         }
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
         if sidebarPanel != nil { settingsHeading.stringValue = "侧栏菜单" }
@@ -3091,20 +3116,25 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         settingsPageHost.isHidden = true
         AgentWorkbenchTheme.toolbar(sidebarMenuBack, title: "返回外观", symbol: "chevron.left")
         sidebarMenuBack.target = self; sidebarMenuBack.action = #selector(closeSidebarMenu); sidebarMenuBack.isHidden = true
-        let title = NSStackView(views: [modelDirectoryBack, sidebarMenuBack, settingsHeading, NSView()]); title.alignment = .centerY; title.spacing = 12
+        let titleSpacer = NSView()
+        let title = NSStackView(views: [modelDirectoryBack, sidebarMenuBack, settingsHeading, titleSpacer]); title.alignment = .centerY; title.spacing = 12
         title.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 16); title.translatesAutoresizingMaskIntoConstraints = false
         settingsPageHost.titleHost = title
+        settingsWindowActions.identifier = .init("settings-window-actions"); settingsWindowActions.setAccessibilityLabel("设置操作")
+        settingsWindowActions.alignment = .centerY; settingsWindowActions.spacing = 8
+        let header = AgentSettingsHeader(title: title, heading: settingsHeading, spacer: titleSpacer, actions: settingsWindowActions)
+        settingsHeader = header; settingsPageHost.actionsHost = settingsWindowActions
         settingsPageHost.onDetailHeading = { [weak self] detail in
             guard let self, let category = settingsCategories.first(where: { $0.0 == self.settingsCategory }) else { return }
             settingsHeading.stringValue = detail ?? category.1; settingsHeading.toolTip = detail
             pageTitle.stringValue = settingsHeading.stringValue
         }
         settingsHeading.font = .systemFont(ofSize: 20, weight: .semibold); settingsHeading.textColor = .labelColor
-        settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         title.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let footerSpacer = NSView()
         savedStatus.onChange = { [weak footerSpacer] text in footerSpacer?.isHidden = !text.isEmpty }
-        let bottom = stack([savedStatus, footerSpacer, rebaseBasicDraftButton, save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 16)
+        let bottom = stack([savedStatus, footerSpacer, rebaseBasicDraftButton, save]), column = stack([header, settingsBody, bottom], vertical: true, spacing: 16)
         bottom.distribution = .fill
         savedStatus.setContentHuggingPriority(.defaultLow, for: .horizontal)
         for button in [rebaseBasicDraftButton, save] {
@@ -3114,7 +3144,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         settingsColumn = column
         settingsFooter = bottom
         settings.addSubview(column); pin(column, to: settings)
-        title.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        header.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         settingsBody.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         bottom.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
     }

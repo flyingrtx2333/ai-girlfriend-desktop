@@ -649,7 +649,7 @@ struct AgentSettingsCatalogGroup {
         tabs.target = self; tabs.action = #selector(changeTab); tabs.setAccessibilityLabel("设置页面类型")
         context.font = .systemFont(ofSize: 12); context.textColor = AgentWorkbenchTheme.secondaryText; context.lineBreakMode = .byTruncatingMiddle
         context.identifier = .init("settings-editing-context"); context.setAccessibilityLabel("设置编辑对象")
-        context.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        context.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         context.setContentHuggingPriority(.defaultHigh, for: .horizontal); context.alignment = .right
         for view in [back, tabs, NSView(), context] { header.addArrangedSubview(view) }; header.spacing = 12; header.identifier = .init("settings-manager-navigation")
         sourceFolder.target = self; sourceFolder.action = #selector(changeSource); sourceFolder.setAccessibilityLabel("设置源文件夹"); sourceFolder.identifier = .init("settings-source-folder")
@@ -805,7 +805,10 @@ struct AgentSettingsCatalogGroup {
         for entry in entries where entry.controller !== current { entry.controller.setSettingsActionsHost(nil) }
         current?.setSettingsActionsHost(actionsHost)
         actionsHost?.isHidden = !actionsEnabled || current == nil || actionsHost?.arrangedSubviews.isEmpty == true
-        if let actionsHost { AgentThemeContext.refresh(actionsHost, invalidate: true) }
+        if let actionsHost {
+            actionsHost.superview?.needsUpdateConstraints = true
+            AgentThemeContext.refresh(actionsHost, invalidate: true)
+        }
     }
     @objc private func goBack() {
         guard entries.count > 1, entries.last?.controller.canLeaveSettings() == true else { return }
