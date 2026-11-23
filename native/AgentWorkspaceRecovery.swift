@@ -390,6 +390,31 @@ struct AgentWorkspaceRecovery: Sendable {
             return Saved(value: value, hash: AgentFiles.hash(data))
         }
     }
+    func loadArchivedTaskNavigation(windowID: String) throws -> Saved<AgentArchivedTaskNavigation.Record>? {
+        let files = try files(), url = try literal(files, prefix(windowID) + "/archived-tasks.json")
+        let entry = try files.entryMetadata(url)
+        if entry.kind == "missing" { return nil }
+        guard entry.kind == "file" else { throw PetError("归档位置不是普通文件") }
+        let data = try files.readData(url, maximum: Self.maximumState)
+        try AgentArchivedTaskNavigation.Record.validateObject(JSONSerialization.jsonObject(with: data))
+        let value = try JSONDecoder().decode(AgentArchivedTaskNavigation.Record.self, from: data)
+        guard value.windowID == windowID, value.valid else { throw PetError("归档位置无效，原记录已保留") }
+        return Saved(value: value, hash: AgentFiles.hash(data))
+    }
+    func saveArchivedTaskNavigation(_ value: AgentArchivedTaskNavigation.Record, layoutHash: String, expected: String?) throws -> Saved<AgentArchivedTaskNavigation.Record> {
+        guard value.valid else { throw PetError("归档位置无效") }
+        let data = try encoded(value)
+        // Keep the list state separate so older versions still read layout.json.
+        return try locked(value.windowID) { files in
+            let directory = try prefix(value.windowID), layout = try literal(files, directory + "/layout.json")
+            guard try files.fileHash(layout, maximum: Self.maximumState) == layoutHash else { throw PetError("窗口布局已变化，请重新打开窗口") }
+            let change = try AgentKnowledgeFileWrite(files: files, path: directory + "/archived-tasks.json", data: data,
+                expectedHash: expected ?? AgentFiles.hash(Data()), missing: expected == nil, permissions: 0o600, label: "归档位置")
+            try change.requireCurrent()
+            try files.writeData(data, to: change.url, permissions: 0o600, expectedTarget: change.signature)
+            return Saved(value: value, hash: AgentFiles.hash(data))
+        }
+    }
     func loadTerminalLayout(windowID: String) throws -> Saved<AgentTerminalLayout>? {
         let files = try files(), path = try prefix(windowID) + "/terminal.json", url = try literal(files, path)
         let metadata = try files.entryMetadata(url)

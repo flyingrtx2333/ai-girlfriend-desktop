@@ -95,7 +95,7 @@ final class PetWebView: WKWebView {
     var usesSettingsRecoveryCheck: Bool {
         ["--settings-editor-recovery-check", "--settings-editor-recovery-ui", "--settings-manager-recovery-check", "--settings-manager-recovery-ui",
          "--settings-import-recovery-check", "--settings-import-recovery-ui", "--automation-recovery-check", "--automation-recovery-ui",
-         "--automation-monthly-check", "--workspace-editor-draft-check", "--context-inspector-check",
+         "--automation-monthly-check", "--workspace-editor-draft-check", "--context-inspector-check", "--archive-scope-check",
          "--settings-navigation-recovery-check", "--settings-navigation-recovery-ui", "--settings-mcp-recovery-check", "--settings-mcp-recovery-ui",
          "--settings-memory-recovery-check", "--settings-voice-recovery-check", "--settings-save-scope-check"].contains(where: CommandLine.arguments.contains)
     }

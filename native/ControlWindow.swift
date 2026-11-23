@@ -2081,6 +2081,7 @@ final class FormDocumentView: NSView {
         guard sender.isDescendant(of: settingsForm), settingsResults.indices.contains(sender.tag) else { return }
         let result = settingsResults[sender.tag], query = settingsSearch.stringValue.lowercased()
         guard showSettingsCategory(result.category) else { return }
+        if result.category == "archived" { archivedTasksView?.focusSearch(); return }
         if let key = result.key { settingsPageHost.selectPage(key); return }
         let target = result.category == "general" ? generalSettingsPanel?.revealSearchTarget(result.target, query: query) ?? result.target : result.target
         window?.contentView?.layoutSubtreeIfNeeded()
@@ -2287,10 +2288,12 @@ final class FormDocumentView: NSView {
         }
         let sidebarPanel = query.isEmpty && sidebarMenuLocation != nil ? sidebarMenuSettings : nil
         let showingModelDirectory = query.isEmpty && modelDirectoryReturnY != nil
+        let showingArchive = query.isEmpty && settingsCategory == "archived"
         modelDirectory.isHidden = !showingModelDirectory; modelDirectoryBack.isHidden = !showingModelDirectory
+        archivedTasksView?.isHidden = !showingArchive
         sidebarMenuBack.isHidden = sidebarPanel == nil
         if let title = settingsHeading.superview {
-            let compactHeader = showingModelDirectory || sidebarPanel != nil || query.isEmpty && managedSettings.contains(settingsCategory)
+            let compactHeader = showingModelDirectory || showingArchive || sidebarPanel != nil || query.isEmpty && managedSettings.contains(settingsCategory)
             settingsColumn?.setCustomSpacing(compactHeader ? 16 : 30, after: title)
         }
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
@@ -2307,9 +2310,10 @@ final class FormDocumentView: NSView {
             button.state = active ? .on : .off; button.needsDisplay = true
         }
         for (group, label) in settingsGroupLabels { label.isHidden = !query.isEmpty && !groups.contains(group) }
-        if showingModelDirectory {
+        if showingModelDirectory || showingArchive {
             settingsPageHost.isHidden = true; settingsScroll.isHidden = true
             generalSettingsSave?.isHidden = true; settingsFooter?.isHidden = true
+            if showingArchive { archivedTasksView?.reveal(restoreSearch: pendingSettingsNavigation == nil) }
             return
         }
         if let sidebarPanel {
@@ -2667,10 +2671,10 @@ final class FormDocumentView: NSView {
             let sides = AgentSideTaskSettingsView(service: store.sideTasks); row("", sides); sides.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("archived", "已归档", "归档 恢复 工作区 任务 项目")
             let archive = AgentArchivedTasksView(store: store); archivedTasksView = archive
-            archive.onWillChange = { [weak self] in self?.saveAgentDraft() }
+            archive.onWillChange = { [weak self] in self?.saveAgentDraft() ?? false }
             archive.onChange = { [weak self] in self?.renderAgentMessages() }
+            archive.onNavigationChange = { [weak self] in self?.workspaceSession?.changed() }
             archive.onDelete = { [weak self] ids, workspaces in try await self?.deleteAgentTasks(ids, workspaceIDs: workspaces) }
-            row("", archive); archive.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
         group("about", "关于与更新", "关于 版本 源码 提交 构建 更新 签名 version build update")
         for (title, value) in AgentAppVersion.details() {
@@ -2691,6 +2695,7 @@ final class FormDocumentView: NSView {
         rebaseBasicDraftButton.target = self; rebaseBasicDraftButton.action = #selector(rebaseBasicDraft)
         rebaseBasicDraftButton.isHidden = true
         for view in [settingsScroll, settingsPageHost] { settingsBody.addSubview(view); pin(view, to: settingsBody) }
+        if let archive = archivedTasksView { settingsBody.addSubview(archive); pin(archive, to: settingsBody, inset: 16); archive.isHidden = true }
         settingsBody.addSubview(modelDirectory); pin(modelDirectory, to: settingsBody, inset: 16)
         modelDirectory.isHidden = true
         settingsPageHost.isHidden = true
@@ -3689,6 +3694,7 @@ final class FormDocumentView: NSView {
             }
             if value.query.isEmpty, value.focus == nil, value.voiceDraft != nil { focusBasicDraftInput() }
             pendingSettingsNavigation = nil
+            if value.query.isEmpty, value.category == "archived" { archivedTasksView?.restoreSearchFocus() }
             rememberSettingsCategoryViewport()
             rememberSettingsNavigationInput()
             workspaceSession?.changed()
@@ -3730,6 +3736,8 @@ final class FormDocumentView: NSView {
     func captureAttentionRecovery() -> AgentAttentionRecovery? {
         attentionPageController?.captureRecovery(active: selectedTab == "attention")
     }
+    func captureArchivedTaskNavigation() -> AgentArchivedTaskNavigation? { archivedTasksView?.captureNavigation() }
+    func restoreArchivedTaskNavigation(_ value: AgentArchivedTaskNavigation) { archivedTasksView?.restoreNavigation(value) }
     func captureWorkspaceEditorDraft() -> AgentWorkspaceEditorDraft? {
         let page = selectedTab == "settings" ? "chat" : selectedTab
         return workspaceEditor?.captureDraft(returnPage: page, knowledgeRoot: page == "knowledge" ? knowledgePageHost.selectedRoot : nil)
@@ -4608,7 +4616,8 @@ final class FormDocumentView: NSView {
     }
     private func deleteAgentTasks(_ ids: [String], workspaceIDs: [String]) async throws -> String? {
         guard let store = companion?.agentStore else { throw PetError("任务未初始化") }
-        saveAgentDraft(); let mode = currentAgentTask?.organizationMode ?? .coding, plan = try store.prepareDeletion(ids, workspaceIDs: workspaceIDs)
+        guard saveAgentDraft() else { throw PetError("当前任务草稿保存失败，请重试") }
+        let mode = currentAgentTask?.organizationMode ?? .coding, plan = try store.prepareDeletion(ids, workspaceIDs: workspaceIDs)
         try companion?.requireTaskDeletionAllowed(plan.ids)
         let alert = AgentConfirmation()
         alert.messageText = workspaceIDs.isEmpty ? "永久删除\(plan.records.count)项任务？" : "永久删除\(workspaceIDs.count)个工作区及\(plan.records.count)项任务？"

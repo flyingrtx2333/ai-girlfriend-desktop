@@ -41,6 +41,9 @@ private actor AgentWorkspaceJournal {
     func saveWorkspaceEditorDrafts(_ record: AgentWorkspaceEditorDraft.Record, layoutHash: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentWorkspaceEditorDraft.Record> {
         try storage.saveWorkspaceEditorDrafts(record, layoutHash: layoutHash, expected: expected)
     }
+    func saveArchivedTaskNavigation(_ record: AgentArchivedTaskNavigation.Record, layoutHash: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentArchivedTaskNavigation.Record> {
+        try storage.saveArchivedTaskNavigation(record, layoutHash: layoutHash, expected: expected)
+    }
     func saveTerminals(_ layout: AgentTerminalLayout, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTerminalLayout> {
         try storage.saveTerminalLayout(layout, expected: expected)
     }
@@ -77,6 +80,8 @@ private actor AgentWorkspaceJournal {
     private var savedWorkspaceEditorDrafts: AgentWorkspaceRecovery.Saved<AgentWorkspaceEditorDraft.Record>?
     private var workspaceEditorRecoveryReadOnly = false
     private var workspaceEditorFailure: String?
+    private var savedArchivedTaskNavigation: AgentWorkspaceRecovery.Saved<AgentArchivedTaskNavigation.Record>?
+    private var archivedTaskNavigationReadOnly = false
     var pendingSettingsCategory: String? { coldSettings?.category }
     var hasPendingAutomation: Bool { coldAutomation != nil }
     private var knowledgeFailure: String?
@@ -138,6 +143,13 @@ private actor AgentWorkspaceJournal {
             } catch {
                 workspaceEditorRecoveryReadOnly = true
                 owner.setStatus("工作区设置草稿未读取，原记录已保留：" + error.localizedDescription, error: true)
+            }
+            do {
+                savedArchivedTaskNavigation = try recovery.loadArchivedTaskNavigation(windowID: id)
+                if let state = savedArchivedTaskNavigation?.value.state { owner.restoreArchivedTaskNavigation(state) }
+            } catch {
+                archivedTaskNavigationReadOnly = true
+                owner.setStatus("归档位置未恢复，原记录已保留：" + error.localizedDescription, error: true)
             }
             do {
                 savedTerminals = try recovery.loadTerminalLayout(windowID: id)
@@ -430,6 +442,7 @@ private actor AgentWorkspaceJournal {
                 layout.automation = try coldAutomation ?? owner.captureAutomationRecovery()
                 let workspaceEditor = owner.workspaceEditor, editorDraft = owner.captureWorkspaceEditorDraft()
                 let editorDrafts = workspaceEditorDrafts(including: editorDraft)
+                let archivedTaskNavigation = owner.captureArchivedTaskNavigation()
                 let attention = owner.captureAttentionRecovery() ?? coldAttention ?? previous?.attention
                 if let legacy = previous?.attention, let layoutHash {
                     if let attentionRecoveryError { throw PetError("需要我恢复记录无法迁移：" + attentionRecoveryError) }
@@ -443,6 +456,10 @@ private actor AgentWorkspaceJournal {
                 if !workspaceEditorRecoveryReadOnly, editorDrafts != (savedWorkspaceEditorDrafts?.value.drafts ?? [:]) {
                     let record = AgentWorkspaceEditorDraft.Record(windowID: id, drafts: editorDrafts)
                     savedWorkspaceEditorDrafts = try await journal.saveWorkspaceEditorDrafts(record, layoutHash: saved.hash, expected: savedWorkspaceEditorDrafts?.hash)
+                }
+                if !archivedTaskNavigationReadOnly, let archivedTaskNavigation, archivedTaskNavigation != savedArchivedTaskNavigation?.value.state {
+                    let record = AgentArchivedTaskNavigation.Record(windowID: id, state: archivedTaskNavigation)
+                    savedArchivedTaskNavigation = try await journal.saveArchivedTaskNavigation(record, layoutHash: saved.hash, expected: savedArchivedTaskNavigation?.hash)
                 }
                 if var attention, attentionRecoveryError == nil {
                     attention.active = attention.active && saved.value.permitsActiveAttention
@@ -525,6 +542,8 @@ private actor AgentWorkspaceJournal {
         if editors.contains(where: { ($0.2 as? AgentGitWindow)?.recoveryWorktreeForm?.hasDraft == true }) { revision &+= 1 }
         if !workspaceEditorRecoveryReadOnly, let owner,
            workspaceEditorDrafts(including: owner.captureWorkspaceEditorDraft()) != (savedWorkspaceEditorDrafts?.value.drafts ?? [:]) { revision &+= 1 }
+        if !archivedTaskNavigationReadOnly, let state = owner?.captureArchivedTaskNavigation(),
+           state != savedArchivedTaskNavigation?.value.state { revision &+= 1 }
         if attentionRecoveryError == nil, let owner, let attention = owner.captureAttentionRecovery(),
            attention != savedAttention?.value.state { revision &+= 1 }
         if !terminalRecoveryReadOnly, let owner, let terminals = owner.captureTerminalLayout(windowID: id) {
