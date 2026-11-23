@@ -1,5 +1,11 @@
 # P0 逐页界面验收台账
 
+## 2026-11-23 公开远端 HTTPS 连接器
+
+- 隔离验收包使用 `c35d78b` 的连接器实现。1200×744 深色设置实窗点击「连接」，从 Microsoft Learn 的公开 Streamable HTTP 服务读回「已连接」及 3 个实际工具，展开搜索工具核对 `query` 参数。此服务无需登录或填写凭据。[Microsoft Learn 接入说明](https://learn.microsoft.com/en-us/training/support/mcp-developer-reference)
+- 无工作区的 Agent 任务使用逐次确认模式，核对连接和调用的审批要求后，读取实际参数并执行文档搜索、正文读取。搜索返回 Azure Blob Storage 的官方页面，正文与直接访问的官方网页均确认其对象存储用于非结构化数据。搜索结果触及应用的 20,000 字符上限，仍包含目标来源。已核对其他任务无法复用连接，断开后连接失效。[Azure Blob Storage 概述](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blobs-overview)
+- **17 项检查通过**，14 份正式资料的内容及权限核对一致，模型请求 **0 次**。账号授权、系统钥匙串和更多远端服务继续列在 P1-06。应用进程、原图、真实响应和首次窗口检查记录位于 `evidence/agent/mcp-public-https-uUgGe0ng/acceptance-index.json`。
+
 ## 2026-11-23 Excel 编辑区明暗外观
 
 - 旧版在深色窗口仅更新了备注侧栏，工具栏、公式栏、标签和折叠菜单仍使用浅色。`c35d78b` 将这些控件及单元格编辑框纳入应用外观。780×540 实窗核对了菜单边界、最低项可达、输入焦点、取消编辑和锁定样式。切换过程保持 B3 原公式和备注草稿选区。[编辑器工具栏接口](https://docs.betteroffice.dev/docs/javascript#compose-the-xlsx-toolbar)
