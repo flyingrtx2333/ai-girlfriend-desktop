@@ -223,7 +223,7 @@ import AppKit
             checks.merge(external.0) { _, next in next }; report["externalWorktree"] = external.1
             let missing = try await checkMissingWorktreeRegistration(fixture, manager: manager, tasks: tasks)
             checks.merge(missing.0) { _, next in next }; report["missingRegistration"] = missing.1
-            let relink = try await checkMovedWorktreeRelink(fixture, manager: manager, tasks: tasks)
+            let relink = try await checkMovedWorktreeRelink(fixture, manager: manager, reader: reader, tasks: tasks)
             checks.merge(relink.0) { _, next in next }; report["worktreeRelink"] = relink.1
             host.checkBack(); checks["managerBackReturnsToOriginalGitDraft"] = host.currentController === gitPage && gitPage.workspaceReadback()["draft"] as? String == "保留原任务的 Git 提交说明"
             control.showAgentTask(fixture.standaloneID); control.createTaskWorktree()
@@ -240,7 +240,7 @@ import AppKit
         try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("worktree-workspace-report.json"))
     }
 
-    private func checkMovedWorktreeRelink(_ fixture: WorktreeWorkspaceFixture, manager: AgentWorktreeWindow,
+    private func checkMovedWorktreeRelink(_ fixture: WorktreeWorkspaceFixture, manager: AgentWorktreeWindow, reader: NSTextView,
                                         tasks: AgentStore) async throws -> ([String: Bool], [String: Any]) {
         var checks: [String: Bool] = [:]
         let source = fixture.eligibleExternal, base = source.deletingLastPathComponent(), fm = FileManager.default
@@ -271,9 +271,34 @@ import AppKit
         catch { checks["relinkUnavailableToModel"] = true }
         await manager.checkWorkspace(relinkDestination: different.path)
         checks["checkoutForDifferentRegistryIsRejected"] = manager.workspaceReadback()["stateIsError"] as? Bool == true && manager.workspaceReadback()["relinkDestination"] as? String == ""
+        await manager.checkWorkspace(relinkDestination: newParent.path)
+        checks["relinkPickerExplainsMissingWorktreeLink"] = manager.workspaceReadback()["state"] as? String == "新目录缺少可读的 Git 工作树链接，请选择移动后的工作树目录"
         await manager.checkWorkspace(relinkDestination: destination.path)
         let review = manager.workspaceReadback(), detail = review["detail"] as? String ?? ""
         checks["relinkReviewShowsBothPathsAndAffectedTasks"] = review["relinkDestination"] as? String == destination.path && review["selectionEnabled"] as? Bool == false && detail.contains(source.path) && detail.contains(destination.path) && detail.contains("关联的多源公开任务")
+        let selection = (reader.string as NSString).range(of: "关联的多源公开任务")
+        guard selection.location != NSNotFound else { throw PetError("工作树审阅缺少关联任务") }
+        reader.setSelectedRange(selection)
+        let checkpoint = try manager.captureManagerRecovery()
+        do {
+            let reopened = try AgentWorktreeWindow(store: tasks, taskID: fixture.taskID, recovery: checkpoint, onSelectTask: { _ in })
+            reopened.showWindow(nil); reopened.window?.makeKeyAndOrderFront(nil)
+            defer { reopened.close(); control.window?.makeKeyAndOrderFront(nil) }
+            await reopened.checkWorkspace(); await wait(0.08)
+            let parked = destination.appendingPathExtension("unavailable")
+            try fm.moveItem(at: destination, to: parked)
+            await reopened.checkWorkspace(action: "review-again")
+            try fm.moveItem(at: parked, to: destination)
+            let failure = reopened.workspaceReadback(), failedReview = try reopened.captureManagerRecovery().review
+            checks["relinkRetryKeepsExactSelectionAndRequiresAvailableDestination"] = failure["state"] as? String == "新目录不可用，请检查路径后重试" &&
+                failure["reviewAgainEnabled"] as? Bool == true && failure["relinkEnabled"] as? Bool == false &&
+                failedReview?.summary == checkpoint.review?.summary && failedReview?.text?.selections.first?.range == selection
+            await reopened.checkWorkspace(action: "review-again")
+            let refreshed = try reopened.captureManagerRecovery().review
+            checks["relinkRetryEnablesFreshReviewAndKeepsExactSelection"] = reopened.workspaceReadback()["relinkEnabled"] as? Bool == true &&
+                refreshed?.destination == destination.path && refreshed?.text?.selections.first?.range == selection
+            await reopened.checkWorkspace(action: "cancel")
+        }
         await manager.checkWorkspace(action: "cancel")
         checks["relinkCancellationPreservesLinksAndTask"] = try Data(contentsOf: backlink) == beforeBacklink && Data(contentsOf: destination.appendingPathComponent(".git")) == beforeForward && tasks.task(nestedID)?.workspace == nested.path
         await manager.checkWorkspace(relinkDestination: destination.path)

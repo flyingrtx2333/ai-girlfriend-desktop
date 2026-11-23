@@ -407,8 +407,13 @@ enum AgentWorktreeSnapshot {
         }) else { throw PetError("新目录与另一条工作树登记重叠") }
         let metadata = try registrationMetadata(for: source)
         try checkWorktreeMetadataIdle(metadata, allowingLocked: true)
-        let checkoutFiles = try AgentFiles(workspace: checkout.path, followParentLinks: false), admin = try AgentFiles(workspace: metadata.path, followParentLinks: false)
-        let (pointer, pointerBytes) = try relinkFile(".git", in: checkoutFiles, prefix: "gitdir: ")
+        guard let checkoutFiles = try? AgentFiles(workspace: checkout.path, followParentLinks: false), checkoutFiles.root.path == checkout.path else {
+            throw PetError("新目录不可用，请检查路径后重试")
+        }
+        guard let (pointer, pointerBytes) = try? relinkFile(".git", in: checkoutFiles, prefix: "gitdir: ") else {
+            throw PetError("新目录缺少可读的 Git 工作树链接，请选择移动后的工作树目录")
+        }
+        let admin = try AgentFiles(workspace: metadata.path, followParentLinks: false)
         let (backlink, backlinkBytes) = try relinkFile("gitdir", in: admin)
         let (common, _) = try relinkFile("commondir", in: admin)
         let locations: [String] = [original, checkout].map { URL(fileURLWithPath: pointer, relativeTo: $0).standardizedFileURL.path }

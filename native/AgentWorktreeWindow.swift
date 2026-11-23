@@ -250,8 +250,9 @@ struct AgentWorktreeManagerRecovery: Codable, Equatable {
             }
         } else { note = showingBackups ? "暂无回收记录" : "暂无工作树" }
         heading.stringValue = title
-        renderDetails(fields, note: note)
-        reviewSummary = reviewing ? .init(title: title, note: note, fields: fields.map { .init(label: $0.0, value: $0.1) }) : nil
+        let summary = reviewing ? Recovery.Summary(title: title, note: note, fields: fields.map { .init(label: $0.0, value: $0.1) }) : nil
+        if summary == nil || summary != reviewSummary { renderDetails(fields, note: note) }
+        reviewSummary = summary
         list.isHidden = reviewing; refreshButton.isHidden = reviewing; scope.isHidden = reviewing; openButton.isHidden = reviewing
         table.isEnabled = !busy && !reviewing; refreshButton.isEnabled = !busy && !reviewing; scope.isEnabled = !busy && !reviewing
         openButton.isEnabled = !busy && !reviewing && ids.contains { store.task($0)?.archived == false }
