@@ -14,10 +14,21 @@ import WebKit
     private let world = WKContentWorld.world(name: "BlueFatFishBrowser")
     private var titleObservation: NSKeyValueObservation?, urlObservation: NSKeyValueObservation?
     private let recoveryEvents = AgentBrowserRecoveryEvents()
-    private var pendingRecovery: AgentBrowserRecoveryState.Page?
+    private enum Recovery {
+        case restoring(AgentBrowserRecoveryState.Page), waiting(AgentBrowserRecoveryState.Page)
+
+        var page: AgentBrowserRecoveryState.Page {
+            switch self {
+            case .restoring(let page), .waiting(let page): return page
+            }
+        }
+    }
+    private var recovery: Recovery?
     private var restoringView: Task<Void, Never>?
     private weak var pageDialog: AgentConfirmation?
     var hasPageDialog: Bool { pageDialog != nil }
+    var recoveryWaiting: Bool { if case .waiting? = recovery { return true }; return false }
+    private var restoringPage: Bool { if case .restoring? = recovery { return true }; return false }
     private struct DownloadIntent {
         let origin: String
         let fromAddress: Bool
@@ -25,10 +36,13 @@ import WebKit
     private var explicitAddress: URL?
     private var downloadIntent: DownloadIntent?
     private var convertingDownload: DownloadIntent?
-    var recoveryURL: String? { web.url?.absoluteString ?? pendingRecovery?.url }
-    var recoveryTitle: String { web.title.flatMap { $0.isEmpty ? nil : $0 } ?? pendingRecovery?.title ?? "" }
+    var recoveryURL: String? { web.url?.absoluteString ?? recovery?.page.url }
+    var recoveryTitle: String {
+        if let title = recovery?.page.title, !title.isEmpty { return title }
+        return web.title ?? ""
+    }
     var tabReference: AgentBrowserTabReference? {
-        guard !closed, !busy, !web.isLoading, !hasPageDialog, pageError == nil, pendingRecovery == nil,
+        guard !closed, !busy, !web.isLoading, !hasPageDialog, pageError == nil, recovery == nil,
               let url = web.url, (try? AgentBrowser.url(url.absoluteString)) != nil else { return nil }
         let title = String((web.title ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(160))
         return AgentBrowserTabReference(id: id, documentID: documentID, url: url.absoluteString, title: title.isEmpty ? (url.host ?? url.absoluteString) : title)
@@ -82,30 +96,47 @@ import WebKit
     }
     private func end() { busy = false; notify() }
     func dismissPageDialog() { pageDialog?.endDialog(.abort) }
+    private func cancelRestoringView() { restoringView?.cancel(); restoringView = nil }
+    private func pauseRecovery() {
+        cancelRestoringView()
+        if let page = recovery?.page { recovery = .waiting(page) }
+    }
     func stop() {
         navigation = UUID(); explicitAddress = nil; downloadIntent = nil
+        pauseRecovery()
         web.stopLoading(); dismissPageDialog(); invalidate(); status = "已停止加载"
     }
-    func close() { closed = true; lastObservation = nil; titleObservation = nil; urlObservation = nil; restoringView?.cancel(); pendingRecovery = nil; recoveryEvents.onChange = nil; web.configuration.userContentController.removeScriptMessageHandler(forName: "workspaceRecovery", contentWorld: world); stop(); web.navigationDelegate = nil; web.uiDelegate = nil; web.removeFromSuperview() }
+    func close() { closed = true; lastObservation = nil; titleObservation = nil; urlObservation = nil; recovery = nil; recoveryEvents.onChange = nil; web.configuration.userContentController.removeScriptMessageHandler(forName: "workspaceRecovery", contentWorld: world); stop(); web.navigationDelegate = nil; web.uiDelegate = nil; web.removeFromSuperview() }
+    func resumeRecovery() {
+        guard !closed, !busy, !hasPageDialog, case .waiting(let saved)? = recovery,
+              let value = saved.url, let url = try? AgentBrowser.url(value) else { return }
+        recovery = .restoring(saved); pageError = nil; invalidate()
+        explicitAddress = nil; downloadIntent = nil; status = "正在恢复网页…"
+        web.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25))
+    }
+    func keepCurrentPage() {
+        guard recoveryWaiting, web.url != nil, !web.isLoading else { return }
+        recovery = nil; invalidate(); status = pageError ?? web.title ?? ""
+    }
     func manualNavigation(_ action: String) {
         dismissPageDialog(); invalidate(); pageError = nil
         explicitAddress = nil; downloadIntent = nil
         switch action {
-        case "back": pendingRecovery = nil; web.goBack()
-        case "forward": pendingRecovery = nil; web.goForward()
+        case "back": web.goBack()
+        case "forward": web.goForward()
         default:
-            if web.url == nil, let value = pendingRecovery?.url, let url = try? AgentBrowser.url(value) { web.load(URLRequest(url: url, timeoutInterval: 25)) }
+            if web.url == nil, recoveryWaiting { resumeRecovery() }
             else { web.reload() }
         }
     }
     func open(_ url: URL) async throws -> AgentToolResult {
-        try begin(); defer { end() }; invalidate(); pendingRecovery = nil; allowedOrigins.insert(AgentBrowser.origin(url))
+        try begin(); defer { end() }; invalidate(); cancelRestoringView(); recovery = nil; allowedOrigins.insert(AgentBrowser.origin(url))
         web.load(URLRequest(url: url, timeoutInterval: 25)); return try await capture(offset: 1, query: "")
     }
     func openManually(_ url: URL) {
         web.stopLoading()
-        dismissPageDialog(); invalidate()
-        pageError = nil; pendingRecovery = nil; downloadIntent = nil
+        dismissPageDialog(); invalidate(); cancelRestoringView()
+        pageError = nil; recovery = nil; downloadIntent = nil
         allowedOrigins.insert(AgentBrowser.origin(url))
         explicitAddress = url
         web.load(URLRequest(url: url, timeoutInterval: 25))
@@ -188,7 +219,6 @@ import WebKit
     func act(_ args: [String: Any]) async throws -> AgentToolResult {
         _ = try actionReason(args); try begin(); defer { end() }
         let id = args["revision"] as! String, operation = args["action"] as! String
-        if operation != "reload" { pendingRecovery = nil }
         let ref = args["ref"] as? String ?? "", value = args["value"] as? String ?? ""
         // Grant only the reviewed link/form destination. Unreviewed cross-site
         // redirects and script navigations are rejected by the navigation delegate.
@@ -212,24 +242,25 @@ import WebKit
             guard let url = navigationAction.request.url else { throw PetError("网页没有有效地址") }
             if !navigationAction.shouldPerformDownload || url.scheme?.lowercased() != "blob" { _ = try AgentBrowser.url(url.absoluteString) }
             guard let origin = AgentBrowserDownloads.origin(url), allowedOrigins.contains(origin) else { throw PetError("页面尝试打开另一站点，请用 browser_open 单独打开：" + url.absoluteString) }
+            if restoringPage, !["GET", "HEAD"].contains(navigationAction.request.httpMethod ?? "GET") {
+                throw PetError("网页需要重新提交。请在当前页面手动操作")
+            }
             if main {
                 let typed = explicitAddress == url
                 explicitAddress = nil
                 if !busy, typed || userLink && navigationAction.sourceFrame.isMainFrame {
-                    pendingRecovery = nil
                     downloadIntent = DownloadIntent(origin: origin, fromAddress: typed)
                 } else if navigationAction.navigationType != .other || downloadIntent?.origin != origin {
                     downloadIntent = nil
                 }
             }
-            if pendingRecovery != nil, !["GET", "HEAD"].contains(navigationAction.request.httpMethod ?? "GET") { throw PetError("此网页需要重新提交，请在恢复后手动完成；原页面记录已保留") }
             if navigationAction.shouldPerformDownload {
                 guard main, navigationAction.sourceFrame.isMainFrame || downloadIntent?.fromAddress == true else { decisionHandler(.cancel); return }
                 convertingDownload = try allowDownload(from: origin)
                 decisionHandler(.download)
             } else { decisionHandler(.allow) }
         } catch {
-            if main { downloadIntent = nil; pageError = error.localizedDescription; status = error.localizedDescription }
+            if main { downloadIntent = nil; pauseRecovery(); pageError = error.localizedDescription; status = error.localizedDescription }
             decisionHandler(.cancel)
         }
     }
@@ -247,13 +278,13 @@ import WebKit
                 decisionHandler(.download)
             } else { decisionHandler(.allow) }
         } catch {
-            if navigationResponse.isForMainFrame { pageError = error.localizedDescription; status = error.localizedDescription }
+            if navigationResponse.isForMainFrame { pauseRecovery(); pageError = error.localizedDescription; status = error.localizedDescription }
             decisionHandler(.cancel)
         }
     }
     private func allowDownload(from origin: String) throws -> DownloadIntent {
         defer { downloadIntent = nil }
-        guard downloads != nil, !closed, !busy, pendingRecovery == nil else { throw PetError("请在任务浏览器中手动下载文件") }
+        guard downloads != nil, !closed, !busy, !restoringPage else { throw PetError("请在任务浏览器中手动下载文件") }
         if let downloadIntent, downloadIntent.origin == origin { return downloadIntent }
         if #available(macOS 15.2, *) { return DownloadIntent(origin: origin, fromAddress: false) }
         throw PetError("请点击网页中的下载链接，或在地址栏打开下载地址")
@@ -277,30 +308,37 @@ import WebKit
         downloads.start(download, origin: intent.origin)
     }
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        documentID = UUID(); dismissPageDialog(); invalidate(); lastObservation = nil; status = "加载中…"
+        documentID = UUID(); cancelRestoringView(); dismissPageDialog(); invalidate(); lastObservation = nil; status = "加载中…"
     }
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { downloadIntent = nil; explicitAddress = nil; pageError = nil }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        status = pageError ?? web.title ?? ""
-        if let saved = pendingRecovery, pageError == nil {
-            restoringView?.cancel()
-            restoringView = Task { [weak self] in
-                guard let self else { return }; defer { restoringView = nil }
-                do {
-                    // Apply coordinates only to the same document. A login or
-                    // other redirect keeps its own viewport and original state.
-                    guard web.url?.absoluteString == saved.url else { notify(); return }
-                    web.pageZoom = saved.zoom
-                    if let forms = saved.forms {
-                        let restored = try await web.callAsyncJavaScript(AgentBrowserFormRecovery.restoreScript, arguments: ["state": try forms.object()], in: nil, contentWorld: world)
-                        guard restored as? Bool == true else { throw PetError("网页表单已变化，原填写已保留") }
-                    }
-                    _ = try await web.callAsyncJavaScript("scrollTo(x,y); return {x:scrollX,y:scrollY};", arguments: ["x": saved.x, "y": saved.y], in: nil, contentWorld: world)
-                    try Task.checkCancellation(); guard !closed else { return }; pendingRecovery = nil; notify()
-                } catch { if !closed { status = "网页填写或位置尚未恢复，原记录已保留" } }
+        guard let saved = recovery?.page, let address = saved.url, pageError == nil, web.url?.absoluteString == address else {
+            pauseRecovery(); status = pageError ?? web.title ?? ""; return
+        }
+        recovery = .restoring(saved); status = web.title ?? ""
+        cancelRestoringView()
+        let document = documentID
+        restoringView = Task { [weak self] in
+            guard let self else { return }
+            defer { if documentID == document, !Task.isCancelled { restoringView = nil } }
+            do {
+                web.pageZoom = saved.zoom
+                if let forms = saved.forms {
+                    let restored = try await web.callAsyncJavaScript(AgentBrowserFormRecovery.restoreScript, arguments: ["state": try forms.object()], in: nil, contentWorld: world)
+                    guard restored as? Bool == true else { throw PetError("网页表单已变化，原填写已保留") }
+                }
+                try Task.checkCancellation()
+                let scroll = "if(location.href!==address)return false; scrollTo(x,y); return true;"
+                let moved = try await web.callAsyncJavaScript(scroll, arguments: ["address": address, "x": saved.x, "y": saved.y], in: nil, contentWorld: world)
+                try Task.checkCancellation()
+                guard !closed, documentID == document else { return }
+                guard moved as? Bool == true else { throw PetError("网页位置尚未恢复") }
+                recovery = nil; notify()
+            } catch {
+                guard !closed, documentID == document, !Task.isCancelled else { return }
+                recovery = .waiting(saved); status = "网页填写或位置尚未恢复，原记录已保留"
             }
         }
-        notify()
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
@@ -310,7 +348,7 @@ import WebKit
         // a load failure, including when it handed the response to a download.
         let policyChange = failure.domain == "WebKitErrorDomain" && failure.code == 102
         if failure.code != NSURLErrorCancelled, !policyChange || pageError == nil && convertingDownload == nil && status == "加载中…" {
-            pageError = error.localizedDescription; status = error.localizedDescription
+            pauseRecovery(); pageError = error.localizedDescription; status = error.localizedDescription
         }
         if !policyChange, failure.code != NSURLErrorCancelled { downloadIntent = nil; explicitAddress = nil }
         invalidate(); notify()
@@ -343,7 +381,7 @@ import WebKit
     }
     private func presentPageDialog(_ message: String, frame: WKFrameInfo, input: AgentDialogTextField? = nil,
                                    confirmation: Bool = false, completion: @escaping (Bool) -> Void) {
-        guard !closed, pendingRecovery == nil, !hasPageDialog, allowsPageDialog?() == true,
+        guard !closed, !restoringPage, !hasPageDialog, allowsPageDialog?() == true,
               let owner = web.window, owner.isVisible, owner.isKeyWindow, !owner.hasBlockingDialog,
               let value = frame.request.url, let url = try? AgentBrowser.url(value.absoluteString),
               allowedOrigins.contains(AgentBrowser.origin(url)) else { completion(false); return }
@@ -369,7 +407,7 @@ import WebKit
         guard !closed else { throw PetError("浏览器标签页已关闭") }
         guard !hasPageDialog else { throw PetError("网页正等待输入或确认，上次恢复记录已保留") }
         if let restoringView { await restoringView.value }
-        if let pendingRecovery { return pendingRecovery }
+        if let recovery { return recovery.page }
         guard let url = web.url else { return .init(id: id, title: "", origins: allowedOrigins.sorted(), zoom: web.pageZoom, x: 0, y: 0) }
         _ = try AgentBrowser.url(url.absoluteString)
         let point = try await web.callAsyncJavaScript(AgentBrowserFormRecovery.captureScript, arguments: [:], in: nil, contentWorld: world) as? [String: Any]
@@ -381,12 +419,12 @@ import WebKit
     }
     func restoreWorkspaceRecovery(_ value: AgentBrowserRecoveryState.Page) throws {
         guard !closed, web.url == nil, !busy else { throw PetError("当前网页不能替换为恢复记录") }
-        allowedOrigins = Set(value.origins); pendingRecovery = value; web.pageZoom = value.zoom
+        allowedOrigins = Set(value.origins)
+        if value.url != nil { recovery = .restoring(value) }
         if let data = value.interaction {
             web.interactionState = data
             guard web.backForwardList.currentItem != nil else { throw PetError("系统无法读取网页历史，原记录已保留") }
         } else if let url = value.url { web.load(URLRequest(url: try AgentBrowser.url(url), timeoutInterval: 25)) }
-        else { pendingRecovery = nil }
         invalidate(); lastObservation = nil
     }
 }

@@ -97,6 +97,9 @@ import WebKit
     private let back = NSButton(), forward = NSButton(), reload = NSButton(), halt = NSButton()
     private let add = NSButton(), remove = NSButton(), copyLink = NSButton(), copyImage = NSButton()
     private let annotate = NSButton(), downloadList = NSButton()
+    private let recoveryBar = NSStackView(), restorePage = AgentDialogButton(title: "恢复原网页", target: nil, action: nil)
+    private let keepPage = AgentDialogButton(title: "保留当前页", target: nil, action: nil)
+    private var recoveryHeight: NSLayoutConstraint!
     private let separate = NSButton(title: "新窗口", target: nil, action: nil), pageTabs = NSStackView(), pageTabScroll = NSScrollView()
     private var tabSignature = "", detached = false
     private var addressDraft: String?, restoredAddressSelection: AgentBrowserRecoveryState.Selection?, restoringRecovery = false
@@ -144,15 +147,27 @@ import WebKit
         separate.target = self; separate.action = #selector(toggleSeparateWindow); separate.bezelStyle = .rounded; separate.controlSize = .small
         let toolbar = NSStackView(views: [back, forward, reload, halt, address]); toolbar.spacing = 6
         let actions = NSStackView(views: [add, remove, copyLink, copyImage, annotate, downloadList, NSView(), separate]); actions.spacing = 6
+        let recoveryLabel = NSTextField(labelWithString: "原网页待恢复")
+        recoveryLabel.font = .systemFont(ofSize: 12); recoveryLabel.textColor = AgentWorkbenchTheme.secondaryText
+        recoveryLabel.lineBreakMode = .byTruncatingTail; recoveryLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        restorePage.target = self; restorePage.action = #selector(restoreOriginalPage)
+        keepPage.target = self; keepPage.action = #selector(keepCurrentPage)
+        keepPage.toolTip = "结束此标签的网页恢复"
+        AgentSettingsStyle.primaryAction(restorePage); AgentDialogStyle.action(keepPage)
+        recoveryBar.spacing = 6; recoveryBar.alignment = .centerY
+        [recoveryLabel, NSView(), keepPage, restorePage].forEach(recoveryBar.addArrangedSubview)
+        recoveryBar.detachesHiddenViews = false; recoveryBar.isHidden = true
+        recoveryHeight = recoveryBar.heightAnchor.constraint(equalToConstant: 0)
         pageTabs.orientation = .horizontal; pageTabs.spacing = 3
         pageTabScroll.documentView = pageTabs; pageTabScroll.hasHorizontalScroller = true; pageTabScroll.scrollerStyle = .overlay; pageTabScroll.drawsBackground = false; pageTabScroll.setAccessibilityLabel("网页标签页")
         let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         content.onResize = { [weak self] in self?.pageDidLayout() }
-        for view in [toolbar, actions, pageTabScroll, tabs, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [toolbar, actions, recoveryBar, pageTabScroll, tabs, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12), toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12), toolbar.topAnchor.constraint(equalTo: content.topAnchor, constant: 10), toolbar.heightAnchor.constraint(equalToConstant: 28),
             actions.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor), actions.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), actions.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 4), actions.heightAnchor.constraint(equalToConstant: 28),
-            pageTabScroll.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor), pageTabScroll.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), pageTabScroll.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 4), pageTabScroll.heightAnchor.constraint(equalToConstant: 30),
+            recoveryBar.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor), recoveryBar.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), recoveryBar.topAnchor.constraint(equalTo: actions.bottomAnchor), recoveryHeight,
+            pageTabScroll.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor), pageTabScroll.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), pageTabScroll.topAnchor.constraint(equalTo: recoveryBar.bottomAnchor, constant: 4), pageTabScroll.heightAnchor.constraint(equalToConstant: 30),
             tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 4), tabs.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -4), tabs.topAnchor.constraint(equalTo: pageTabScroll.bottomAnchor, constant: 4), tabs.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -4),
             state.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12), state.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -7), state.heightAnchor.constraint(equalToConstant: 16)
         ])
@@ -241,6 +256,10 @@ import WebKit
         copyLink.isEnabled = web.url != nil; copyImage.isEnabled = web.url != nil
         annotate.isEnabled = !busy && captureJob == nil && web.url != nil
         separate.isHidden = onPresent == nil; separate.title = detached ? "回到任务" : "新窗口"; separate.isEnabled = !busy && captureJob == nil
+        recoveryBar.isHidden = !current.recoveryWaiting
+        recoveryHeight.constant = current.recoveryWaiting ? 34 : 0
+        restorePage.isEnabled = !busy && !web.isLoading
+        keepPage.isEnabled = restorePage.isEnabled && web.url != nil
         updatePageTabs()
     }
     private func perform<T>(_ action: @MainActor () async throws -> T) async throws -> T {
@@ -276,6 +295,8 @@ import WebKit
     @objc private func goBack() { current.manualNavigation("back") }
     @objc private func goForward() { current.manualNavigation("forward") }
     @objc private func refresh() { current.manualNavigation("reload") }
+    @objc private func restoreOriginalPage() { current.resumeRecovery() }
+    @objc private func keepCurrentPage() { current.keepCurrentPage() }
     @objc private func newTab() { do { _ = try addPage() } catch { state.stringValue = error.localizedDescription } }
     @objc private func closeTab() { do { _ = try manageTabs(["action": "close", "tab_id": current.id]) } catch { state.stringValue = error.localizedDescription } }
     @objc private func navigate() {
@@ -427,7 +448,7 @@ import WebKit
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         let content = pageContentView, buttons = [back, forward, reload, halt, add, remove, copyLink, copyImage, annotate, separate]
         let frames = content.map { root in buttons.filter { !$0.isHidden }.map { $0.convert($0.bounds, to: root) } } ?? []
-        return ["taskID": taskID, "closed": closed, "visible": isPageVisible, "detached": detached, "busy": busy, "capturing": captureJob != nil, "newWindowEnabled": separate.isEnabled, "dirty": workspaceHasUnsavedChanges, "windowVisible": window?.isVisible == true, "selectedPage": closed ? "" : current.id, "address": address.stringValue, "webSize": [web.bounds.width, web.bounds.height], "pages": pages.map { ["id": $0.id, "url": $0.web.url?.absoluteString ?? "", "title": $0.web.title ?? "", "persistentData": $0.web.configuration.websiteDataStore.isPersistent] }, "annotation": annotationWindow?.workspaceReadback() ?? [:], "checks": ["browserUsesTaskWindow": settingsHostWindow != nil && content?.window === settingsHostWindow, "browserHasNoFloatingWindow": window?.isVisible != true, "browserToolbarFits": content.map { root in frames.allSatisfy { root.bounds.insetBy(dx: -1, dy: -1).contains($0) } } ?? false, "browserHasUsableViewport": web.bounds.width >= 430 && web.bounds.height >= 240]]
+        return ["taskID": taskID, "closed": closed, "visible": isPageVisible, "detached": detached, "busy": busy, "capturing": captureJob != nil, "newWindowEnabled": separate.isEnabled, "dirty": workspaceHasUnsavedChanges, "windowVisible": window?.isVisible == true, "selectedPage": closed ? "" : current.id, "address": address.stringValue, "webSize": [web.bounds.width, web.bounds.height], "pages": pages.map { ["id": $0.id, "url": $0.web.url?.absoluteString ?? "", "title": $0.web.title ?? "", "pendingRecovery": $0.recoveryWaiting, "persistentData": $0.web.configuration.websiteDataStore.isPersistent] }, "annotation": annotationWindow?.workspaceReadback() ?? [:], "checks": ["browserUsesTaskWindow": settingsHostWindow != nil && content?.window === settingsHostWindow, "browserHasNoFloatingWindow": window?.isVisible != true, "browserToolbarFits": content.map { root in frames.allSatisfy { root.bounds.insetBy(dx: -1, dy: -1).contains($0) } } ?? false, "browserHasUsableViewport": web.bounds.width >= 430 && web.bounds.height >= 240]]
     }
     var checkAnnotation: AgentBrowserAnnotationWindow? { AgentTaskWorkspace.readbackEnabled ? annotationWindow : nil }
     func checkWorkspace(_ action: String) async {
