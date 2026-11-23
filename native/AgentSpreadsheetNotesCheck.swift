@@ -171,7 +171,120 @@ import AppKit
         }
     }
 
+    private func runSpreadsheetAppearanceCheck(_ output: URL) async {
+        var checks: [String: Bool] = [:], observed: [String: Any] = [:], failure: String?, requests = 0
+        let project = output.appendingPathComponent("project")
+        let document = project.appendingPathComponent("sample.xlsx")
+        let draft = "保留跨主题的备注草稿"
+        func surface(_ state: [String: Any], _ name: String) -> [String: Any] {
+            (state["surfaces"] as? [String: [String: Any]])?[name] ?? [:]
+        }
+        func palette(_ state: [String: Any], dark: Bool) -> Bool {
+            let keys = ["formatting", "formula", "name", "tabs", "selected", "note", "scroll"]
+            return keys.allSatisfy { key in
+                let value = surface(state, key), lightness = value["lightness"] as? Double ?? -1
+                return dark ? (0..<0.16).contains(lightness) : lightness > 0.62
+            }
+        }
+        func sameSheet(_ first: [String: Any], _ second: [String: Any]) -> Bool {
+            guard let colors = first["authoredPixels"] as? [Int], colors.count == 2, colors.allSatisfy({ $0 > 180 }),
+                  let hash = first["paintHash"] as? String, hash.count == 64 else { return false }
+            return hash == second["paintHash"] as? String && first["gridPixels"] as? [Int] == second["gridPixels"] as? [Int] &&
+                first["selected"] as? String == second["selected"] as? String && first["address"] as? String == second["address"] as? String &&
+                first["scroll"] as? [Double] == second["scroll"] as? [Double]
+        }
+        func findExpand(_ view: NSView) -> NSButton? {
+            if let button = view as? NSButton, button.accessibilityLabel() == "放大工作区" { return button }
+            return view.subviews.lazy.compactMap(findExpand).first
+        }
+        do {
+            ensureAgent()
+            guard checkDirectory == output, let tasks = agentStore, let runtime = agentRuntime, let host = control.window,
+                  tasks.extensions.sharedHome?.standardizedFileURL == output.appendingPathComponent("shared-home").standardizedFileURL else {
+                throw PetError("工作簿外观验收需要独立资料")
+            }
+            runtime.modelRequestCheck = { requests += 1; throw PetError("工作簿外观验收禁止模型请求") }
+            let files = try AgentFiles(workspace: project.path), hash = try files.fileHash(document)
+            let task = tasks.create(title: "公开工作簿外观验收", workspace: project.path, draft: "保留工作台原草稿")
+            control.showAgentTask(task); control.show(tab: "chat")
+            host.appearance = NSAppearance(named: .aqua); host.setContentSize(NSSize(width: 780, height: 540))
+            let editor = try await tasks.offices.show(document.path, taskID: task)
+            _ = try await editor.checkSpreadsheetNotes(show: true, address: "预算概览 · B3", edit: draft)
+            _ = try await editor.checkSpreadsheetNotes(range: 0..<2)
+            checks["actualNoteOpensOnOriginalSheet"] = try await editor.checkSpreadsheetNoteVisible(sheet: "预算概览", cell: "B3")
+            func sample(_ name: String, dark: Bool, minimumWidth: Double = 0, action: String = "") async throws -> [String: Any] {
+                host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                let deadline = Date().addingTimeInterval(6)
+                while Date() < deadline {
+                    let state = try await editor.checkSpreadsheetAppearance()
+                    if state["dark"] as? Bool == dark, (state["width"] as? Double ?? 0) >= minimumWidth {
+                        let captured = try await editor.checkSpreadsheetAppearance(action: action, image: output.appendingPathComponent(name + ".png"))
+                        observed[name] = captured
+                        return captured
+                    }
+                    await wait(0.05)
+                }
+                throw PetError("工作簿外观未随原窗口更新")
+            }
+            let light = try await sample("narrow-light", dark: false)
+            let dark = try await sample("narrow-dark", dark: true)
+            checks["darkToolbarFormulaTabsAndReview"] = palette(dark, dark: true)
+            checks["lightToolbarFormulaTabsAndReview"] = palette(light, dark: false)
+            checks["narrowRetainsSheetPixelsPositionAndPalette"] = sameSheet(light, dark)
+            let retained = try await editor.checkSpreadsheetNotes()
+            checks["switchRetainsUnsavedNoteSelectionAndFocus"] = retained["value"] as? String == draft &&
+                retained["selection"] as? String == "保留" && retained["focused"] as? Bool == true
+            let focus = try await editor.checkSpreadsheetAppearance(action: "formula")
+            let otherFocus = try await sample("narrow-light-formula", dark: false)
+            checks["formulaFocusAndValueFollowTheme"] = focus["formulaFocus"] as? Bool == true && otherFocus["formulaFocused"] as? Bool == true &&
+                focus["formulaValue"] as? String == otherFocus["formulaValue"] as? String && focus["address"] as? String == "B3"
+            let lightMenu = try await sample("menu-light", dark: false, action: "menu")
+            _ = try await editor.checkSpreadsheetAppearance(action: "menu")
+            let darkMenu = try await sample("menu-dark", dark: true, action: "menu")
+            _ = try await editor.checkSpreadsheetAppearance(action: "menu")
+            let firstMenu = lightMenu["menu"] as? [String: Any] ?? [:], secondMenu = darkMenu["menu"] as? [String: Any] ?? [:]
+            checks["overflowStaysReadableAndBoundedInBothPalettes"] = (firstMenu["lightness"] as? Double ?? -1) > 0.62 &&
+                (0..<0.16).contains(secondMenu["lightness"] as? Double ?? -1) && [firstMenu, secondMenu].allSatisfy {
+                    $0["inside"] as? Bool == true && $0["endReachable"] as? Bool == true && ($0["contrast"] as? Double ?? 0) >= 4.5
+                }
+            _ = try await editor.checkSpreadsheetAppearance(action: "edit-cell")
+            let cellDark = try await sample("cell-editor-dark", dark: true)["cellEditor"] as? [String: Any] ?? [:]
+            let cellLight = try await sample("cell-editor-light", dark: false)["cellEditor"] as? [String: Any] ?? [:]
+            let cancelled = try await sample("cell-editor-cancelled", dark: true, action: "cancel-cell")
+            checks["activeCellKeepsItsFormulaAndFocusAcrossThemeSwitch"] = (0..<0.16).contains(cellDark["lightness"] as? Double ?? -1) &&
+                (cellLight["lightness"] as? Double ?? -1) > 0.62 && [cellDark, cellLight].allSatisfy {
+                    $0["value"] as? String == "=SUM(B4:B7)" && $0["focused"] as? Bool == true && ($0["contrast"] as? Double ?? 0) >= 4.5
+                } && cancelled["cellEditor"] as? [String: Any] == nil && cancelled["formulaValue"] as? String == "=SUM(B4:B7)"
+            let locked = try await editor.checkSpreadsheetAppearance(action: "lock")
+            let lockNote = try await editor.checkSpreadsheetNotes()
+            checks["lockedFormulaAndReviewStayReadable"] = locked["locked"] as? Bool == true && lockNote["readOnly"] as? Bool == true &&
+                surface(locked, "formula")["color"] as? String != surface(dark, "formula")["color"] as? String &&
+                (surface(locked, "formula")["contrast"] as? Double ?? 0) >= 4.5
+            _ = try await editor.checkSpreadsheetAppearance(action: "unlock")
+            let compact = host.contentView?.bounds.size
+            host.setContentSize(NSSize(width: 1320, height: 800)); host.contentView?.layoutSubtreeIfNeeded()
+            if let expand = findExpand(control.taskWorkspace), !expand.isHiddenOrHasHiddenAncestor { expand.performClick(nil) }
+            let darkWide = try await sample("wide-dark", dark: true, minimumWidth: 900)
+            let lightWide = try await sample("wide-light", dark: false, minimumWidth: 900)
+            checks["widePalettesPreserveThePaintedWorkbook"] = palette(darkWide, dark: true) && palette(lightWide, dark: false) && sameSheet(darkWide, lightWide)
+            checks["exactCompactAndWideWindows"] = compact == NSSize(width: 780, height: 540) && host.contentView?.bounds.size == NSSize(width: 1320, height: 800)
+            checks["originalWorkbookAndTaskUnchanged"] = try files.fileHash(document) == hash && tasks.task(task)?.draft == "保留工作台原草稿"
+            checks["viewChangesRetainDraftUntilExit"] = await flushWorkspaceWindows() && editor.dirty
+        } catch { failure = error.localizedDescription }
+        checks["zeroModelRequests"] = requests == 0
+        var report: [String: Any] = ["appPID": getpid(), "checks": checks, "observed": observed, "modelRequests": requests,
+                                     "success": failure == nil && checks.values.allSatisfy { $0 }]
+        report["error"] = failure
+        if let bytes = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? bytes.write(to: output.appendingPathComponent("spreadsheet-appearance.json"), options: .atomic)
+        }
+    }
+
     func runSpreadsheetNotesCheck(_ output: URL) async {
+        if CommandLine.arguments.contains("--spreadsheet-editor-appearance") {
+            await runSpreadsheetAppearanceCheck(output)
+            return
+        }
         var checks: [String: Bool] = [:], failure: String?, modelRequests = 0
         let stage = CommandLine.arguments.firstIndex(of: "--recovery-stage").flatMap { CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil } ?? "seed"
         let project = output.appendingPathComponent("project")

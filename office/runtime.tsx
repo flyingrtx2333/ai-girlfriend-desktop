@@ -254,7 +254,10 @@ async function load(url: string, name: string, locked: boolean) {
     properties.onSelectionChange = () => { if (token === generation && ready) notify('view-change'); };
   } else if (format === 'xlsx') {
     const [module, locale] = await Promise.all([import('@betteroffice/xlsx-react'), import('@betteroffice/xlsx-i18n/zh-CN')]);
-    Component = module.XlsxEditor; properties = { ...shared, file: bytes, fileName: name, i18n: sheetLocale(locale.default) };
+    Component = module.XlsxEditor; properties = {
+      ...shared, file: bytes, fileName: name, i18n: sheetLocale(locale.default), className: 'office-workbook',
+      style: { ...shared.style, background: 'var(--workbook-workspace, #ffffff)', color: 'var(--workbook-ink, #202124)' },
+    };
     defineViewPlugin = module.defineXlsxPlugin;
   } else {
     const [module, locale, faces] = await Promise.all([import('@betteroffice/pptx-react'), import('@betteroffice/pptx-i18n/zh-CN'), presentationFonts()]);

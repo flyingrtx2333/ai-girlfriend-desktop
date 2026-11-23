@@ -714,6 +714,88 @@ import Darwin
               let png = bits.representation(using: .png, properties: [:]) else { throw PetError("办公编辑器图像无法编码") }
         try png.write(to: file, options: .atomic)
     }
+    func checkSpreadsheetAppearance(action: String = "", image: URL? = nil) async throws -> [String: Any] {
+        guard spreadsheetReadback, file.pathExtension.lowercased() == "xlsx" else { throw PetError("仅限工作簿外观验收") }
+        let value = try await evaluate(#"""
+            const root = document.getElementById('office-root');
+            const formatting = root.querySelector('[data-testid="xlsx-formatting-toolbar"]');
+            const formula = root.querySelector('[data-testid="xlsx-formula-input"]');
+            const name = root.querySelector('[data-testid="xlsx-name-box"]');
+            const tabs = root.querySelector('[data-testid="xlsx-sheet-tabs"]');
+            const selected = tabs?.querySelector('[aria-selected=true]');
+            const scroll = root.querySelector('[data-testid="xlsx-scroll"]');
+            const canvas = scroll?.querySelector('canvas');
+            const note = document.querySelector('.spreadsheet-notes:not([hidden]) .spreadsheet-note-body');
+            if (!formatting || !formula || !name || !selected || !canvas?.width || !note) throw new Error('工作簿编辑区尚未就绪');
+            const more = formatting.querySelector('[data-testid="xlsx-toolbar-more"]');
+            if (action === 'menu') more?.click();
+            if (action === 'formula') formula.focus();
+            if (action === 'edit-cell') {
+              const selectedCell = root.querySelector('[data-testid="xlsx-selection"]')?.getBoundingClientRect();
+              if (!selectedCell?.width) throw new Error('当前单元格未显示');
+              scroll.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true,
+                clientX: selectedCell.x + selectedCell.width / 2, clientY: selectedCell.y + selectedCell.height / 2 }));
+            }
+            if (action === 'cancel-cell') root.querySelector('[data-testid="xlsx-cell-editor"]')?.dispatchEvent(
+                new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+            if (action === 'lock' || action === 'unlock') await BlueFatFishOffice.setInteractionLocked(action === 'lock');
+            if (action) await new Promise(resolve => requestAnimationFrame(resolve));
+            function backdrop(element) {
+              for (let node = element; node; node = node.parentElement) {
+                const value = getComputedStyle(node).backgroundColor;
+                if (value !== 'rgba(0, 0, 0, 0)' && value !== 'transparent') return value;
+              }
+              return '';
+            }
+            function luminance(color) {
+              const rgb = (color.match(/\d+(?:\.\d+)?/g) ?? []).slice(0,3).map(value => Number(value) / 255);
+              if (rgb.length !== 3) return -1;
+              const [r,g,b] = rgb.map(value => value <= .04045 ? value / 12.92 : Math.pow((value + .055) / 1.055, 2.4));
+              return .2126*r + .7152*g + .0722*b;
+            }
+            function inspect(element) {
+              const color = getComputedStyle(element).color, background = backdrop(element);
+              const ink = luminance(color), base = luminance(background);
+              return { color, background, lightness: base, contrast: (Math.max(ink,base)+.05)/(Math.min(ink,base)+.05) };
+            }
+            const surfaces = Object.fromEntries(Object.entries({ formatting, formula, name, tabs, selected, note, scroll })
+                .map(([key, element]) => [key, inspect(element)]));
+            const formulaStyle = getComputedStyle(formula);
+            const cell = root.querySelector('[data-testid="xlsx-cell-editor"]');
+            const menu = document.getElementById(more?.getAttribute('aria-controls') || '') ?? document.querySelector('[role=menu]');
+            let menuState = null;
+            if (menu) {
+              const bounds = menu.getBoundingClientRect(), item = menu.querySelector('[role^=menuitem]:not([disabled]):not([aria-disabled=true])');
+              const previousScroll = menu.scrollTop;
+              menu.scrollTop = menu.scrollHeight;
+              const endReachable = menu.scrollHeight - menu.clientHeight - menu.scrollTop <= 1;
+              menu.scrollTop = previousScroll;
+              menuState = { ...inspect(item ?? menu), endReachable,
+                inside: bounds.width > 0 && bounds.height > 0 && bounds.left >= -1 && bounds.right <= innerWidth + 1 &&
+                        bounds.top >= -1 && bounds.bottom <= innerHeight + 1 };
+            }
+            const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+            let ochre = 0, green = 0;
+            for (let offset = 0; offset < pixels.length; offset += 4) {
+              if (pixels[offset] === 216 && pixels[offset+1] === 177 && pixels[offset+2] === 61) ochre++;
+              if (pixels[offset] === 66 && pixels[offset+1] === 107 && pixels[offset+2] === 94) green++;
+            }
+            const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', pixels));
+            return {
+              dark: matchMedia('(prefers-color-scheme: dark)').matches, surfaces, menu: menuState,
+              width: innerWidth, gridPixels: [canvas.width, canvas.height], authoredPixels: [ochre, green],
+              paintHash: Array.from(digest, value => value.toString(16).padStart(2, '0')).join(''),
+              selected: selected.textContent, address: name.value, formulaValue: formula.value,
+              scroll: [scroll.scrollLeft, scroll.scrollTop], locked: root.inert,
+              formulaFocused: formula === document.activeElement,
+              cellEditor: cell ? { ...inspect(cell), focused: cell === document.activeElement, value: cell.value } : null,
+              formulaFocus: formula === document.activeElement && formulaStyle.outlineStyle !== 'none' && parseFloat(formulaStyle.outlineWidth) >= 2
+            };
+            """#, args: ["action": action])
+        if let image { try await checkEditorImage(image) }
+        guard let readback = value as? [String: Any] else { throw PetError("工作簿外观未回读") }
+        return readback
+    }
     func checkPresentationAppearance(action: String = "", image: URL? = nil) async throws -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled, CommandLine.arguments.contains("--presentation-comments"),
               file.pathExtension.lowercased() == "pptx" else { throw PetError("仅限演示文稿外观验收") }

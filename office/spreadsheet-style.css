@@ -1,0 +1,71 @@
+@media (prefers-color-scheme: dark) {
+  :root[data-office-format="xlsx"] {
+    color-scheme: dark;
+    --workbook-workspace: #19201c;
+    --workbook-surface: #242c27;
+    --workbook-input: #1b231e;
+    --workbook-line: #3c4b41;
+    --workbook-ink: #e3ede6;
+    --workbook-muted: #abbdb2;
+    --workbook-accent: #9dd9c0;
+    --workbook-selection: #2d493d;
+    --workbook-error: #ffc0bd;
+    --bo-toolbar-ink: var(--workbook-ink);
+    --bo-toolbar-ink-muted: var(--workbook-muted);
+    --bo-toolbar-rail: var(--workbook-surface);
+    --bo-toolbar-surface: var(--workbook-input);
+    --bo-toolbar-hover: #344039;
+    --bo-toolbar-selected: var(--workbook-selection);
+    --bo-toolbar-line: var(--workbook-line);
+    --bo-toolbar-accent: var(--workbook-accent);
+    --bo-toolbar-accent-ink: #122c21;
+  }
+
+  :root[data-office-format="xlsx"] :is(body, #office-root) {
+    background-color: var(--workbook-workspace);
+    color: var(--workbook-ink);
+  }
+
+  .office-workbook [data-testid="xlsx-toolbar"] {
+    background-color: var(--workbook-surface);
+    box-shadow: inset 0 -1px var(--workbook-line);
+  }
+
+  /* The worksheet canvas keeps the workbook's rendered colors. */
+  .office-workbook [data-testid="xlsx-scroll"] {
+    background-color: var(--workbook-workspace);
+  }
+
+  .office-workbook :is([data-testid="xlsx-sheet-tabs"], [data-testid="xlsx-proposals-panel"], [data-testid="xlsx-error"]) {
+    background: var(--workbook-surface) !important;
+    border-color: var(--workbook-line) !important;
+    color: var(--workbook-ink) !important;
+  }
+  .office-workbook [data-testid="xlsx-sheet-tabs"] [role="tab"] {
+    color: var(--workbook-muted);
+    white-space: nowrap;
+  }
+  .office-workbook [data-testid="xlsx-sheet-tabs"] [aria-selected="true"] {
+    background: var(--workbook-selection) !important;
+    color: var(--workbook-ink);
+    border-bottom-color: var(--workbook-accent) !important;
+  }
+
+  .office-workbook [data-testid="xlsx-cell-editor"] {
+    background: var(--workbook-input) !important;
+    color: var(--workbook-ink) !important;
+    border-color: var(--workbook-accent) !important;
+  }
+  .office-workbook :is(button, input, [data-testid="xlsx-scroll"]):focus-visible {
+    outline: 2px solid var(--workbook-accent) !important;
+    outline-offset: -2px;
+  }
+  .office-workbook :is([data-testid="xlsx-name-box"], [data-testid="xlsx-formula-input"], [data-testid="xlsx-cell-editor"]):disabled,
+  #office-root[inert] .office-workbook :is([data-testid="xlsx-name-box"], [data-testid="xlsx-formula-input"]) {
+    color: var(--workbook-muted) !important;
+  }
+  :root[data-office-format="xlsx"] .office-error,
+  .office-workbook [data-testid="xlsx-input-refusal"] {
+    color: var(--workbook-error);
+  }
+}
