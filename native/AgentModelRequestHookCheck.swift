@@ -34,7 +34,11 @@ import AppKit
           const contents = body.messages.map(message => message.content).filter(value => typeof value === 'string');
           const system = contents[0], text = contents.join('\n');
           const lastUser = body.messages.findLast(message => message.role === 'user' && typeof message.content === 'string')?.content ?? '';
-          const kind = system.startsWith('根据提供的真实任务记录') ? 'recap' :
+          const tool = body.messages.findLast(message => message.role === 'tool');
+          const kind = lastUser === 'PUBLIC_SSE_MULTILINE_READ' ? (tool ? 'sse-source-result' : 'sse-multiline-read') :
+            lastUser === 'PUBLIC_SSE_UNFRAMED_FINISH' ? (tool ? 'sse-unframed-read-executed' : 'sse-unframed-finish') :
+            lastUser === 'PUBLIC_SSE_COMPANION' ? 'sse-companion' : lastUser === 'PUBLIC_SSE_COMPANION_EOF' ? 'sse-companion-eof' :
+            system.startsWith('根据提供的真实任务记录') ? 'recap' :
             contents.some(value => value.startsWith('用户要求原文（仅作为理解记录的依据，不必复述）：')) ? 'compact' :
             text.includes('PUBLIC_QUEUED_SECOND') ? 'queue-retry' : text.includes('PUBLIC_QUEUE_FAILURE_FIRST') ? 'queue-failure' :
             text.includes('PUBLIC_REPLACEMENT_AFTER_FAILURE') ? 'replacement' : text.includes('PUBLIC_LATE_FAILURE_FIRST') ? 'late-failure' :
@@ -43,7 +47,38 @@ import AppKit
           fs.appendFileSync(process.argv[3], 'wire\t' + JSON.stringify({kind, contaminated:text.includes('PUBLIC_DIAGNOSTIC_ONLY'),
             containsInterruptedOutput:text.includes('PUBLIC_INTERRUPTED_ASSISTANT'),
             queuedInputIsLatest:lastUser.startsWith('PUBLIC_QUEUED_SECOND'), queuedAttachmentOnWire:lastUser.includes('[附件编号：'),
-            syntheticContinuation:text.includes('继续完成原任务，保留之前的约束。')}) + '\n');
+            syntheticContinuation:text.includes('继续完成原任务，保留之前的约束。'),
+            readExpectedSource:tool?.tool_call_id === 'public-framed-read' && tool.content.includes('公开预算 49 元')}) + '\n');
+          if (kind.startsWith('sse-')) {
+            res.writeHead(200, {'Content-Type':'text/event-stream; charset=utf-8'});
+            const delta = (value, finish_reason = null) => ({model:'fixture-observer',choices:[{delta:value,finish_reason}]});
+            const line = value => 'data: ' + JSON.stringify(value) + '\r\n';
+            const frame = (value, eol = '\r\n') => JSON.stringify(value, null, 2).split('\n').map(value => 'data: ' + value).join(eol) + eol + eol;
+            if (kind === 'sse-multiline-read') {
+              const initial = Buffer.from('\uFEFF: public keep-alive\r\nevent: message\r\n' + frame(delta({content:'开始核对🐋。',tool_calls:[{index:0,id:'public-framed-read',function:{name:'read_file',arguments:'{"path":"READ'}}]})));
+              const split = initial.indexOf(Buffer.from('🐋')) + 2;
+              res.write(initial.subarray(0, split));
+              setTimeout(() => res.write(initial.subarray(split)), 10);
+              const release = path.join(path.dirname(process.argv[3]), 'release-framed-read');
+              const deadline = Date.now() + 6000;
+              const timer = setInterval(() => {
+                if (!fs.existsSync(release) && Date.now() < deadline) return;
+                clearInterval(timer);
+                res.end(frame(delta({tool_calls:[{index:0,function:{arguments:'ME.md","limit":2}'}}]},'tool_calls'), '\r') + frame({usage:count}, '\n') + 'data: [DONE]\n\n');
+              }, 20);
+              res.on('close', () => clearInterval(timer)); return;
+            }
+            if (kind === 'sse-unframed-finish') {
+              res.write(line(delta({content:'保留这一段已收到的文字。'}))+'\r\n');
+              res.end(line(delta({tool_calls:[{index:0,id:'public-incomplete-read',function:{name:'read_file',arguments:'{"path":"README.md"}'}}]},'tool_calls'))); return;
+            }
+            if (kind === 'sse-companion-eof') {
+              res.write(line(delta({content:'陪伴已收到。'}))+'\r\n');
+              res.end(line(delta({content:'不完整的尾段。'},'stop'))); return;
+            }
+            const reply = kind === 'sse-source-result' ? '公开文件金额为 49 元。' : kind === 'sse-companion' ? '陪伴回复完整。' : '未封帧的工具不应执行。';
+            res.end(frame(delta({content:reply},'stop'), '\n') + frame({usage:count}) + 'data: [DONE]\n\n'); return;
+          }
           if (kind === 'stream-eof' || kind === 'cancel') {
             res.writeHead(200, {'Content-Type':'text/event-stream'});
             res.write('data: '+JSON.stringify({choices:[{delta:{content:'PUBLIC_INTERRUPTED_ASSISTANT'}}]})+'\n\n');
@@ -144,7 +179,7 @@ import AppKit
         executionSettings.promptSuggestions = false; executionSettings.skillEvolutionSuggestions = false
         runtime.taskSettings = { executionSettings }
         var requests = 0, permit = true
-        runtime.modelRequestCheck = { guard permit, requests < 12 else { throw PetError("本机样例拒绝传输") }; requests += 1 }
+        runtime.modelRequestCheck = { guard permit, requests < 16 else { throw PetError("本机样例拒绝传输") }; requests += 1 }
         func rows() throws -> [(String, [String: Any])] {
             guard fm.fileExists(atPath: trace.path) else { return [] }
             return try String(contentsOf: trace, encoding: .utf8).split(separator: "\n").map { line in
@@ -329,18 +364,59 @@ import AppKit
             && rows().filter { $0.0 == "wire" && $0.1["kind"] as? String == "replacement" }.count == 1
         try store.hooks.setEnabled(cleanupHook, false, workspace: workspace.path)
 
+        let sourceFile = workspace.appendingPathComponent("README.md"), sourceBytes = Data("# 公开测试文档\n公开预算 49 元\n".utf8)
+        try sourceBytes.write(to: sourceFile, options: .atomic)
+        let multiline = store.create(title: "多行流式回复读取文件", workspace: workspace.path, mode: .ask)
+        guard runtime.submit("PUBLIC_SSE_MULTILINE_READ", taskID: multiline) else { throw PetError("多行流式读取未开始") }
+        let deliveryDeadline = Date().addingTimeInterval(5)
+        while runtime.isBusy(multiline), store.task(multiline)?.messages.last?.content != "开始核对🐋。", Date() < deliveryDeadline { await wait(0.025) }
+        checks["multilineEventStreamsWholeUTF8TextBeforeTheFinalEvent"] = store.task(multiline)?.messages.last?.responseState == .streaming &&
+            store.task(multiline)?.messages.last?.content == "开始核对🐋。"
+        try Data().write(to: workspace.appendingPathComponent("release-framed-read"))
+        let read = try await settled(multiline)
+        let requestedCall = read.messages.flatMap { $0.toolCalls ?? [] }.first
+        let sourceOnWire = try rows().contains { $0.0 == "wire" && $0.1["kind"] as? String == "sse-source-result" && $0.1["readExpectedSource"] as? Bool == true }
+        checks["multilineToolArgumentsReassembleAndReadRealFileExactlyOnce"] = requestedCall?.id == "public-framed-read" &&
+            requestedCall?.arguments == #"{"path":"README.md","limit":2}"# && read.messages.filter { $0.role == "tool" && $0.toolCallID == "public-framed-read" }.count == 1 &&
+            sourceOnWire && read.status == .completed && read.messages.last?.content == "公开文件金额为 49 元。"
+        checks["framedUsageAndCompletionBelongToBothModelTurns"] = read.modelReceipts?.count == 2 &&
+            read.modelReceipts?.allSatisfy { $0.completed && $0.returnedModel == "fixture-observer" && $0.inputTokens == 45 && $0.outputTokens == 7 } == true
+
+        let unframed = store.create(title: "待封帧的工具结果中断", workspace: workspace.path, mode: .ask)
+        guard runtime.submit("PUBLIC_SSE_UNFRAMED_FINISH", taskID: unframed) else { throw PetError("未封帧样例未开始") }
+        let ended = try await settled(unframed)
+        checks["unframedFinishCannotQueueOrExecuteATool"] = ended.status == .failed && ended.pendingCalls.isEmpty && ended.approvals.isEmpty &&
+            ended.messages.allSatisfy { $0.role != "tool" && ($0.toolCalls ?? []).isEmpty } && ended.modelReceipts?.count == 1 &&
+            ended.modelReceipts?.last?.completed == false && ended.modelReceipts?.last?.finishReason == "interrupted"
+        checks["unframedFinishKeepsPreviouslyDeliveredTextAsInterrupted"] = ended.messages.last?.responseState == .interrupted &&
+            ended.messages.last?.content == "保留这一段已收到的文字。"
+
+        let conversation = try runtime.taskPreferences(owner)
+        var deltas: [String] = []
+        do {
+            let reply = try await CompanionService.stream(preferences: conversation, key: key, messages: [.init(role: "user", content: "PUBLIC_SSE_COMPANION")]) { deltas.append($0) }
+            checks["companionReceivesMultilineResponseThroughTheSameTransport"] = reply == "陪伴回复完整。" && deltas == [reply]
+        } catch { checks["companionReceivesMultilineResponseThroughTheSameTransport"] = false }
+        deltas.removeAll()
+        do {
+            _ = try await CompanionService.stream(preferences: conversation, key: key, messages: [.init(role: "user", content: "PUBLIC_SSE_COMPANION_EOF")]) { deltas.append($0) }
+            checks["companionReportsAnUnfinishedStreamWithOnlyCompleteDeltas"] = false
+        } catch { checks["companionReportsAnUnfinishedStreamWithOnlyCompleteDeltas"] = deltas == ["陪伴已收到。"] && error.localizedDescription.contains("中断") }
+        checks["sseReadLeavesOriginalFileUnchanged"] = try Data(contentsOf: sourceFile) == sourceBytes
+
         let denied = store.create(title: "公开传输门禁", workspace: workspace.path), count = try rows().count
         permit = false
         guard runtime.submit("PUBLIC_BLOCKED_BEFORE_WIRE", taskID: denied) else { throw PetError("本机门禁样例未开始") }
         _ = try await settled(denied)
         checks["blockedBeforeTransportCreatesNoObservation"] = try rows().count == count
         let final = try rows(), transmitted = final.filter { $0.0 == "wire" }, traceText = try String(contentsOf: trace, encoding: .utf8)
-        checks["allTransportsStayLocalAndDiagnosticsStayOutOfWire"] = transmitted.count == requests
+        checks["allTransportsStayLocalAndDiagnosticsStayOutOfWire"] = transmitted.count == requests + 2
             && transmitted.allSatisfy { $0.1["contaminated"] as? Bool == false }
             && final.filter { $0.0 != "wire" }.allSatisfy { $0.1["transcript_path"] is NSNull && $0.1["prompt"] == nil && $0.1["messages"] == nil }
             && !traceText.contains(key)
         store.selectedID = owner
-        try JSONSerialization.data(withJSONObject: ["taskID": owner, "queuedFailureTaskID": queued, "replacementTaskID": racing, "loopbackRequests": transmitted.count], options: [.sortedKeys]).write(
+        try JSONSerialization.data(withJSONObject: ["taskID": owner, "queuedFailureTaskID": queued, "replacementTaskID": racing, "framedReadTaskID": multiline,
+                                                    "unframedFinishTaskID": unframed, "sourceSHA256": AgentFiles.hash(sourceBytes), "loopbackRequests": transmitted.count], options: [.sortedKeys]).write(
             to: output.appendingPathComponent("model-request-fixture.json"), options: .atomic)
     }
 

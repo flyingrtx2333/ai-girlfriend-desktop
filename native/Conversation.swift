@@ -1,3 +1,4 @@
+import EventSource
 import Foundation
 
 enum CompanionService {
@@ -92,12 +93,49 @@ enum CompanionService {
         return Probe(milliseconds: Int(Date().timeIntervalSince(start) * 1000), reply: String(safeText.prefix(120)), thinkingBudgetReached: thinkingOnly)
     }
 
+    @MainActor static func readModelStream(_ bytes: URLSession.AsyncBytes, maximumEventBytes: Int, key: String,
+                                            onObject: ([String: Any]) throws -> Void) async throws -> Bool {
+        let parser = EventSource.Parser()
+        var pending = Data()
+        var eventBytes = 0, lineHasBytes = false, previousCR = false
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            eventBytes += 1
+            guard eventBytes <= maximumEventBytes else { throw PetError("流式响应过长或格式异常。") }
+            let lineBreak = byte == 13 || (byte == 10 && !previousCR)
+            if lineBreak {
+                if !lineHasBytes { eventBytes = 0 }
+                lineHasBytes = false
+            } else if byte != 10 {
+                lineHasBytes = true
+            }
+            previousCR = byte == 13
+            pending.append(byte)
+            guard lineBreak || pending.count >= 16_384 else { continue }
+            let events = await parser.modelEvents(from: pending)
+            pending.removeAll(keepingCapacity: true)
+            try Task.checkCancellation()
+            for event in events {
+                let payload = event.data.trimmingCharacters(in: .whitespacesAndNewlines)
+                if payload == "[DONE]" { return true }
+                guard !payload.isEmpty else { continue }
+                let data = Data(payload.utf8)
+                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                if object["error"] != nil { throw serverError(data, status: 200, key: key) }
+                try onObject(object)
+            }
+        }
+        // EOF discards any event still waiting for its terminating blank line.
+        return false
+    }
+
     @MainActor static func stream(preferences: PetPreferences, key: String, messages: [ChatMessage],
                                    onDelta: @escaping (String) -> Void) async throws -> String {
         let url = try endpoint(preferences.endpoint, chat: true)
         let body = try preferences.requestBody(messages: messages)
         let request = try request(url: url, key: key, body: body)
         let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
         guard let http = response as? HTTPURLResponse else { throw PetError("服务响应无法读取。") }
         guard (200...299).contains(http.statusCode) else {
             var data = Data()
@@ -114,28 +152,16 @@ enum CompanionService {
             onDelta(text); return text
         }
         var output = "", finishReason = ""
-        func consume(_ payload: String) throws -> Bool {
-            if payload == "[DONE]" { return true }
-            guard let data = payload.data(using: .utf8), !payload.isEmpty else { return false }
-            let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            if object?["error"] != nil { throw serverError(data, status: 200, key: key) }
-            let choice = (object?["choices"] as? [[String: Any]])?.first
+        let sawDone = try await readModelStream(bytes, maximumEventBytes: 128_000, key: key) { object in
+            let choice = (object["choices"] as? [[String: Any]])?.first
             if let reason = choice?["finish_reason"] as? String { finishReason = reason }
             if let text = (choice?["delta"] as? [String: Any])?["content"] as? String, !text.isEmpty {
                 output += text
                 if output.count > 24_000 { throw PetError("回复过长，请缩短问题。") }
                 onDelta(text)
             }
-            return false
         }
-        for try await line in bytes.lines {
-            try Task.checkCancellation()
-            // Chat Completions emits one JSON object per data line. Swift's
-            // AsyncLineSequence omits the empty SSE event separators.
-            guard line.hasPrefix("data:") else { continue }
-            guard line.utf8.count <= 128_000 else { throw PetError("服务响应格式异常。") }
-            if try consume(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)) { break }
-        }
+        guard sawDone || !finishReason.isEmpty else { throw PetError("回复中断，请重试。") }
         guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PetError(finishReason == "length" ? "回复预算已用尽，请增大回复上限或降低思考程度。" : "服务没有返回文字。") }
         return output
     }
@@ -204,5 +230,15 @@ enum CompanionService {
             decoded.append(high * 16 + low)
         }
         return decoded
+    }
+}
+
+private extension EventSource.Parser {
+    // Feed each chunk on the parser actor to avoid an actor hop for every byte.
+    func modelEvents(from data: Data) -> [EventSource.Event] {
+        var events: [EventSource.Event] = []
+        for byte in data { consume(byte) }
+        while let event = getNextEvent() { events.append(event) }
+        return events
     }
 }

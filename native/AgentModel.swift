@@ -78,6 +78,7 @@ enum AgentModel {
                                            onReceipt: ((AgentModelReceipt) -> Void)?, onText: (String) -> Void) async throws -> AgentTurn {
         let started = Date()
         let (bytes, response) = try await CompanionService.session.bytes(for: request)
+        defer { bytes.task.cancel() }
         guard let http = response as? HTTPURLResponse else { throw PetError("模型响应无法读取") }
         guard (200...299).contains(http.statusCode) else {
             var data = Data(); for try await byte in bytes { data.append(byte); if data.count >= 8192 { break } }
@@ -106,7 +107,6 @@ enum AgentModel {
             }
         }
         func consume(_ object: [String: Any], streamed: Bool) throws {
-            if object["error"] != nil { throw CompanionService.serverError(try JSONSerialization.data(withJSONObject: object), status: 200, key: key) }
             usage(object)
             guard let choice = (object["choices"] as? [[String: Any]])?.first else { return }
             result.finishReason = choice["finish_reason"] as? String ?? result.finishReason
@@ -124,15 +124,11 @@ enum AgentModel {
         if http.value(forHTTPHeaderField: "Content-Type")?.contains("application/json") == true {
             var data = Data(); for try await byte in bytes { data.append(byte); if data.count > 2_000_000 { throw PetError("模型响应过长") } }
             guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw PetError("模型响应格式错误") }
+            if object["error"] != nil { throw CompanionService.serverError(data, status: 200, key: key) }
             try consume(object, streamed: false)
         } else {
-            for try await line in bytes.lines {
-                try Task.checkCancellation(); guard line.hasPrefix("data:") else { continue }
-                let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                if payload == "[DONE]" { break }
-                guard payload.utf8.count <= 1_100_000 else { throw PetError("模型响应格式异常") }
-                guard let data = payload.data(using: .utf8), !data.isEmpty else { continue }
-                if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] { try consume(object, streamed: true) }
+            _ = try await CompanionService.readModelStream(bytes, maximumEventBytes: 1_100_000, key: key) {
+                try consume($0, streamed: true)
             }
         }
         result.calls = calls.keys.sorted().compactMap { calls[$0] }
