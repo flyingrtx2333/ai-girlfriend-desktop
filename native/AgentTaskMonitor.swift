@@ -27,11 +27,49 @@ enum AgentMonitorSection: String, Codable, CaseIterable, Hashable {
         var recapModel: String?
         func shows(_ section: AgentMonitorSection) -> Bool { sections.contains(section) }
     }
-    struct DisplayState {
+    struct ReadingState: Codable, Equatable, Sendable {
+        static let groups = Set(AgentMonitorSection.allCases.map(\.rawValue) + ["environment", "changes"])
+        var collapsed: [String] = []
+        var expanded: [String] = []
+        var position: AgentConversationPosition?
+        var valid: Bool {
+            Set(collapsed).isSubset(of: Self.groups) && Set(collapsed).count == collapsed.count &&
+                Set(expanded).isSubset(of: ["recap", "goal"]) && Set(expanded).count == expanded.count &&
+                position?.valid != false && (position?.row.map(Self.groups.contains) ?? true)
+        }
+    }
+    struct DisplayState: Codable, Equatable, Sendable {
         var presentation: AgentMonitorPresentation, visible: Bool
         var explicitVisibility = false
-        var frame: NSRect?
+        var frame: AgentWorkspaceRecovery.Frame?
+        var reading = ReadingState()
         init(_ settings: Settings) { presentation = settings.presentation; visible = settings.presentation == .fixed && settings.dockedDefaultVisible }
+        var hasRecovery: Bool { explicitVisibility || frame != nil || reading != ReadingState() }
+        var valid: Bool { frame?.valid != false && reading.valid }
+    }
+    struct Recovery: Codable, Equatable, Sendable {
+        var version = 1
+        let windowID: String
+        let tasks: [String: DisplayState]
+        var valid: Bool {
+            version == 1 && UUID(uuidString: windowID)?.uuidString == windowID &&
+                tasks.allSatisfy { UUID(uuidString: $0.key)?.uuidString == $0.key && $0.value.valid }
+        }
+        static func validateObject(_ raw: Any) throws {
+            let root = try AgentSettingsRecovery.object(raw, keys: ["version", "windowID", "tasks"])
+            guard let tasks = root["tasks"] as? [String: Any] else { throw PetError("任务监控位置格式无效") }
+            for raw in tasks.values {
+                let task = try AgentSettingsRecovery.object(raw, keys: ["presentation", "visible", "explicitVisibility", "frame", "reading"])
+                if let frame = task["frame"], !(frame is NSNull) {
+                    _ = try AgentSettingsRecovery.object(frame, keys: ["x", "y", "width", "height"])
+                }
+                guard let reading = task["reading"] else { throw PetError("任务监控阅读位置缺失") }
+                let fields = try AgentSettingsRecovery.object(reading, keys: ["collapsed", "expanded", "position"])
+                if let position = fields["position"], !(position is NSNull) {
+                    _ = try AgentSettingsRecovery.object(position, keys: ["row", "offset", "rowHeight", "y"])
+                }
+            }
+        }
     }
     static let changed = Notification.Name("BlueFatFishTaskMonitorChanged")
     let directory: URL

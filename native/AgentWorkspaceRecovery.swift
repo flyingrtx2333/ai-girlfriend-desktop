@@ -415,6 +415,30 @@ struct AgentWorkspaceRecovery: Sendable {
             return Saved(value: value, hash: AgentFiles.hash(data))
         }
     }
+    func loadTaskMonitor(windowID: String) throws -> Saved<AgentTaskMonitor.Recovery>? {
+        let files = try files(), url = try literal(files, prefix(windowID) + "/task-monitor.json")
+        let entry = try files.entryMetadata(url)
+        if entry.kind == "missing" { return nil }
+        guard entry.kind == "file" else { throw PetError("任务监控位置不是普通文件") }
+        let data = try files.readData(url, maximum: Self.maximumState)
+        try AgentTaskMonitor.Recovery.validateObject(JSONSerialization.jsonObject(with: data))
+        let value = try JSONDecoder().decode(AgentTaskMonitor.Recovery.self, from: data)
+        guard value.windowID == windowID, value.valid else { throw PetError("任务监控位置与原窗口不符") }
+        return Saved(value: value, hash: AgentFiles.hash(data))
+    }
+    func saveTaskMonitor(_ value: AgentTaskMonitor.Recovery, layoutHash: String, expected: String?) throws -> Saved<AgentTaskMonitor.Recovery> {
+        guard value.valid else { throw PetError("任务监控位置无效") }
+        let data = try encoded(value)
+        return try locked(value.windowID) { files in
+            let directory = try prefix(value.windowID), layout = try literal(files, directory + "/layout.json")
+            guard try files.fileHash(layout, maximum: Self.maximumState) == layoutHash else { throw PetError("窗口布局已变化，请重新打开窗口") }
+            let change = try AgentKnowledgeFileWrite(files: files, path: directory + "/task-monitor.json", data: data,
+                expectedHash: expected ?? AgentFiles.hash(Data()), missing: expected == nil, permissions: 0o600, label: "任务监控位置")
+            try change.requireCurrent()
+            try files.writeData(data, to: change.url, permissions: 0o600, expectedTarget: change.signature)
+            return Saved(value: value, hash: AgentFiles.hash(data))
+        }
+    }
     func loadTerminalLayout(windowID: String) throws -> Saved<AgentTerminalLayout>? {
         let files = try files(), path = try prefix(windowID) + "/terminal.json", url = try literal(files, path)
         let metadata = try files.entryMetadata(url)

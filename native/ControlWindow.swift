@@ -1321,7 +1321,7 @@ final class FormDocumentView: NSView {
         taskOverflowControls = compactTaskTools ? [desktopButton] + (presentation.changeReview ? [gitButton] : []) : []
         if chatting, let focus, taskOverflowControls.contains(where: { $0 === focus }) { window?.makeFirstResponder(taskMore) }
         workbenchBadge.update(task)
-        workbenchInspector.update(monitorContent); workbenchInspector.setPresentation(.fixed)
+        workbenchInspector.update(monitorContent, reading: monitorState.reading); workbenchInspector.setPresentation(.fixed)
         updateFloatingMonitor(monitorContent, state: monitorState, show: chatting && monitorState.presentation == .floating && monitorState.visible)
         taskBack.isEnabled = sideTaskTabID == nil && taskNavigationIndex > 0; taskForward.isEnabled = sideTaskTabID == nil && taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
         let modelName = (try? companion?.agentRuntime?.taskPreferences(task.id).model) ?? task.modelOverride ?? companion?.store.preferences.model ?? ""
@@ -1343,6 +1343,7 @@ final class FormDocumentView: NSView {
         updateWorkbenchVoice()
         lastInspectorTransitionDuration = AgentWorkbenchTheme.layout(in: window?.contentView, duration: 0.16, animated: animated && window?.inLiveResize != true) { self.inspectorWidth.constant = target; self.inspectorPreferredWidth.constant = target }
         if showWorkspace { taskWorkspace.setVisible(true) }
+        if showInspector { workbenchInspector.restoreReadingPosition() }
         let monitorVisible = showInspector || monitorPanel?.isVisible == true
         resultsButton.isEnabled = chatting
         resultsButton.state = monitorVisible ? .on : .off; resultsButton.setAccessibilityLabel(monitorVisible ? "隐藏任务监控" : "显示任务监控"); resultsButton.toolTip = monitorVisible ? "隐藏任务监控" : "显示任务监控"
@@ -1356,12 +1357,31 @@ final class FormDocumentView: NSView {
         var state = taskMonitorState(id)
         if state.presentation == .fixed, taskWorkspace.requested { taskWorkspace.hideForNavigation(); guard !taskWorkspace.requested else { return }; state.visible = true }
         else { state.visible = !(state.presentation == .fixed ? !workbenchInspector.isHidden : monitorPanel?.isVisible == true) }
-        state.explicitVisibility = true; monitorStates[id] = state; inspectorRequested = state.visible; updateWorkbenchLayout(animated: true)
+        state.explicitVisibility = true; setTaskMonitorState(state, taskID: id); inspectorRequested = state.visible; updateWorkbenchLayout(animated: true)
     }
     private func taskMonitorState(_ id: String) -> AgentTaskMonitor.DisplayState {
         if let state = monitorStates[id] { return state }
         let settings = companion?.taskMonitor.settings ?? .init(); if appliedMonitorSettings == nil { appliedMonitorSettings = settings }
         let state = AgentTaskMonitor.DisplayState(settings); monitorStates[id] = state; return state
+    }
+    private func setTaskMonitorState(_ state: AgentTaskMonitor.DisplayState, taskID: String) {
+        guard monitorStates[taskID] != state else { return }
+        monitorStates[taskID] = state
+        workspaceSession?.changed()
+    }
+    func captureTaskMonitorStates() -> [String: AgentTaskMonitor.DisplayState] {
+        let known = Set(companion?.agentStore?.tasks.map(\.id) ?? [])
+        return monitorStates.filter { $0.value.hasRecovery && known.contains($0.key) }
+    }
+    func restoreTaskMonitorStates(_ states: [String: AgentTaskMonitor.DisplayState]) {
+        let settings = companion?.taskMonitor.settings ?? .init()
+        monitorStates = states.mapValues { state in
+            guard !state.explicitVisibility else { return state }
+            var restored = AgentTaskMonitor.DisplayState(settings)
+            restored.frame = state.frame
+            restored.reading = state.reading
+            return restored
+        }
     }
     func refreshTaskMonitorPreferences() {
         guard let settings = companion?.taskMonitor.settings else { return }
@@ -1369,7 +1389,7 @@ final class FormDocumentView: NSView {
             guard var state = monitorStates[id] else { continue }
             if appliedMonitorSettings?.presentation != settings.presentation { state.presentation = settings.presentation }
             if !state.explicitVisibility { state.visible = settings.presentation == .fixed && settings.dockedDefaultVisible }
-            monitorStates[id] = state
+            setTaskMonitorState(state, taskID: id)
         }
         appliedMonitorSettings = settings; updateWorkbenchLayout()
     }
@@ -1406,6 +1426,12 @@ final class FormDocumentView: NSView {
         return value
     }
     private func configureTaskMonitor(_ view: AgentTaskInspector) {
+        view.onReadingChange = { [weak self] id, reading in
+            guard let self, agentTaskID == id else { return }
+            var state = taskMonitorState(id)
+            state.reading = reading
+            setTaskMonitorState(state, taskID: id)
+        }
         view.onOpen = { [weak self] section, value in
             guard let self else { return }; if value.hasPrefix("canvas://"), let id = agentTaskID { openCanvasReference(value, taskID: id) } else { openAgentRecordItem(section: section, value: value) }
         }
@@ -1480,12 +1506,12 @@ final class FormDocumentView: NSView {
         composer.setSelectedRange(end); composer.scrollRangeToVisible(end)
     }
     private func closeTaskMonitor() {
-        guard let id = agentTaskID else { return }; var state = taskMonitorState(id); state.visible = false; state.explicitVisibility = true; monitorStates[id] = state; inspectorRequested = false; updateWorkbenchLayout(animated: true)
+        guard let id = agentTaskID else { return }; var state = taskMonitorState(id); state.visible = false; state.explicitVisibility = true; setTaskMonitorState(state, taskID: id); inspectorRequested = false; updateWorkbenchLayout(animated: true)
     }
     private func pinTaskMonitor() {
         guard let id = agentTaskID else { return }; var state = taskMonitorState(id)
         if state.presentation == .floating, taskWorkspace.requested { taskWorkspace.hideForNavigation(); guard !taskWorkspace.requested else { return } }
-        state.presentation = state.presentation == .fixed ? .floating : .fixed; state.visible = true; state.explicitVisibility = true; monitorStates[id] = state; updateWorkbenchLayout(animated: true)
+        state.presentation = state.presentation == .fixed ? .floating : .fixed; state.visible = true; state.explicitVisibility = true; setTaskMonitorState(state, taskID: id); updateWorkbenchLayout(animated: true)
     }
     private func toggleMonitorPreview() {
         if taskWorkspace.requested, taskWorkspace.selectedRoot == .browser || { if case .canvas = taskWorkspace.selectedRoot { return true }; return false }() { taskWorkspace.hideForNavigation(); updateWorkbenchLayout(); return }
@@ -1497,26 +1523,33 @@ final class FormDocumentView: NSView {
         if monitorPanel == nil {
             let panel = AgentTaskMonitorPanel(); configureTaskMonitor(panel.inspector)
             panel.onDismiss = { [weak self] in self?.closeTaskMonitor() }
-            panel.onFrame = { [weak self] frame in guard let self, let id = monitorPanelTaskID, var value = monitorStates[id] else { return }; value.frame = frame; monitorStates[id] = value }
+            panel.onFrame = { [weak self] frame in
+                guard let self, let id = monitorPanelTaskID, var value = monitorStates[id] else { return }
+                value.frame = .init(frame)
+                setTaskMonitorState(value, taskID: id)
+            }
             monitorPanel = panel
         }
         guard let panel = monitorPanel else { return }
         if monitorPanelTaskID != content.task.id {
-            monitorPanelTaskID = content.task.id
+            monitorPanelTaskID = nil
             let screen = owner.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? owner.frame
-            var frame = state.frame ?? NSRect(x: owner.frame.maxX - 360, y: owner.frame.maxY - min(620, owner.frame.height), width: 340, height: min(560, screen.height - 60))
+            var frame = state.frame?.rect ?? NSRect(x: owner.frame.maxX - 360, y: owner.frame.maxY - min(620, owner.frame.height), width: 340, height: min(560, screen.height - 60))
             frame.size.width = min(frame.width, screen.width); frame.size.height = min(frame.height, screen.height)
             frame.origin.x = min(max(frame.minX, screen.minX), screen.maxX - frame.width); frame.origin.y = min(max(frame.minY, screen.minY), screen.maxY - frame.height); panel.setFrame(frame, display: false)
+            monitorPanelTaskID = content.task.id
         }
         panel.title = "任务监控 · " + content.task.title.replacingOccurrences(of: "\n", with: " "); AgentThemeContext.inherit(panel, from: owner)
-        panel.inspector.canOpenTerminal = terminalButton.isEnabled; panel.inspector.update(content)
+        panel.inspector.canOpenTerminal = terminalButton.isEnabled; panel.inspector.update(content, reading: state.reading)
         if panel.parent !== owner { panel.parent?.removeChildWindow(panel); owner.addChildWindow(panel, ordered: .above) }
         panel.orderFront(nil)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.inspector.restoreReadingPosition()
     }
     func taskMonitorReadback() -> [String: Any] {
         guard ["--task-monitor-check", "--manual-ui"].contains(where: CommandLine.arguments.contains), let id = agentTaskID else { return [:] }
         let state = taskMonitorState(id)
-        return ["taskID": id, "presentation": state.presentation.rawValue, "requested": state.visible, "dockedVisible": !workbenchInspector.isHidden, "floatingVisible": monitorPanel?.isVisible == true, "applicationActive": NSApp.isActive, "floatingOnScreen": monitorPanel?.occlusionState.contains(.visible) == true, "floatingKey": monitorPanel?.isKeyWindow == true, "floatingMovable": monitorPanel?.isMovable == true, "floatingBackgroundMovable": monitorPanel?.isMovableByWindowBackground == true, "floatingOwner": monitorPanel?.parent?.windowNumber ?? -1, "ownerNumber": window?.windowNumber ?? -1, "floatingTaskID": monitorPanelTaskID ?? "", "floatingFrame": monitorPanel.map { NSStringFromRect($0.frame) } ?? "", "windowSize": window.map { [$0.frame.width, $0.frame.height] } ?? [], "fixed": workbenchInspector.readback(), "floating": monitorPanel?.inspector.readback() ?? [:], "taskStates": monitorStates.mapValues { ["presentation": $0.presentation.rawValue, "visible": $0.visible, "frame": $0.frame.map(NSStringFromRect) ?? ""] as [String: Any] }]
+        return ["taskID": id, "presentation": state.presentation.rawValue, "requested": state.visible, "dockedVisible": !workbenchInspector.isHidden, "floatingVisible": monitorPanel?.isVisible == true, "applicationActive": NSApp.isActive, "floatingOnScreen": monitorPanel?.occlusionState.contains(.visible) == true, "floatingKey": monitorPanel?.isKeyWindow == true, "floatingMovable": monitorPanel?.isMovable == true, "floatingBackgroundMovable": monitorPanel?.isMovableByWindowBackground == true, "floatingOwner": monitorPanel?.parent?.windowNumber ?? -1, "ownerNumber": window?.windowNumber ?? -1, "floatingTaskID": monitorPanelTaskID ?? "", "floatingFrame": monitorPanel.map { NSStringFromRect($0.frame) } ?? "", "windowSize": window.map { [$0.frame.width, $0.frame.height] } ?? [], "fixed": workbenchInspector.readback(), "floating": monitorPanel?.inspector.readback() ?? [:], "taskStates": monitorStates.mapValues { ["presentation": $0.presentation.rawValue, "visible": $0.visible, "frame": $0.frame.map { NSStringFromRect($0.rect) } ?? ""] as [String: Any] }]
     }
     func checkTaskMonitor(_ action: String, frame: NSRect? = nil) {
         guard ["--task-monitor-check", "--browser-workspace-check"].contains(where: CommandLine.arguments.contains) else { return }
@@ -2752,7 +2785,9 @@ final class FormDocumentView: NSView {
         renderMessages()
         if returningToConversation { restoreActiveConversationPosition() }
         if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { focusTaskInput() }; return }
+        let openingWindow = window?.isVisible != true
         showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        if openingWindow, selectedTab == "chat" { updateWorkbenchLayout() }
         if selectedTab == "chat" { focusTaskInput() }
         if selectedTab == "knowledge" {
             if revealingKnowledge { knowledgePageHost.currentController?.settingsDidAppear() }

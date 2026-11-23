@@ -36,11 +36,13 @@ struct AgentMonitorContent {
 }
 
 @MainActor final class AgentTaskInspector: AgentThemeView {
+    typealias Reading = AgentTaskMonitor.ReadingState
     var onOpen: ((Int, String) -> Void)?, onShowAll: ((Int) -> Void)?, onSideTask: ((String) -> Void)?
     var onOpenIn: ((Int, String, AgentArtifactLocation) -> Void)?
     var onOpenTerminal: (() -> Void)?, onTerminal: ((String) -> Void)?, onPage: ((String) -> Void)?
     var onRecap: (() -> Void)?, onContext: ((Int) -> Void)?, onSettings: (() -> Void)?, onMemory: (() -> Void)?, onPreview: (() -> Void)?
     var onClose: (() -> Void)?, onPresentation: (() -> Void)?
+    var onReadingChange: ((String, Reading) -> Void)?
     var onAddSource: ((NSButton) -> Void)?
     var onSkillCurate: ((Set<String>,String,Bool)->Void)?, onSkillTask: ((String)->Void)?, onSkillRetry: (()->Void)?, onSkillSource: (()->Void)?
     private var skillSelections: [String:Set<String>] = [:]
@@ -52,8 +54,13 @@ struct AgentMonitorContent {
     }
     private var content: AgentMonitorContent?, rendered = "", generation = UUID()
     private let actions = NSMapTable<NSButton, Action>.weakToStrongObjects()
-    private var collapsed: [String: Set<String>] = [:], expanded: [String: Set<String>] = [:]
+    private var groups: [String: NSView] = [:]
+    private var reading = Reading()
+    private var viewportSize = NSSize.zero, needsReadingRestore = true, applyingReading = false
     var boundTaskID: String? { content?.task.id }
+    override var isHidden: Bool {
+        didSet { if oldValue != isHidden { needsReadingRestore = true; needsLayout = true } }
+    }
     override init(frame: NSRect) {
         super.init(frame: frame); translatesAutoresizingMaskIntoConstraints = false; fill = AgentWorkbenchTheme.surface; layer?.masksToBounds = true
         let title = NSTextField(labelWithString: "任务监控"); title.font = .systemFont(ofSize: 14, weight: .semibold)
@@ -65,6 +72,8 @@ struct AgentMonitorContent {
         let line = AgentWorkbenchTheme.rule(), document = FormDocumentView(); column.orientation = .vertical; column.alignment = .leading; column.spacing = 20
         document.addSubview(column); document.translatesAutoresizingMaskIntoConstraints = false; column.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document
         scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false; scroll.setAccessibilityLabel("任务监控内容")
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(monitorScrollChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         for view in [header, line, scroll] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         let trailing = header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16); trailing.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1)
         NSLayoutConstraint.activate([header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16), trailing, header.topAnchor.constraint(equalTo: topAnchor, constant: 10), header.heightAnchor.constraint(equalToConstant: 28), line.leadingAnchor.constraint(equalTo: header.leadingAnchor), line.trailingAnchor.constraint(equalTo: header.trailingAnchor), line.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8), scroll.topAnchor.constraint(equalTo: line.bottomAnchor, constant: 14), scroll.leadingAnchor.constraint(equalTo: header.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: header.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), column.leadingAnchor.constraint(equalTo: document.leadingAnchor), column.trailingAnchor.constraint(equalTo: document.trailingAnchor), column.topAnchor.constraint(equalTo: document.topAnchor), column.bottomAnchor.constraint(equalTo: document.bottomAnchor)])
@@ -100,22 +109,23 @@ struct AgentMonitorContent {
         let text = NSTextField(wrappingLabelWithString: value); text.font = .systemFont(ofSize: 12); text.textColor = secondary ? AgentWorkbenchTheme.secondaryText : .labelColor; text.maximumNumberOfLines = lines; text.isSelectable = true; return text
     }
     private func section(_ key: String, _ title: String, views: [NSView], accessory: NSView? = nil) {
-        guard !views.isEmpty || accessory != nil, let id = boundTaskID else { return }
-        let hidden = collapsed[id, default: []].contains(key)
+        guard !views.isEmpty || accessory != nil else { return }
+        let hidden = reading.collapsed.contains(key)
         let heading = button(title, symbol: hidden ? "chevron.right" : "chevron.down") { [weak self] in
-            guard let self else { return }; if hidden { collapsed[id]?.remove(key) } else { collapsed[id, default: []].insert(key) }; rerender()
+            self?.toggleReadingOption(key, at: \.collapsed)
         }
         heading.font = .systemFont(ofSize: 12, weight: .medium); heading.contentTintColor = AgentWorkbenchTheme.secondaryText
         let header: NSView = accessory.map { NSStackView(views: [heading, $0]) } ?? heading
         header.identifier = NSUserInterfaceItemIdentifier("monitor-group-" + key)
         let group = NSStackView(views: [header] + (hidden ? [] : views)); group.orientation = .vertical; group.alignment = .leading; group.spacing = 7
+        groups[key] = group
         column.addArrangedSubview(group); group.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         for view in group.arrangedSubviews { view.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true }
     }
     private func textRows(_ text: String, key: String) -> [NSView] {
-        guard let id = boundTaskID else { return [] }; let full = expanded[id, default: []].contains(key), long = text.count > 180 || text.components(separatedBy: "\n").count > 5
+        let full = reading.expanded.contains(key), long = text.count > 180 || text.components(separatedBy: "\n").count > 5
         var rows: [NSView] = [label(text, lines: long && !full ? 5 : 0)]
-        if long { rows.append(button(full ? "收起" : "展开全文") { [weak self] in guard let self else { return }; if full { expanded[id]?.remove(key) } else { expanded[id, default: []].insert(key) }; rerender() }) }; return rows
+        if long { rows.append(button(full ? "收起" : "展开全文") { [weak self] in self?.toggleReadingOption(key, at: \.expanded) }) }; return rows
     }
     private func file(_ title: String, value: String, section: Int, symbol: String = "doc") -> NSView {
         let id = boundTaskID, token = generation, row = AgentInspectorFileButton(title: title, value: value, section: section, symbol: symbol); row.font = .systemFont(ofSize: 12)
@@ -133,10 +143,28 @@ struct AgentMonitorContent {
             return button(task.title + " · " + state + retained, symbol: task.agent?.ownerID == nil ? "bubble.left.and.bubble.right" : "person.crop.circle") { [weak self] in self?.onSideTask?(task.id) }
         }
     }
-    private func rerender() { guard let content else { return }; rendered = ""; update(content) }
-    func update(_ value: AgentMonitorContent) {
-        content = value; guard rendered != value.signature else { return }; rendered = value.signature
-        let origin = scroll.contentView.bounds.origin; generation = UUID(); column.arrangedSubviews.forEach { column.removeArrangedSubview($0); $0.removeFromSuperview() }
+    private func toggleReadingOption(_ key: String, at path: WritableKeyPath<Reading, [String]>) {
+        guard let content else { return }
+        var next = reading
+        if let index = next[keyPath: path].firstIndex(of: key) { next[keyPath: path].remove(at: index) }
+        else { next[keyPath: path].append(key); next[keyPath: path].sort() }
+        update(content, reading: next)
+        onReadingChange?(content.task.id, reading)
+    }
+    func update(_ value: AgentMonitorContent, reading next: Reading? = nil) {
+        let next = next ?? (boundTaskID == value.task.id ? reading : Reading())
+        let signature = value.signature
+        let rebuild = rendered != signature || reading.collapsed != next.collapsed || reading.expanded != next.expanded
+        content = value
+        guard rebuild || reading.position != next.position else { return }
+        reading = next
+        needsReadingRestore = true
+        needsLayout = true
+        guard rebuild else { return }
+        rendered = signature
+        generation = UUID()
+        groups.removeAll()
+        column.arrangedSubviews.forEach { column.removeArrangedSubview($0); $0.removeFromSuperview() }
         let task = value.task, settings = value.settings
         if settings.shows(.recap), task.recap != nil || value.analysis != nil || value.analysisError != nil {
             var rows: [NSView] = []
@@ -211,7 +239,46 @@ struct AgentMonitorContent {
         if settings.shows(.preview), let title = value.previewTitle { section("preview", "演示画面", views: [button((value.previewVisible ? "收起 " : "显示 ") + title, symbol: "rectangle.on.rectangle") { [weak self] in self?.onPreview?() }]) }
         if value.showChanges, !task.changes.isEmpty { section("changes", "变更", views: task.changes.prefix(6).map { file(URL(fileURLWithPath: $0.path).lastPathComponent, value: $0.id, section: 3, symbol: $0.restoredAt == nil ? "square.and.pencil" : "arrow.uturn.backward") }) }
         if column.arrangedSubviews.isEmpty { column.addArrangedSubview(label("暂无监控内容", secondary: true)) }
-        layoutSubtreeIfNeeded(); scroll.contentView.scroll(to: NSPoint(x: 0, y: min(origin.y, max(0, (scroll.documentView?.bounds.height ?? 0) - scroll.contentSize.height)))); scroll.reflectScrolledClipView(scroll.contentView)
+    }
+    override func layout() {
+        super.layout()
+        restoreReadingPosition()
+    }
+    func restoreReadingPosition() {
+        let clip = scroll.contentView, size = clip.bounds.size
+        guard !isHiddenOrHasHiddenAncestor, !applyingReading, size.width > 0, size.height > 0,
+              needsReadingRestore || size != viewportSize, let document = scroll.documentView else { return }
+        applyingReading = true
+        defer { applyingReading = false }
+        document.layoutSubtreeIfNeeded()
+        viewportSize = size
+        needsReadingRestore = false
+        var y = reading.position?.y ?? 0
+        if let position = reading.position, let key = position.row, let group = groups[key] {
+            let frame = group.convert(group.bounds, to: document)
+            if frame.height > 0 { y = frame.minY + position.offset / position.rowHeight * frame.height }
+        }
+        let limit = max(0, document.bounds.height - size.height)
+        clip.scroll(to: NSPoint(x: 0, y: min(limit, max(0, y))))
+        scroll.reflectScrolledClipView(clip)
+    }
+    @objc private func monitorScrollChanged() {
+        let clip = scroll.contentView
+        guard !applyingReading, !needsReadingRestore, !isHiddenOrHasHiddenAncestor,
+              window?.isVisible == true, let id = boundTaskID, let document = scroll.documentView else { return }
+        if clip.bounds.size != viewportSize { needsLayout = true; return }
+        let y = max(0, clip.bounds.minY)
+        var position: AgentConversationPosition?
+        if y > 0.5 {
+            let frames = groups.map { (key: $0.key, frame: $0.value.convert($0.value.bounds, to: document)) }
+                .filter { $0.frame.height > 0 && $0.frame.minY <= y + 0.5 }
+            if let nearest = frames.max(by: { $0.frame.minY < $1.frame.minY }) {
+                position = .init(row: nearest.key, offset: y - nearest.frame.minY, rowHeight: nearest.frame.height, y: y)
+            } else { position = .init(row: nil, y: y) }
+        }
+        guard reading.position != position else { return }
+        reading.position = position
+        onReadingChange?(id, reading)
     }
     func readback() -> [String: Any] {
         guard ["--task-monitor-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) else { return [:] }

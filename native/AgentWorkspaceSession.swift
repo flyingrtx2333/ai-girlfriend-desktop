@@ -1,7 +1,9 @@
 import AppKit
 
 extension AgentWorkspaceRecovery.Frame {
-    @MainActor init(_ window: NSWindow) { self.init(x: window.frame.minX, y: window.frame.minY, width: window.frame.width, height: window.frame.height) }
+    init(_ rect: NSRect) { self.init(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height) }
+    var rect: NSRect { NSRect(x: x, y: y, width: width, height: height) }
+    @MainActor init(_ window: NSWindow) { self.init(window.frame) }
     @MainActor func apply(to window: NSWindow?) {
         guard valid, let window, let screen = window.screen ?? NSScreen.main else { return }
         let visible = screen.visibleFrame
@@ -44,6 +46,9 @@ private actor AgentWorkspaceJournal {
     func saveArchivedTaskNavigation(_ record: AgentArchivedTaskNavigation.Record, layoutHash: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentArchivedTaskNavigation.Record> {
         try storage.saveArchivedTaskNavigation(record, layoutHash: layoutHash, expected: expected)
     }
+    func saveTaskMonitor(_ record: AgentTaskMonitor.Recovery, layoutHash: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTaskMonitor.Recovery> {
+        try storage.saveTaskMonitor(record, layoutHash: layoutHash, expected: expected)
+    }
     func saveTerminals(_ layout: AgentTerminalLayout, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTerminalLayout> {
         try storage.saveTerminalLayout(layout, expected: expected)
     }
@@ -82,6 +87,8 @@ private actor AgentWorkspaceJournal {
     private var workspaceEditorFailure: String?
     private var savedArchivedTaskNavigation: AgentWorkspaceRecovery.Saved<AgentArchivedTaskNavigation.Record>?
     private var archivedTaskNavigationReadOnly = false
+    private var savedTaskMonitor: AgentWorkspaceRecovery.Saved<AgentTaskMonitor.Recovery>?
+    private var taskMonitorReadOnly = false
     var pendingSettingsCategory: String? { coldSettings?.category }
     var hasPendingAutomation: Bool { coldAutomation != nil }
     private var knowledgeFailure: String?
@@ -150,6 +157,13 @@ private actor AgentWorkspaceJournal {
             } catch {
                 archivedTaskNavigationReadOnly = true
                 owner.setStatus("归档位置未恢复，原记录已保留：" + error.localizedDescription, error: true)
+            }
+            do {
+                savedTaskMonitor = try recovery.loadTaskMonitor(windowID: id)
+                if let savedTaskMonitor { owner.restoreTaskMonitorStates(savedTaskMonitor.value.tasks) }
+            } catch {
+                taskMonitorReadOnly = true
+                owner.setStatus("任务监控位置未恢复，原记录已保留：" + error.localizedDescription, error: true)
             }
             do {
                 savedTerminals = try recovery.loadTerminalLayout(windowID: id)
@@ -443,6 +457,7 @@ private actor AgentWorkspaceJournal {
                 let workspaceEditor = owner.workspaceEditor, editorDraft = owner.captureWorkspaceEditorDraft()
                 let editorDrafts = workspaceEditorDrafts(including: editorDraft)
                 let archivedTaskNavigation = owner.captureArchivedTaskNavigation()
+                let monitorStates = owner.captureTaskMonitorStates()
                 let attention = owner.captureAttentionRecovery() ?? coldAttention ?? previous?.attention
                 if let legacy = previous?.attention, let layoutHash {
                     if let attentionRecoveryError { throw PetError("需要我恢复记录无法迁移：" + attentionRecoveryError) }
@@ -460,6 +475,10 @@ private actor AgentWorkspaceJournal {
                 if !archivedTaskNavigationReadOnly, let archivedTaskNavigation, archivedTaskNavigation != savedArchivedTaskNavigation?.value.state {
                     let record = AgentArchivedTaskNavigation.Record(windowID: id, state: archivedTaskNavigation)
                     savedArchivedTaskNavigation = try await journal.saveArchivedTaskNavigation(record, layoutHash: saved.hash, expected: savedArchivedTaskNavigation?.hash)
+                }
+                if !taskMonitorReadOnly, monitorStates != (savedTaskMonitor?.value.tasks ?? [:]) {
+                    let record = AgentTaskMonitor.Recovery(windowID: id, tasks: monitorStates)
+                    savedTaskMonitor = try await journal.saveTaskMonitor(record, layoutHash: saved.hash, expected: savedTaskMonitor?.hash)
                 }
                 if var attention, attentionRecoveryError == nil {
                     attention.active = attention.active && saved.value.permitsActiveAttention
@@ -602,7 +621,7 @@ private actor AgentWorkspaceJournal {
         } while taskControls.contains { $0.workspaceSession?.isCurrent == false }
         return true
     }
-    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || usesSettingsRecoveryCheck || (CommandLine.arguments.contains("--manual-ui") && CommandLine.arguments.contains("--terminal-recovery-ui")) || CommandLine.arguments.contains("--knowledge-editor-recovery-check") || CommandLine.arguments.contains("--knowledge-editor-recovery-ui") || ((CommandLine.arguments.contains("--knowledge-reader-recovery-check") || CommandLine.arguments.contains("--knowledge-reader-recovery-ui") || CommandLine.arguments.contains("--knowledge-source-recovery-check")) || CommandLine.arguments.contains("--knowledge-source-recovery-ui") || CommandLine.arguments.contains("--workspace-source-recovery-check")) || CommandLine.arguments.contains("--workspace-source-recovery-ui") || CommandLine.arguments.contains("--workspace-text-viewport-check") || CommandLine.arguments.contains("--workspace-text-viewport-ui") || CommandLine.arguments.contains("--workspace-child-recovery-check") || CommandLine.arguments.contains("--workspace-child-recovery-ui") || CommandLine.arguments.contains("--workspace-floating-recovery-check") || CommandLine.arguments.contains("--workspace-floating-recovery-ui") || CommandLine.arguments.contains("--workspace-video-recovery-check") || CommandLine.arguments.contains("--workspace-video-recovery-ui") || CommandLine.arguments.contains("--workspace-browser-recovery-check") || CommandLine.arguments.contains("--workspace-browser-recovery-ui") || CommandLine.arguments.contains("--workspace-edit-recovery-check") || CommandLine.arguments.contains("--workspace-edit-recovery-ui") || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--ssh-terminal-directory-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
+    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || usesSettingsRecoveryCheck || (CommandLine.arguments.contains("--manual-ui") && CommandLine.arguments.contains("--terminal-recovery-ui")) || CommandLine.arguments.contains("--knowledge-editor-recovery-check") || CommandLine.arguments.contains("--knowledge-editor-recovery-ui") || ((CommandLine.arguments.contains("--knowledge-reader-recovery-check") || CommandLine.arguments.contains("--knowledge-reader-recovery-ui") || CommandLine.arguments.contains("--knowledge-source-recovery-check")) || CommandLine.arguments.contains("--knowledge-source-recovery-ui") || CommandLine.arguments.contains("--workspace-source-recovery-check")) || CommandLine.arguments.contains("--workspace-source-recovery-ui") || CommandLine.arguments.contains("--workspace-text-viewport-check") || CommandLine.arguments.contains("--workspace-text-viewport-ui") || CommandLine.arguments.contains("--workspace-child-recovery-check") || CommandLine.arguments.contains("--workspace-child-recovery-ui") || CommandLine.arguments.contains("--workspace-floating-recovery-check") || CommandLine.arguments.contains("--workspace-floating-recovery-ui") || CommandLine.arguments.contains("--workspace-video-recovery-check") || CommandLine.arguments.contains("--workspace-video-recovery-ui") || CommandLine.arguments.contains("--workspace-browser-recovery-check") || CommandLine.arguments.contains("--workspace-browser-recovery-ui") || CommandLine.arguments.contains("--workspace-edit-recovery-check") || CommandLine.arguments.contains("--workspace-edit-recovery-ui") || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--ssh-terminal-directory-check") || CommandLine.arguments.contains("--task-monitor-recovery-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
     func loadWorkspaceWindows() {
         guard workspaceRecoveryEnabled else { return }
         do {

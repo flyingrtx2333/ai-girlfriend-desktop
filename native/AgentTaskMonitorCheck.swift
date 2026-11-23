@@ -103,6 +103,10 @@ import AppKit
         return states
     }
     func runTaskMonitorCheck(_ output: URL) async {
+        if CommandLine.arguments.contains("--task-monitor-recovery-check") {
+            await runTaskMonitorRecoveryCheck(output)
+            return
+        }
         var checks: [String: Bool] = [:], report: [String: Any] = [:], requests = 0
         defer { control.checkTaskMonitor("stop-terminals"); agentRuntime?.stopAll() }
         do {
@@ -215,6 +219,188 @@ import AppKit
             report["success"] = checks.count >= 40 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
+        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("task-monitor-report.json"))
+    }
+
+    private struct TaskMonitorFixture: Codable {
+        let first: String, other: String, primaryWindow: String, secondaryWindow: String
+        let primary: AgentTaskMonitor.DisplayState, secondary: AgentTaskMonitor.DisplayState
+        let readmeHash: String
+    }
+
+    private func runTaskMonitorRecoveryCheck(_ output: URL) async {
+        var report: [String: Any] = [:], checks: [String: Bool] = [:], requests = 0
+        do {
+            ensureAgent()
+            guard let tasks = agentStore, let runtime = agentRuntime, let host = control.window else { throw PetError("任务工作台不可用") }
+            runtime.modelRequestCheck = { requests += 1; throw PetError("监控恢复验收禁止模型请求") }
+            let storage = AgentWorkspaceRecovery(profile: store.directory)
+            let stage = CommandLine.arguments.last
+            let workspace = output.appendingPathComponent("workspace"), files = try AgentFiles(workspace: workspace.path)
+            let readme = try files.resolve("README.md"), source = try String(contentsOf: readme, encoding: .utf8)
+            let fixtureFile = output.appendingPathComponent("monitor-fixture.json"), draft = "保留待发送的任务输入"
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            func pane(_ window: NSWindow) throws -> AgentTaskInspector {
+                window.contentView?.layoutSubtreeIfNeeded()
+                guard let root = window.contentView, let pane = descendants(root).compactMap({ $0 as? AgentTaskInspector }).first(where: { !$0.isHiddenOrHasHiddenAncestor }) else {
+                    throw PetError("原窗口的监控面板不可见")
+                }
+                return pane
+            }
+            func floating(_ owner: ControlWindow) throws -> AgentTaskMonitorPanel {
+                guard let panel = owner.window?.childWindows?.compactMap({ $0 as? AgentTaskMonitorPanel }).first(where: \.isVisible) else {
+                    throw PetError("原窗口的浮动监控不可见")
+                }
+                return panel
+            }
+            func click(_ name: String, in pane: AgentTaskInspector) throws {
+                guard let button = descendants(pane).compactMap({ $0 as? NSButton }).first(where: { $0.accessibilityLabel() == name && !$0.isHiddenOrHasHiddenAncestor }),
+                      button.isEnabled else { throw PetError("找不到监控操作 " + name) }
+                button.performClick(nil)
+                pane.window?.contentView?.layoutSubtreeIfNeeded()
+            }
+            func geometry(_ group: String, in pane: AgentTaskInspector) throws -> (NSScrollView, NSRect) {
+                pane.window?.contentView?.layoutSubtreeIfNeeded()
+                let children = descendants(pane)
+                guard let scroll = children.compactMap({ $0 as? NSScrollView }).first, let document = scroll.documentView,
+                      let heading = children.first(where: { $0.identifier?.rawValue == "monitor-group-" + group }) else {
+                    throw PetError("监控分组不可见 " + group)
+                }
+                return (scroll, heading.convert(heading.bounds, to: document))
+            }
+            func scrollTo(_ group: String, in pane: AgentTaskInspector) throws {
+                let (scroll, frame) = try geometry(group, in: pane)
+                let clip = scroll.contentView
+                var bounds = clip.bounds
+                bounds.origin.y = frame.minY + 4
+                clip.scroll(to: clip.constrainBoundsRect(bounds).origin)
+                scroll.reflectScrolledClipView(clip)
+            }
+            func isReading(_ group: String, in pane: AgentTaskInspector) throws -> Bool {
+                let (scroll, frame) = try geometry(group, in: pane)
+                return abs(scroll.contentView.bounds.minY - frame.minY - 4) < 12
+            }
+            func screenshot(_ window: NSWindow, _ name: String) throws {
+                guard let view = window.contentView, window.isVisible, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                    throw PetError("无法读取监控窗口")
+                }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                guard let png = bitmap.representation(using: .png, properties: [:]) else { throw PetError("监控窗口无法绘制") }
+                try png.write(to: output.appendingPathComponent(name + ".png"))
+            }
+            let fixture: TaskMonitorFixture
+            control.show(tab: "chat")
+            if stage == "seed" {
+                let artifacts = try ["README.md", "docs/AGENT-READING.md", "docs/AGENT-PLAN.md", "docs/DEVELOPMENT.md",
+                                     "docs/REPO-WIKI.md", "docs/ROADMAP.md", "docs/QODER-UI-SPEC.md", "package.json"].map { try files.resolve($0).path }
+                let a = tasks.create(title: "核对公开项目说明的交付项", workspace: workspace.path, mode: .goal)
+                let b = tasks.create(title: "检查任务之间的监控位置", workspace: workspace.path, mode: .goal)
+                for id in [a, b] {
+                    tasks.update(id) { task in
+                        task.messages = [AgentMessage(role: "user", content: String(source.prefix(880)))]
+                        task.plan = ["核对项目入口", "检查运行方式", "核对构建参数", "定位安装说明", "核对示例与许可"].map { AgentPlanStep(title: $0) }
+                        task.artifacts = artifacts
+                        task.sources = (1...10).map { "https://example.test/guide/\($0)" }
+                        task.draft = draft
+                    }
+                }
+                host.appearance = NSAppearance(named: .darkAqua)
+                host.setContentSize(NSSize(width: 780, height: 540))
+                control.showAgentTask(a)
+                control.checkTaskMonitor("toggle")
+                let fixed = try pane(host)
+                try click("展开全文", in: fixed)
+                try click("计划 0/5", in: fixed)
+                try scrollTo("plan", in: fixed)
+                checks["fixingAndScrollingShowsTheActualPlanGroup"] = try isReading("plan", in: fixed)
+                checks["previouslyExpandedTextAndCollapsedPlanAreRecorded"] = control.captureTaskMonitorStates()[a]?.reading.expanded == ["goal"] &&
+                    control.captureTaskMonitorStates()[a]?.reading.collapsed == ["plan"]
+                control.showAgentTask(b)
+                control.checkTaskMonitor("toggle")
+                checks["newTaskOpensMonitorAtItsOwnStart"] = try (pane(host).readback()["scrollY"] as? CGFloat ?? -1) == 0
+                control.checkTaskMonitor("close")
+                control.showAgentTask(a)
+                checks["switchingBackReturnsToOriginalPlanGroup"] = try isReading("plan", in: pane(host))
+                tasks.update(a) { $0.messages[0].content += "\n\n" + String(source.prefix(420)) }
+                control.scheduleRender()
+                await wait(0.25)
+                checks["insertingRowsAboveDoesNotMoveTheViewedGroup"] = try isReading("plan", in: pane(host))
+                try screenshot(host, "monitor-fixed-narrow")
+                openTaskWindow(a, from: control)
+                guard let second = additionalTaskWindows.last, let secondWindow = second.window else { throw PetError("第二个任务窗口未打开") }
+                secondWindow.appearance = NSAppearance(named: .aqua)
+                secondWindow.setContentSize(NSSize(width: 1320, height: 800))
+                second.checkTaskMonitor("pin")
+                let panel = try floating(second)
+                let frame = NSRect(x: panel.frame.minX - 70, y: panel.frame.minY, width: panel.frame.width, height: 420)
+                panel.setFrame(frame, display: true)
+                try click("任务目标", in: pane(panel))
+                try scrollTo("outputs", in: pane(panel))
+                checks["monitorReadingAndPresentationAreIndependentInTheSecondWindow"] = try isReading("outputs", in: pane(panel)) &&
+                    second.captureTaskMonitorStates()[a]?.reading.collapsed == ["goal"] &&
+                    control.captureTaskMonitorStates()[a]?.reading.collapsed == ["plan"]
+                guard await flushWorkspaceWindows(), let mainID = control.workspaceSession?.id, let secondID = second.workspaceSession?.id,
+                      let mainRecord = try storage.loadTaskMonitor(windowID: mainID), let secondRecord = try storage.loadTaskMonitor(windowID: secondID),
+                      let primary = mainRecord.value.tasks[a], let secondary = secondRecord.value.tasks[a] else {
+                    throw PetError("两扇窗口的任务监控位置没有保存")
+                }
+                checks["fixedAndFloatingRecordsContainTheirOwnAnchorsAndTheClosedTask"] = primary.reading.position?.row == "plan" &&
+                    secondary.reading.position?.row == "outputs" && secondary.frame?.rect == panel.frame &&
+                    mainRecord.value.tasks[b]?.explicitVisibility == true && mainRecord.value.tasks[b]?.visible == false
+                let file = store.directory.appendingPathComponent("workspace-recovery/" + mainID + "/task-monitor.json")
+                let original = try Data(contentsOf: file), manager = FileManager.default
+                guard let layout = try storage.loadWindow(mainID) else { throw PetError("缺少原窗口布局") }
+                try manager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: file.path)
+                defer { try? manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path) }
+                do {
+                    _ = try storage.saveTaskMonitor(mainRecord.value, layoutHash: layout.hash, expected: mainRecord.hash)
+                    checks["readOnlyMonitorRecordRetainsBytes"] = false
+                } catch { checks["readOnlyMonitorRecordRetainsBytes"] = try Data(contentsOf: file) == original }
+                try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+                fixture = .init(first: a, other: b, primaryWindow: mainID, secondaryWindow: secondID,
+                                primary: primary, secondary: secondary, readmeHash: try files.fileHash(readme))
+                try JSONEncoder().encode(fixture).write(to: fixtureFile, options: .atomic)
+            } else {
+                fixture = try JSONDecoder().decode(TaskMonitorFixture.self, from: Data(contentsOf: fixtureFile))
+                restoreAdditionalWorkspaceWindows()
+                guard let second = additionalTaskWindows.first(where: { $0.workspaceSession?.id == fixture.secondaryWindow }),
+                      control.workspaceSession?.id == fixture.primaryWindow, control.agentTaskID == fixture.first, second.agentTaskID == fixture.first else {
+                    throw PetError("原任务窗口没有恢复")
+                }
+                host.appearance = NSAppearance(named: .darkAqua)
+                report["reopenedWindows"] = [control.taskMonitorReadback(), second.taskMonitorReadback()]
+                let fixed = try pane(host)
+                let panel = try floating(second)
+                second.window?.appearance = NSAppearance(named: .aqua)
+                panel.appearance = NSAppearance(named: .aqua)
+                checks["fixedMonitorReopensAtOriginalGroupInTheNarrowWindow"] = try isReading("plan", in: fixed) && host.frame.width == 780 &&
+                    control.captureTaskMonitorStates()[fixture.first]?.reading == fixture.primary.reading
+                checks["secondaryFloatingMonitorRestoresFrameAndDifferentReadingPosition"] = try isReading("outputs", in: pane(panel)) &&
+                    fixture.secondary.frame?.rect == panel.frame && second.captureTaskMonitorStates()[fixture.first]?.reading == fixture.secondary.reading
+                try screenshot(panel, "monitor-floating-reopened")
+                try screenshot(host, "monitor-fixed-reopened")
+                try click("改为浮动", in: fixed)
+                checks["changingPresentationKeepsTheGroupAndFoldedSections"] = try isReading("plan", in: pane(floating(control))) &&
+                    control.captureTaskMonitorStates()[fixture.first]?.reading.collapsed == ["plan"]
+                try click("固定到任务右侧", in: pane(floating(control)))
+                checks["returningToFixedKeepsTheSameReadingPosition"] = try isReading("plan", in: pane(host))
+                control.showAgentTask(fixture.other)
+                host.setContentSize(NSSize(width: 1320, height: 800))
+                checks["explicitlyClosedMonitorStaysClosedEvenInWideWindow"] = control.taskMonitorReadback()["dockedVisible"] as? Bool == false &&
+                    control.taskMonitorReadback()["floatingVisible"] as? Bool == false && control.captureTaskMonitorStates()[fixture.other]?.visible == false
+                control.showAgentTask(fixture.first)
+                checks["wideFixedMonitorPreservesTheSamePlanGroup"] = try isReading("plan", in: pane(host))
+                try screenshot(host, "monitor-fixed-wide")
+            }
+            checks["originalPublicReadmeAndDraftsAreUnchanged"] = try files.fileHash(readme) == fixture.readmeHash &&
+                [fixture.first, fixture.other].allSatisfy { tasks.task($0)?.draft == draft && (tasks.task($0)?.modelReceipts ?? []).isEmpty }
+            checks["globalMonitorDefaultsWereNotWritten"] = !FileManager.default.fileExists(atPath: store.directory.appendingPathComponent("task-monitor.json").path)
+            checks["allWindowStatesCheckpointed"] = await flushWorkspaceWindows()
+        } catch { report["error"] = error.localizedDescription }
+        report["appPID"] = getpid()
+        if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
+        report["modelRequests"] = requests; report["checks"] = checks
+        report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 } && requests == 0
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("task-monitor-report.json"))
     }
 }
