@@ -134,6 +134,7 @@ import WebKit
         }
         if CommandLine.arguments.contains("--workspace-office-recovery-ui") { await runOfficeRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") { await runWorkspaceRecoveryLifecycleCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--composer-recovery-check") { await runComposerRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-recovery-ui") { await runWorkspaceRecoveryLifecycleCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--conversation-workspace-check") { await runConversationWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--wiki-lifecycle-check") { await runWikiLifecycleCheck(output); NSApp.terminate(nil); return }

@@ -16,6 +16,22 @@ import AppKit
     }
 }
 
+struct AgentDraftViewports: Codable, Equatable, Sendable {
+    var version = 1
+    let windowID: String
+    let tasks: [String: AgentTextViewport]
+
+    var valid: Bool {
+        version == 1 && UUID(uuidString: windowID)?.uuidString == windowID &&
+            tasks.allSatisfy { UUID(uuidString: $0.key)?.uuidString == $0.key && $0.value.valid }
+    }
+    static func validateObject(_ raw: Any) throws {
+        let fields = try AgentSettingsRecovery.object(raw, keys: ["version", "windowID", "tasks"])
+        guard let tasks = fields["tasks"] as? [String: Any] else { throw PetError("草稿位置格式无效") }
+        for viewport in tasks.values { try AgentTextViewport.validateObject(viewport) }
+    }
+}
+
 @MainActor extension AppDelegate {
     var taskControls: [ControlWindow] { [control] + additionalTaskWindows }
     var inputControl: ControlWindow { focusedTaskControl ?? control }

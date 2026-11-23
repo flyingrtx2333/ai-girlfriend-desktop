@@ -144,6 +144,9 @@ final class FormDocumentView: NSView {
     private var reasoningRows: [String: ChatMessageRow] = [:], processRows: [String: AgentReplyProcessRow] = [:]
     private var readingTaskID: String?, lastHumanMessageID: String?, readingAnchorID: String?, readingSpace: NSLayoutConstraint?
     private var conversationPositions: [String: AgentConversationPosition] = [:]
+    private var draftViewports: [String: AgentTextViewport] = [:]
+    private var pendingDraftViewport: String?
+    private var applyingDraftViewport = false
     private let latestMessageButton = AgentDialogButton(title: "回到最新", target: nil, action: nil)
     private struct MessageSearch {
         var taskID: String, messageID: String, query: String
@@ -1137,6 +1140,9 @@ final class FormDocumentView: NSView {
             }; return true
         }
         let input = NSScrollView(); input.documentView = composer; input.hasVerticalScroller = true; input.drawsBackground = false; input.borderType = .noBorder
+        input.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(composerViewportChanged(_:)),
+                                               name: NSView.boundsDidChangeNotification, object: input.contentView)
         for mode in AgentMode.allCases { modePopup.addItem(withTitle: mode.title) }; for mode in AgentPermissionMode.allCases { permissionPopup.addItem(withTitle: mode.title) }
         for popup in [modePopup, permissionPopup] { popup.controlSize = .small; popup.font = .systemFont(ofSize: 13); popup.isBordered = false; popup.target = self; popup.action = #selector(agentOptionsChanged) }
         modePopup.setAccessibilityLabel("任务模式"); permissionPopup.setAccessibilityLabel("审批方式")
@@ -1278,7 +1284,9 @@ final class FormDocumentView: NSView {
         }
         if showWorkspace || fullMonitor { headerActionsTrailing.isActive = false; fullHeaderActionsTrailing.isActive = true }
         else { fullHeaderActionsTrailing.isActive = false; headerActionsTrailing.isActive = true }
-        terminalSplit.isHidden = fullWorkspace || fullMonitor
+        let hideComposer = fullWorkspace || fullMonitor
+        if hideComposer, !terminalSplit.isHidden { preserveDraftViewportWhileHidden() }
+        terminalSplit.isHidden = hideComposer
         updateTerminalDock()
         if !showWorkspace { taskWorkspace.setVisible(false) }
         taskWorkspace.updateHeader(full: fullWorkspace, canSplit: remaining >= 920)
@@ -1349,6 +1357,7 @@ final class FormDocumentView: NSView {
         resultsButton.state = monitorVisible ? .on : .off; resultsButton.setAccessibilityLabel(monitorVisible ? "隐藏任务监控" : "显示任务监控"); resultsButton.toolTip = monitorVisible ? "隐藏任务监控" : "显示任务监控"
         if focusMonitor, let window, !window.makeFirstResponder(resultsButton) { window.makeFirstResponder(nil) }
         if restoreComposer, composer.isEditable { window?.makeFirstResponder(composer) }
+        if window?.firstResponder === composer { applyDraftViewport() }
         (Array(messageRows.values) + Array(reasoningRows.values)).forEach { $0.fit(width: history.contentView.bounds.width - 40) }
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
     }
@@ -1372,6 +1381,21 @@ final class FormDocumentView: NSView {
     func captureTaskMonitorStates() -> [String: AgentTaskMonitor.DisplayState] {
         let known = Set(companion?.agentStore?.tasks.map(\.id) ?? [])
         return monitorStates.filter { $0.value.hasRecovery && known.contains($0.key) }
+    }
+    func textViewDidChangeSelection(_ notification: Notification) {
+        if (notification.object as? NSTextView) === composer { composerViewportChanged(notification) }
+    }
+    func restoreDraftViewports(_ positions: [String: AgentTextViewport]) {
+        draftViewports = positions
+        pendingDraftViewport = displayedTask
+    }
+    func captureDraftViewports() -> [String: AgentTextViewport] {
+        rememberDraftViewport()
+        if let tasks = companion?.agentStore {
+            let known = Set(tasks.tasks.map(\.id))
+            draftViewports = draftViewports.filter { known.contains($0.key) }
+        }
+        return draftViewports
     }
     func restoreTaskMonitorStates(_ states: [String: AgentTaskMonitor.DisplayState]) {
         let settings = companion?.taskMonitor.settings ?? .init()
@@ -1552,7 +1576,7 @@ final class FormDocumentView: NSView {
         return ["taskID": id, "presentation": state.presentation.rawValue, "requested": state.visible, "dockedVisible": !workbenchInspector.isHidden, "floatingVisible": monitorPanel?.isVisible == true, "applicationActive": NSApp.isActive, "floatingOnScreen": monitorPanel?.occlusionState.contains(.visible) == true, "floatingKey": monitorPanel?.isKeyWindow == true, "floatingMovable": monitorPanel?.isMovable == true, "floatingBackgroundMovable": monitorPanel?.isMovableByWindowBackground == true, "floatingOwner": monitorPanel?.parent?.windowNumber ?? -1, "ownerNumber": window?.windowNumber ?? -1, "floatingTaskID": monitorPanelTaskID ?? "", "floatingFrame": monitorPanel.map { NSStringFromRect($0.frame) } ?? "", "windowSize": window.map { [$0.frame.width, $0.frame.height] } ?? [], "fixed": workbenchInspector.readback(), "floating": monitorPanel?.inspector.readback() ?? [:], "taskStates": monitorStates.mapValues { ["presentation": $0.presentation.rawValue, "visible": $0.visible, "frame": $0.frame.map { NSStringFromRect($0.rect) } ?? ""] as [String: Any] }]
     }
     func checkTaskMonitor(_ action: String, frame: NSRect? = nil) {
-        guard ["--task-monitor-check", "--browser-workspace-check"].contains(where: CommandLine.arguments.contains) else { return }
+        guard ["--task-monitor-check", "--browser-workspace-check", "--composer-recovery-check"].contains(where: CommandLine.arguments.contains) else { return }
         switch action { case "toggle": toggleTaskInspector(); case "pin": pinTaskMonitor(); case "close": closeTaskMonitor(); case "frame": if let frame { monitorPanel?.setFrame(frame, display: false) }; case "terminal": openTaskTerminal(); case "stop-terminals": stopTaskTerminals(); case "source-link": if let id = agentTaskID { presentSourceLink(id) }; default: break }
     }
     func checkWorkbenchStates(_ ids: [String: String]) async -> (checks: [String: Bool], frames: [String: [String: [CGFloat]]]) {
@@ -2772,7 +2796,10 @@ final class FormDocumentView: NSView {
         if selectedTab != tab || workspaceEditor != nil { guard canLeaveMainPage() else { return } }
         let enteringSettings = tab == "settings" && selectedTab != "settings"
         let returningToConversation = selectedTab != "chat" && tab == "chat"
-        if selectedTab == "chat", tab != "chat" { rememberConversationPosition() }
+        if selectedTab == "chat", tab != "chat" {
+            rememberConversationPosition()
+            preserveDraftViewportWhileHidden()
+        }
         let revealingKnowledge = tab == "knowledge" && (selectedTab != tab || window?.isVisible != true)
         if window?.isVisible != true { refreshPreferences() }
         if enteringSettings {
@@ -2803,7 +2830,10 @@ final class FormDocumentView: NSView {
         else if !workbenchInspector.isHiddenOrHasHiddenAncestor, terminalSplit.isHidden, let window {
             if !window.makeFirstResponder(resultsButton) { window.makeFirstResponder(nil) }
         }
-        else { window?.makeFirstResponder(composer) }
+        else {
+            window?.makeFirstResponder(composer)
+            applyDraftViewport()
+        }
     }
     @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); show(tab: sender.tag == 0 ? "chat" : "settings") }
     private func changeTab() {
@@ -4277,6 +4307,7 @@ final class FormDocumentView: NSView {
     @discardableResult func saveAgentDraft() -> Bool {
         draftSave?.cancel(); draftSave = nil
         guard let tasks = companion?.agentStore, let id = displayedTask, let task = tasks.task(id) else { return true }
+        defer { if rememberDraftViewport() { workspaceSession?.changed() } }
         windowDraft?.refresh(task.draft ?? "", attributes: composer.typingAttributes)
         let value = composer.string
         guard (task.draft ?? "") != value || windowDraft?.saved != value || windowDraft?.pendingSave == true || tasks.writeError != nil else { return true }
@@ -4288,9 +4319,56 @@ final class FormDocumentView: NSView {
     private func bindAgentDraft(_ task: AgentTaskRecord) {
         guard let value = companion?.windowDraft(task.id, attributes: composer.typingAttributes) else { return }
         if let manager = composer.layoutManager, manager.textStorage !== value.storage {
+            pendingDraftViewport = task.id
             manager.textStorage?.removeLayoutManager(manager); value.storage.addLayoutManager(manager)
         }
         windowDraft = value; composer.delegate = self; composer.needsDisplay = true
+    }
+    private var composerPositionAvailable: Bool {
+        selectedTab == "chat" && window?.isVisible == true && !composer.isHiddenOrHasHiddenAncestor &&
+            composer.enclosingScrollView.map { $0.contentSize.width > 0 && $0.contentSize.height > 0 } == true &&
+            !composer.hasMarkedText()
+    }
+    @objc private func composerViewportChanged(_ notification: Notification) {
+        guard pendingDraftViewport == nil, !applyingDraftViewport, composerPositionAvailable else { return }
+        workspaceSession?.changed()
+    }
+    @discardableResult private func rememberDraftViewport(requireSavedText: Bool = true) -> Bool {
+        guard !applyingDraftViewport, pendingDraftViewport == nil, composerPositionAvailable,
+              let id = displayedTask, let draft = windowDraft, draft.id == id,
+              !requireSavedText || (!draft.pendingSave && draft.saved == composer.string) else { return false }
+        let previous = draftViewports[id]
+        if composer.string.isEmpty { draftViewports[id] = nil }
+        else {
+            applyingDraftViewport = true
+            defer { applyingDraftViewport = false }
+            guard var viewport = try? AgentTextViewport(composer) else { return false }
+            viewport.focused = false
+            draftViewports[id] = viewport
+        }
+        return previous != draftViewports[id]
+    }
+    private func preserveDraftViewportWhileHidden() {
+        if composerPositionAvailable, pendingDraftViewport == nil, let draft = windowDraft,
+           draft.id == displayedTask, draft.pendingSave || draft.saved != composer.string {
+            if !saveAgentDraft(), rememberDraftViewport(requireSavedText: false) { workspaceSession?.changed() }
+        } else if rememberDraftViewport() { workspaceSession?.changed() }
+        pendingDraftViewport = displayedTask
+    }
+    private func applyDraftViewport() {
+        guard !applyingDraftViewport, let id = pendingDraftViewport, id == displayedTask, id == windowDraft?.id,
+              composerPositionAvailable else { return }
+        applyingDraftViewport = true
+        defer { applyingDraftViewport = false }
+        if let saved = draftViewports[id], saved.apply(to: composer, focus: false) {
+            pendingDraftViewport = nil
+            return
+        }
+        if draftViewports.removeValue(forKey: id) != nil { workspaceSession?.changed() }
+        let end = NSRange(location: (composer.string as NSString).length, length: 0)
+        composer.setSelectedRange(end)
+        composer.scrollRangeToVisible(end)
+        pendingDraftViewport = nil
     }
     private var conversationRows: [String: NSView] {
         var rows: [String: NSView] = [:]

@@ -416,24 +416,43 @@ struct AgentWorkspaceRecovery: Sendable {
         }
     }
     func loadTaskMonitor(windowID: String) throws -> Saved<AgentTaskMonitor.Recovery>? {
-        let files = try files(), url = try literal(files, prefix(windowID) + "/task-monitor.json")
-        let entry = try files.entryMetadata(url)
-        if entry.kind == "missing" { return nil }
-        guard entry.kind == "file" else { throw PetError("任务监控位置不是普通文件") }
-        let data = try files.readData(url, maximum: Self.maximumState)
-        try AgentTaskMonitor.Recovery.validateObject(JSONSerialization.jsonObject(with: data))
-        let value = try JSONDecoder().decode(AgentTaskMonitor.Recovery.self, from: data)
-        guard value.windowID == windowID, value.valid else { throw PetError("任务监控位置与原窗口不符") }
-        return Saved(value: value, hash: AgentFiles.hash(data))
+        try loadWindowState(windowID: windowID, name: "task-monitor.json", label: "任务监控位置", inspect: AgentTaskMonitor.Recovery.validateObject) {
+            $0.windowID == windowID && $0.valid
+        }
     }
     func saveTaskMonitor(_ value: AgentTaskMonitor.Recovery, layoutHash: String, expected: String?) throws -> Saved<AgentTaskMonitor.Recovery> {
         guard value.valid else { throw PetError("任务监控位置无效") }
+        return try saveWindowState(value, windowID: value.windowID, name: "task-monitor.json", label: "任务监控位置", layoutHash: layoutHash, expected: expected)
+    }
+    func loadDraftViewports(windowID: String) throws -> Saved<AgentDraftViewports>? {
+        try loadWindowState(windowID: windowID, name: "draft-viewports.json", label: "草稿位置", inspect: AgentDraftViewports.validateObject) {
+            $0.windowID == windowID && $0.valid
+        }
+    }
+    func saveDraftViewports(_ value: AgentDraftViewports, layoutHash: String, expected: String?) throws -> Saved<AgentDraftViewports> {
+        guard value.valid else { throw PetError("草稿位置无效") }
+        return try saveWindowState(value, windowID: value.windowID, name: "draft-viewports.json", label: "草稿位置", layoutHash: layoutHash, expected: expected)
+    }
+    private func loadWindowState<Value: Decodable & Sendable>(windowID: String, name: String, label: String,
+                                                            inspect: (Any) throws -> Void, matches: (Value) -> Bool) throws -> Saved<Value>? {
+        let files = try files(), url = try literal(files, prefix(windowID) + "/" + name)
+        let entry = try files.entryMetadata(url)
+        if entry.kind == "missing" { return nil }
+        guard entry.kind == "file" else { throw PetError(label + "不是普通文件") }
+        let data = try files.readData(url, maximum: Self.maximumState)
+        try inspect(JSONSerialization.jsonObject(with: data))
+        let value = try JSONDecoder().decode(Value.self, from: data)
+        guard matches(value) else { throw PetError(label + "与原窗口不符") }
+        return Saved(value: value, hash: AgentFiles.hash(data))
+    }
+    private func saveWindowState<Value: Encodable & Sendable>(_ value: Value, windowID: String, name: String, label: String,
+                                                             layoutHash: String, expected: String?) throws -> Saved<Value> {
         let data = try encoded(value)
-        return try locked(value.windowID) { files in
-            let directory = try prefix(value.windowID), layout = try literal(files, directory + "/layout.json")
+        return try locked(windowID) { files in
+            let directory = try prefix(windowID), layout = try literal(files, directory + "/layout.json")
             guard try files.fileHash(layout, maximum: Self.maximumState) == layoutHash else { throw PetError("窗口布局已变化，请重新打开窗口") }
-            let change = try AgentKnowledgeFileWrite(files: files, path: directory + "/task-monitor.json", data: data,
-                expectedHash: expected ?? AgentFiles.hash(Data()), missing: expected == nil, permissions: 0o600, label: "任务监控位置")
+            let change = try AgentKnowledgeFileWrite(files: files, path: directory + "/" + name, data: data,
+                expectedHash: expected ?? AgentFiles.hash(Data()), missing: expected == nil, permissions: 0o600, label: label)
             try change.requireCurrent()
             try files.writeData(data, to: change.url, permissions: 0o600, expectedTarget: change.signature)
             return Saved(value: value, hash: AgentFiles.hash(data))
