@@ -1,5 +1,28 @@
 import AppKit
 
+@MainActor extension AppDelegate {
+    func runSettingsManagementReviewCheck(_ output: URL) async {
+        var report: [String: Any] = [:], checks: [String: Bool] = [:], requests = 0
+        do {
+            ensureAgent()
+            guard let tasks = agentStore, let runtime = agentRuntime, let executable = Bundle.main.executableURL else { throw PetError("缺少设置验收工作台") }
+            report["binaryHash"] = try AgentFiles(workspace: executable.deletingLastPathComponent().path).fileHash(executable)
+            runtime.modelRequestCheck = { requests += 1; throw PetError("设置审阅检查禁止模型请求") }
+            let task = try await prepareSettingsPagesCheck(output, tasks: tasks)
+            let plugins = tasks.extensions.plugins, samples = try AgentPluginReviewCheck.prepareSources(output)
+            _ = try plugins.install(await plugins.inspect(samples[0]))
+            let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
+            host.isReleasedWhenClosed = false
+            let pane = AgentSettingsPageHost(); host.contentView = pane; host.makeKeyAndOrderFront(nil)
+            defer { host.close() }
+            checks = try await AgentManagementReviewCheck.run(tasks: tasks, taskID: task, pane: pane, host: host, output: output)
+        } catch { report["error"] = error.localizedDescription }
+        report["appPID"] = getpid(); report["checks"] = checks; report["modelRequests"] = requests
+        report["success"] = report["error"] == nil && requests == 0 && !checks.isEmpty && checks.values.allSatisfy { $0 }
+        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("settings-pages-report.json"))
+    }
+}
+
 @MainActor enum AgentManagementReviewCheck {
     private static func find<T: NSView>(_ type: T.Type, in view: NSView?, matching: (T) -> Bool) -> T? {
         guard let view else { return nil }; if let value = view as? T, matching(value) { return value }
@@ -43,7 +66,10 @@ import AppKit
         let service = tasks.hooks, source = try service.file(project: false, workspace: workspace), authorization = tasks.extensions.profile.appendingPathComponent("extensions/hook-settings.json")
         let initialSource = try bytes(source), initialAuthorization = try bytes(authorization), visible = NSApp.windows.filter(\.isVisible).count
         let manager = AgentHookWindow(service: service, workspace: workspace)
-        guard pane.show(category: "hooks", identity: "inline-hook-review", scope: "设置项目", make: { _ in manager }) else { throw PetError("无法进入 Hook 审阅") }
+        let context = AgentSettingsRecovery.Context(task: tasks.task(taskID), workspace: workspace)
+        guard pane.show(category: "hooks", identity: "inline-hook-review", scope: "设置项目", recoveryContext: context, make: { _ in manager }) else {
+            throw PetError("无法进入 Hook 审阅")
+        }
         var checks: [String: Bool] = [:], measurements: [String: Any] = [:]
         let names = ["页内命令审阅", "页内HTTP审阅", "页内模型审阅", "页内Agent审阅", "页内后台审阅"]
         let expected = ["此命令将自动运行", "发送当前事件数据", "产生模型用量", "只读项目", "退出码为 2"]
@@ -90,12 +116,19 @@ import AppKit
         checks["hookReviewDisableRestoresHandlerFocus"] = (host.firstResponder as? NSButton)?.accessibilityIdentifier() == "hook-handler-" + command.id
         command = try hook(names[0]); manager.selectHook(command.id); try press("启用", page: manager)
         guard let stale = pane.currentController as? AgentSettingsReviewPage else { throw PetError("缺少过期 Hook 审阅") }
+        guard let hookState = try pane.captureRecovery(active: true), let hookReview = hookState.pages.last else { throw PetError("缺少 Hook 启用恢复记录") }
+        checks["hookReviewRecordsOriginalRouteAndScope"] = hookState.context == context && hookState.pages.map(\.kind) == ["hooks", "hook-enable-review"]
         let document = try service.document(project: false, workspace: workspace)
         var changed = try JSONSerialization.jsonObject(with: Data(document.0.utf8)) as! [String: Any], groups = changed["hooks"] as! [String: Any], entries = groups["PreToolUse"] as! [[String: Any]]
         var definitions = entries.last!["hooks"] as! [[String: Any]]; definitions[0]["timeout"] = 6; entries[entries.count - 1]["hooks"] = definitions; groups["PreToolUse"] = entries; changed["hooks"] = groups
         try service.save(object(changed), project: false, workspace: workspace, expectedHash: document.1)
         let approvedBefore = try bytes(authorization); try press("启用", page: stale)
         checks["hookStaleReviewRefusesApprovalAndKeepsPage"] = try pane.currentController === stale && control(NSTextField.self, "审阅操作错误", page: stale).stringValue.contains("Hook 已变化") && bytes(authorization) == approvedBefore
+        if let recovered = try manager.makeSettingsRecoveryChild(hookReview) as? AgentSettingsReviewPage {
+            try recovered.restoreSettingsRecovery(hookReview)
+            checks["restoredChangedHookCannotBeEnabled"] = try find(NSButton.self, in: recovered.pageContentView, matching: { $0.title == "启用" })?.isEnabled == false &&
+                control(NSTextField.self, "审阅操作错误", page: recovered).stringValue.contains("Hook 已变化") && bytes(authorization) == approvedBefore
+        } else { checks["restoredChangedHookCannotBeEnabled"] = false }
         try press("取消", page: stale); checks["hookReviewReturnRefreshesChangedDefinition"] = try pane.currentController === manager && !service.trusted(hook(names[0]))
         let configBefore = try bytes(source), grantsBefore = try bytes(authorization)
         let editConfig = try control(NSButton.self, "编辑当前范围的 Hooks 配置", page: manager); editConfig.performClick(nil)
@@ -156,7 +189,9 @@ import AppKit
         checks["hookReadOnlyGrantRejectsEnableChange"] = try refusesReadOnly(authorization) { try service.setEnabled(currentHook, !wasEnabled, workspace: workspace) }
         checks["hookReadOnlyGrantKeepsSourceRuntimeAndCatalogUsable"] = try bytes(source) == sourceBeforeGrantFailure && service.enabled(currentHook) == wasEnabled && service.catalog(workspace: workspace).contains(where: { $0.id == currentHook.id })
         let teams = AgentTeamWindow(store: tasks, workspace: workspace)
-        guard pane.show(category: "teams", identity: "inline-team-template", scope: "设置项目", make: { _ in teams }) else { throw PetError("无法进入团队模板") }
+        guard pane.show(category: "teams", identity: "inline-team-template", scope: "设置项目", recoveryContext: context, make: { _ in teams }) else {
+            throw PetError("无法进入团队模板")
+        }
         let originalAgents = try tasks.agents.document(), originalTeams = try tasks.teams.document(), previousSelection = try control(NSTableView.self, "Agent 团队列表", page: teams).selectedRow
         try press("审阅模板", page: teams)
         guard let template = pane.currentController as? AgentSettingsReviewPage else { throw PetError("团队模板未进入审阅子页") }
@@ -169,10 +204,18 @@ import AppKit
         checks["teamTemplateCancelWritesNothing"] = try pane.currentController === teams && tasks.agents.document().1 == originalAgents.1 && tasks.teams.document().1 == originalTeams.1 && control(NSTableView.self, "Agent 团队列表", page: teams).selectedRow == previousSelection
         checks["teamTemplateCancelRestoresListFocus"] = try host.firstResponder === control(NSTableView.self, "Agent 团队列表", page: teams)
         try press("审阅模板", page: teams); guard let staleTeam = pane.currentController as? AgentSettingsReviewPage else { throw PetError("缺少过期团队预览") }
+        guard let teamState = try pane.captureRecovery(active: true), let teamReview = teamState.pages.last else { throw PetError("缺少团队模板恢复记录") }
+        checks["teamReviewRecordsOriginalRouteAndScope"] = teamState.context == context && teamState.pages.map(\.kind) == ["teams", "team-template-review"]
         let added = AgentProfile(name: "并发新增角色", description: "独立公开验收", instructions: "只读公开资料。", tools: ["read_file"])
         try tasks.agents.save(tasks.agents.encode(tasks.agents.decode(originalAgents.0) + [added]), expectedHash: originalAgents.1)
         let externalAgents = try tasks.agents.document(); try press("载入草稿", page: staleTeam)
         checks["teamStaleTemplateKeepsReviewAndExternalRecord"] = try pane.currentController === staleTeam && control(NSTextField.self, "审阅操作错误", page: staleTeam).stringValue.contains("角色或团队配置已改变") && tasks.agents.document().1 == externalAgents.1 && tasks.teams.document().1 == originalTeams.1
+        if let recovered = try teams.makeSettingsRecoveryChild(teamReview) as? AgentSettingsReviewPage {
+            try recovered.restoreSettingsRecovery(teamReview)
+            checks["restoredChangedTeamCannotLoadDraft"] = try find(NSButton.self, in: recovered.pageContentView, matching: { $0.title == "载入草稿" })?.isEnabled == false &&
+                control(NSTextField.self, "审阅操作错误", page: recovered).stringValue.contains("角色或团队配置已改变") &&
+                tasks.agents.document().1 == externalAgents.1 && tasks.teams.document().1 == originalTeams.1
+        } else { checks["restoredChangedTeamCannotLoadDraft"] = false }
         try press("取消", page: staleTeam); try press("审阅模板", page: teams)
         guard let accepted = pane.currentController as? AgentSettingsReviewPage else { throw PetError("缺少可载入的团队模板") }; try press("载入草稿", page: accepted)
         guard let teamEditor = pane.currentController as? AgentSettingsDetailPage else { throw PetError("团队草稿未进入配置页") }

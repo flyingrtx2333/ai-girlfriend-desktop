@@ -129,17 +129,18 @@ enum AgentSettingsRecovery {
                 return kinds == [root] || kinds == [root, "memory-editor"] || kinds == [root, "memory-editor", "memory-topic"] || kinds == [root, "memory-cleanup"]
             case ("memory", "rules"), ("extensions", "skills"), ("extensions", "commands"):
                 return kinds.allSatisfy { ["rules", "skills", "commands", "extension-create"].contains($0) }
-            case ("hooks", "hooks"): return kinds == [root] || kinds == [root, "hook-config"]
+            case ("hooks", "hooks"): return kinds == [root] || kinds == [root, "hook-config"] || kinds == [root, "hook-enable-review"]
             case ("extensions", "plugins"):
                 return kinds == [root] || kinds == [root, "plugin-settings"] || kinds == [root, "plugin-history"]
                     || kinds == [root, "plugin-history", "plugin-history-review"] || kinds == [root, "plugin-review"]
                     || kinds == [root, "plugin-market"] || kinds == [root, "plugin-market", "plugin-market-review"]
                     || kinds == [root, "mcp"] || kinds == [root, "mcp", "mcp-detail"] || kinds == [root, "mcp", "mcp-import"]
                     || kinds == [root, "mcp", "mcp-detail", "mcp-import"] || kinds == [root, "hooks"] || kinds == [root, "hooks", "hook-config"]
+                    || kinds == [root, "hooks", "hook-enable-review"]
                     || agentRoute([root, "agents"])
             case ("extensions", "mcp"):
                 return kinds == [root] || kinds == [root, "mcp-detail"] || kinds == [root, "mcp-import"] || kinds == [root, "mcp-detail", "mcp-import"]
-            case ("teams", "teams"): return kinds == [root] || agentRoute([root, "agents"])
+            case ("teams", "teams"): return kinds == [root] || kinds == [root, "team-template-review"] || agentRoute([root, "agents"])
             case ("agents", "agents"), ("extensions", "agents"): return agentRoute([root])
             case ("git", "git"), ("worktrees", "worktrees"): return kinds == [root] && context.taskID == nil && context.workspace == nil
             default: return false

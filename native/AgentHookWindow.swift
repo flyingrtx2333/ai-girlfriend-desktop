@@ -358,6 +358,11 @@ private struct AgentHookEditTarget: Codable, Equatable {
         let alert = AgentConfirmation(); alert.messageText = "清除已保存的 Hook 凭据？"; alert.informativeText = selected.name + "\n停用此处理器并清除钥匙串中的 " + (selected.type == "http" ? "Headers" : "env") + "。来源文件内直接填写的值可通过「打开来源」移除。"; alert.addButton(withTitle: "清除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
         alert.beginModal(in: window) { [weak self] response in guard response == .alertFirstButtonReturn, let self else { return }; do { try service.clearCredentials(selected, workspace: workspace); reload(select: selected.id) } catch { state.stringValue = error.localizedDescription } }
     }
+    private struct EnableReviewSource: Codable, Equatable {
+        let id: String
+        let signature: String
+    }
+    private typealias EnableReview = AgentSettingsResumableReview<EnableReviewSource>
     @objc private func toggleEnabled() {
         guard let item = selected else { return }
         if enabled.state == .off {
@@ -365,6 +370,43 @@ private struct AgentHookEditTarget: Codable, Equatable {
         }
         enabled.state = service.enabled(item) ? .on : .off
         guard item.diagnostic == nil, presentingWindow != nil else { reload(select: item.id); return }
+        let source = EnableReviewSource(id: item.id, signature: item.signature)
+        let review = makeEnableReview(source)
+        reviewPage = review; presentSettingsChild(review)
+    }
+    private func currentReviewedHook(_ source: EnableReviewSource) throws -> AgentHookDefinition {
+        guard let current = try service.catalog(workspace: workspace).first(where: { $0.id == source.id }),
+              current.signature == source.signature, current.diagnostic == nil, current.pluginEnabled != false else {
+            throw PetError("Hook 已变化或不可用，请返回列表重新审阅")
+        }
+        guard !service.trusted(current) else { throw PetError("处理器已启用，请返回列表查看") }
+        return current
+    }
+    private func makeEnableReview(_ source: EnableReviewSource) -> EnableReview {
+        do {
+            let item = try currentReviewedHook(source)
+            let (notice, definition) = enablePreview(item)
+            let page = EnableReview(kind: "hook-enable-review", source: source, title: "启用「" + item.name + "」",
+                metadata: item.event.rawValue + " · " + item.scope, notice: notice,
+                sections: [("处理器", definition)], applyTitle: "启用")
+            page.onApply = { [weak self] in
+                guard let self else { throw PetError("Hooks 页面已关闭，请重新打开") }
+                let current = try currentReviewedHook(source)
+                try service.setEnabled(current, true, workspace: workspace)
+            }
+            page.onApplied = { [weak self] in
+                guard let self else { return }
+                reload(select: source.id); state.stringValue = "已启用"
+                presentingWindow?.makeFirstResponder(disclosureButton("hook-handler-" + source.id))
+            }
+            return page
+        } catch {
+            let page = EnableReview(kind: "hook-enable-review", source: source, title: "启用 Hook", metadata: "", notice: "", sections: [], applyTitle: "启用")
+            page.showPreviewFailure(error)
+            return page
+        }
+    }
+    private func enablePreview(_ item: AgentHookDefinition) -> (notice: String, definition: String) {
         let consequence: String
         switch item.type {
         case AgentMCPHook.type: consequence = "在当前任务的已有连接上调用此工具，发送下列模板指定的事件数据。逐次确认的任务会跳过自动调用。"
@@ -379,15 +421,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
         var definition = item.display + "\n\n匹配：" + (item.matcher.isEmpty ? "全部" : item.matcher) + "\n超时：" + timeout + "\n来源：" + item.source
         if item.type == "agent", let turns = item.maxTurns { definition += "\n最多 \(turns) 轮" }
         for (title, value) in [("状态", item.statusMessage), ("唤醒提示", item.rewakeMessage), ("唤醒摘要", item.rewakeSummary)] { if let value, !value.isEmpty { definition += "\n\n" + title + "\n" + value } }
-        let page = AgentSettingsReviewPage(title: "启用「" + item.name + "」", metadata: item.event.rawValue + " · " + item.scope, notice: notice, sections: [("处理器", definition)], applyTitle: "启用")
-        page.onApply = { [weak self] in
-            guard let self else { throw PetError("Hooks 页面已关闭，请重新打开") }; try service.setEnabled(item, true, workspace: workspace)
-        }
-        page.onApplied = { [weak self] in
-            guard let self else { return }; reload(select: item.id); state.stringValue = "已启用"
-            presentingWindow?.makeFirstResponder(disclosureButton("hook-handler-" + item.id))
-        }
-        reviewPage = page; presentSettingsChild(page)
+        return (notice, definition)
     }
     @objc private func editConfig() { openConfig(imported: nil) }
     private var canEditSelected: Bool {
@@ -508,6 +542,13 @@ private struct AgentHookEditTarget: Codable, Equatable {
         expanded = Set(draft.expanded).intersection(Set(items.map(\.event))); renderGroups(); pendingScroll = draft.scrollY
     }
     override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        if page.kind == "hook-enable-review" {
+            let source = try EnableReview.savedSource(page, kind: "hook-enable-review")
+            guard AgentSettingsRecovery.validHash(source.id), AgentSettingsRecovery.validHash(source.signature) else {
+                throw PetError("Hook 启用审阅的原来源无效")
+            }
+            return makeEnableReview(source)
+        }
         guard page.kind == "hook-config" else { return nil }
         let draft = try AgentHookConfigWindow.decodeRecovery(page)
         if case .local(let project, let path, _) = draft.target.source {

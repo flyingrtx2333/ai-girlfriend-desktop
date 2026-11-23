@@ -11,7 +11,7 @@ import AppKit
             if let preview = raw["preview"] { try AgentTextViewport.validateObject(preview) }
         }
         var valid: Bool {
-            (selected?.count ?? 0) <= 60 && AgentSettingsRecovery.validScroll(listY) && preview?.valid != false
+            (selected?.count ?? 0) <= 100 && AgentSettingsRecovery.validScroll(listY) && preview?.valid != false
         }
     }
     private var sections: [(title: String, body: String)]
@@ -185,7 +185,7 @@ import AppKit
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             defer { readingScheduled = false }
-            guard isPageVisible, detail.contentSize.height > 0, let saved = pendingReading else { return }
+            guard isPageVisible, !sections.isEmpty, detail.contentSize.height > 0, let saved = pendingReading else { return }
             AgentSettingsRecovery.restoreScroll(saved.listY, to: index)
             let reader: NSView = sections.count < 2 ? preview : (compactChooser.isHidden ? list : chooser)
             if saved.selected != displayedTitle || saved.preview?.focused != true { presentingWindow?.makeFirstResponder(reader) }
@@ -206,4 +206,38 @@ import AppKit
         catch { status.showSaveFailure(error); working = false; updateApply() }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { !working }
+}
+
+@MainActor final class AgentSettingsResumableReview<Source: Codable & Equatable>: AgentSettingsReviewPage {
+    private struct Recovery: Codable {
+        var version = 1
+        let source: Source
+        let reading: ReadingLocation
+    }
+    private let kind: String, source: Source
+
+    init(kind: String, source: Source, title: String, metadata: String, notice: String, sections: [(String, String)], applyTitle: String) {
+        self.kind = kind; self.source = source
+        super.init(title: title, metadata: metadata, notice: notice, sections: sections, applyTitle: applyTitle)
+        trackReviewReading()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    private static func decode(_ page: AgentSettingsRecovery.Page, kind: String) throws -> Recovery {
+        guard page.kind == kind else { throw PetError("设置草稿不属于当前审阅") }
+        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "source", "reading"])
+        if let reading = raw["reading"] { try ReadingLocation.validateObject(reading) }
+        let saved = try JSONDecoder().decode(Recovery.self, from: page.state)
+        guard saved.version == 1, saved.reading.valid else { throw PetError("设置审阅记录无效") }
+        return saved
+    }
+    static func savedSource(_ page: AgentSettingsRecovery.Page, kind: String) throws -> Source { try decode(page, kind: kind).source }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        try AgentSettingsRecovery.page(kind, Recovery(source: source, reading: captureReviewReading()))
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        let saved = try Self.decode(page, kind: kind)
+        guard saved.source == source else { throw PetError("当前审阅与原来源不一致") }
+        restoreReviewReading(saved.reading)
+    }
 }

@@ -153,6 +153,7 @@ import WebKit
         if CommandLine.arguments.contains("--file-icons-check") { await runFileIconsCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-pages-check") {
             if CommandLine.arguments.contains("--agent-import-review-only") { runAgentImportReviewCheck(output) }
+            else if CommandLine.arguments.contains("--management-review-only") { await runSettingsManagementReviewCheck(output) }
             else { await runSettingsPagesCheck(output) }
             NSApp.terminate(nil); return
         }

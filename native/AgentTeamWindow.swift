@@ -252,37 +252,78 @@ import AppKit
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         do { agents = try availableAgents(); pendingAgents = []; pendingAgentsHash = nil; let value = AgentTeam(name: "", description: "", instructions: "", leaderID: agents.first?.id ?? UUID().uuidString, memberIDs: []); sections.selectedSegment = 0; values.append(value); table.reloadData(); open(value.id); changed(); showDetail(); presentingWindow?.makeFirstResponder(name) } catch { state.stringValue = error.localizedDescription }
     }
+    private struct TemplateReviewSource: Codable, Equatable {
+        let team: AgentTeam
+        let roles: String
+        let agentsHash: String?, teamsHash: String?
+    }
+    private typealias TemplateReview = AgentSettingsResumableReview<TemplateReviewSource>
     @objc private func createTemplate() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         do {
             let originalAgents = try store.agents.document(), originalTeams = try store.teams.document()
-            guard originalTeams.1 == openedHash else { throw PetError("团队配置已改变，请重新打开后审阅") }
             let available = try availableAgents()
-            var lead = AgentTemplates.profiles[3], reviewer = AgentTemplates.profiles[0], tester = AgentTemplates.profiles[0]
+            let teams = try store.teams.decode(originalTeams.0), templates = AgentTemplates.profiles
+            var tester = templates[0]; tester.id = UUID().uuidString
             tester.name = "测试分析员"; tester.description = "核对测试覆盖与可触发的回归风险"; tester.instructions = "只读相关源码与测试，核对边界条件和回归场景。仅报告有依据的缺口，给出触发输入、预期结果与建议验证。不得修改文件或运行会改动项目的测试。"
             var prepared: [AgentProfile] = []
-            for role in [lead, reviewer, tester] { var value = role; let base = value.name; var index = 2; while (available + prepared).contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { value.name = base + " \(index)"; index += 1 }; prepared.append(value) }
-            lead = prepared[0]; reviewer = prepared[1]; tester = prepared[2]
-            var value = AgentTeam(name: "代码审阅团队", description: "分工核对代码风险与测试覆盖", instructions: "负责人按实际需要分派代码审阅与测试覆盖分析，等待两名成员的实际结果。核对证据、分歧和未知项，汇总可执行结论。只读分析，不修改项目。", leaderID: lead.id, memberIDs: [reviewer.id, tester.id])
-            let base = value.name; var index = 2; while values.contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { value.name = base + " \(index)"; index += 1 }
-            let team = value, profiles = prepared
-            var previewSections = [("团队协作", team.description + "\n\n" + team.instructions)]
-            previewSections += profiles.enumerated().map { index, profile in
-                let access = profile.permission.title + (profile.readOnly ? " · 只读项目" : " · 可修改项目") + (profile.network ? " · 允许联网" : " · 不联网")
-                let model = profile.model.isEmpty ? "跟随任务" : profile.model
-                let body = profile.description + "\n\n" + access + "\n模型：" + model + "\n工具：" + profile.tools.joined(separator: ", ") + "\n\n" + profile.instructions
-                return ((index == 0 ? "负责人 · " : "成员 · ") + profile.name, body)
+            for role in [templates[3], templates[0], tester] {
+                var value = role
+                var index = 2
+                while (available + prepared).contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) {
+                    value.name = role.name + " \(index)"; index += 1
+                }
+                prepared.append(value)
             }
-            let page = AgentSettingsReviewPage(title: "代码审阅团队", metadata: "1 名负责人 · 2 名成员", notice: "保存时创建三个 Agent；启用团队时同时启用成员。", sections: previewSections, applyTitle: "载入草稿")
-            page.onApply = { [weak self] in
-                guard let self else { throw PetError("团队页面已关闭，请重新打开") }
-                guard !dirty, try store.agents.document().1 == originalAgents.1, try store.teams.document().1 == originalTeams.1 else { throw PetError("角色或团队配置已改变，请返回重新审阅") }
-                agents = available; pendingAgents = profiles; pendingAgentsHash = originalAgents.1
-                sections.selectedSegment = 0; values.append(team); table.reloadData(); open(team.id); changed(); state.stringValue = "待保存 · 将创建 3 个 Agent"
-            }
-            page.onApplied = { [weak self] in guard let self else { return }; showDetail(); presentingWindow?.makeFirstResponder(name) }
-            reviewPage = page; presentSettingsChild(page)
+            var team = AgentTeam(name: "代码审阅团队", description: "分工核对代码风险与测试覆盖", instructions: "负责人按实际需要分派代码审阅与测试覆盖分析，等待两名成员的实际结果。核对证据、分歧和未知项，汇总可执行结论。只读分析，不修改项目。", leaderID: prepared[0].id, memberIDs: prepared.dropFirst().map(\.id))
+            let base = team.name; var index = 2
+            while teams.contains(where: { $0.name.caseInsensitiveCompare(team.name) == .orderedSame }) { team.name = base + " \(index)"; index += 1 }
+            let source = TemplateReviewSource(team: team, roles: try store.agents.encode(prepared), agentsHash: originalAgents.1, teamsHash: originalTeams.1)
+            let review = try makeTemplateReview(source)
+            reviewPage = review; presentSettingsChild(review)
         } catch { state.stringValue = error.localizedDescription }
+    }
+    private func templateDestination(_ source: TemplateReviewSource, profiles: [AgentProfile]) throws -> ([AgentTeam], [AgentProfile]) {
+        let teams = try store.teams.document()
+        let agents = try store.agents.document()
+        let available = try availableAgents()
+        guard !dirty, agents.1 == source.agentsHash, teams.1 == source.teamsHash,
+              !available.contains(where: { current in profiles.contains { $0.id == current.id || $0.name.caseInsensitiveCompare(current.name) == .orderedSame } }) else {
+            throw PetError("角色或团队配置已改变，请返回重新审阅")
+        }
+        let current = try store.teams.decode(teams.0)
+        _ = try store.teams.decode(store.teams.encode(current + [source.team]))
+        _ = try store.agents.decode(store.agents.encode(store.agents.decode(agents.0) + profiles))
+        return (current, available)
+    }
+    private func makeTemplateReview(_ source: TemplateReviewSource) throws -> TemplateReview {
+        let profiles = try store.agents.decode(source.roles), team = source.team
+        guard AgentSettingsRecovery.validHash(source.agentsHash), AgentSettingsRecovery.validHash(source.teamsHash),
+              profiles.count == 3, team.leaderID == profiles[0].id, team.memberIDs == profiles.dropFirst().map(\.id),
+              !team.enabled, team.workspace == nil, team.roleSources == nil,
+              profiles.allSatisfy({ $0.readOnly && !$0.network && !$0.enabled }) else { throw PetError("团队模板的原审阅记录无效") }
+        _ = try store.teams.decode(store.teams.encode([team]))
+        var previewSections = [("团队协作", team.description + "\n\n" + team.instructions)]
+        previewSections += profiles.enumerated().map { index, profile in
+            let access = profile.permission.title + " · 只读项目 · 不联网"
+            let model = profile.model.isEmpty ? "跟随任务" : profile.model
+            let body = profile.description + "\n\n" + access + "\n模型  " + model + "\n工具  " + profile.tools.map(AgentProfileWindow.toolTitle).joined(separator: "、") + "\n\n" + profile.instructions
+            return ((index == 0 ? "负责人 · " : "成员 · ") + profile.name, body)
+        }
+        let page = TemplateReview(kind: "team-template-review", source: source, title: team.name, metadata: "1 名负责人 · 2 名成员",
+                                  notice: "保存时创建三个 Agent；启用团队时同时启用成员。", sections: previewSections, applyTitle: "载入草稿")
+        page.onApply = { [weak self] in
+            guard let self else { throw PetError("团队页面已关闭，请重新打开") }
+            let (currentTeams, currentAgents) = try templateDestination(source, profiles: profiles)
+            let archive = try store.teams.archiveState()
+            archivedIDs = archive.ids; archiveHash = archive.hash
+            agents = currentAgents; pendingAgents = profiles; pendingAgentsHash = source.agentsHash; openedHash = source.teamsHash
+            sections.selectedSegment = 0; values = currentTeams + [team]; table.reloadData(); open(team.id); changed()
+            state.stringValue = "待保存 · 将创建 3 个 Agent"
+        }
+        page.onApplied = { [weak self] in guard let self else { return }; showDetail(); presentingWindow?.makeFirstResponder(name) }
+        do { _ = try templateDestination(source, profiles: profiles) } catch { page.showPreviewFailure(error) }
+        return page
     }
     private func editedValue() -> AgentTeam? {
         guard var value = values.first(where: { $0.id == selectedID }) else { return nil }
@@ -420,6 +461,9 @@ import AppKit
         }
     }
     override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
-        page.kind == "agents" && detailPage?.settingsHostWindow != nil ? agentManager() : nil
+        if page.kind == "team-template-review" {
+            return try makeTemplateReview(TemplateReview.savedSource(page, kind: "team-template-review"))
+        }
+        return page.kind == "agents" && detailPage?.settingsHostWindow != nil ? agentManager() : nil
     }
 }
