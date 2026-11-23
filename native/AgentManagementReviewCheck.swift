@@ -178,14 +178,21 @@ import AppKit
         try service.save(projectDocument.0, project: true, workspace: workspace, expectedHash: projectDocument.1)
         let projectFile = try service.file(project: true, workspace: workspace), projectSaved = try service.document(project: true, workspace: workspace)
         checks["hookProjectConfigRefusesReadOnlySource"] = try refusesReadOnly(projectFile) { try service.save(projectSaved.0, project: true, workspace: workspace, expectedHash: projectSaved.1) }
-        guard let reference = try tasks.extensions.plugins.hookReferences().first(where: { $0.name == "review-inline" }) else { throw PetError("缺少公开插件 Hooks 配置") }
+        let plugins = tasks.extensions.plugins
+        guard let plugin = try plugins.catalog(workspace: workspace).first(where: { $0.metadata.name == "review-inline" }),
+              let userReference = try plugins.hookReferences().first(where: { $0.name == "review-inline" }),
+              let pluginHook = try service.catalog(workspace: workspace).first(where: {
+                  $0.plugin?.name == plugin.id && $0.plugin?.installationID == plugin.instanceID
+              }),
+              let reference = pluginHook.plugin else { throw PetError("缺少当前范围的公开插件 Hook") }
+        let userFile = try plugins.hookConfiguration(userReference).file
+        let userBefore = try bytes(userFile)
         let pluginDocument = try service.pluginDocument(reference)
-        guard let pluginHook = try service.catalog(workspace: workspace).first(where: { $0.plugin == reference }) else { throw PetError("缺少公开插件 Hook") }
         manager.selectHook(pluginHook.id)
         try control(NSButton.self, "编辑所选 Hook 配置", page: manager).performClick(nil)
         guard let pluginEditor = pane.currentController, pluginEditor !== manager else { throw PetError("缺少公开插件 Hook 编辑器") }
         try press("保存", page: pluginEditor)
-        let pluginFile = try tasks.extensions.plugins.hookConfiguration(reference).file, pluginSaved = try service.pluginDocument(reference)
+        let pluginFile = try plugins.hookConfiguration(reference).file, pluginSaved = try service.pluginDocument(reference)
         checks["hookPluginFirstSaveKeepsEditorAndCreatesOverride"] = pane.currentController === pluginEditor && pluginSaved.hash != pluginDocument.hash &&
             pluginSaved.text == pluginDocument.text
         checks["hookPluginConfigRefusesReadOnlySource"] = try refusesReadOnly(pluginFile) { try service.savePluginDocument(pluginSaved.text, reference: reference, original: pluginSaved.original, expectedHash: pluginSaved.hash) }
@@ -197,6 +204,8 @@ import AppKit
         checks["hookProjectAndPluginConfigRetryAfterRestoringPermissions"] = try service.document(project: true, workspace: workspace).0 == projectSaved.0 &&
             service.pluginDocument(reference).text == pluginSaved.text && pluginInput.string == pluginDraft &&
             control(NSTextField.self, "Hooks 配置保存状态", page: pluginEditor).stringValue == "已保存"
+        checks["hookPluginSaveStaysInEffectiveScope"] = try pluginHook.workspace == plugin.workspace &&
+            (plugin.workspace == nil ? pluginFile == userFile : pluginFile != userFile && bytes(userFile) == userBefore)
         pluginEditor.close()
         let sourceBeforeGrantFailure = try bytes(source), currentDocument = try service.document(project: false, workspace: workspace), currentHook = try hook(names[0]), wasEnabled = service.enabled(currentHook)
         checks["hookReadOnlyGrantRejectsConfigSave"] = try refusesReadOnly(authorization) { try service.save(currentDocument.0, project: false, workspace: workspace, expectedHash: currentDocument.1) }
