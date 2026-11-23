@@ -132,31 +132,64 @@ class AgentWorkbenchButton: NSButton {
     }
 }
 
-@MainActor final class AgentStatusBadge: NSView {
-    private let label = NSTextField(labelWithString: ""), icon = NSImageView()
+@MainActor final class AgentStatusBadge: NSButton {
+    private let label = NSTextField(labelWithString: ""), icon = NSImageView(), arrow = NSImageView()
+    private var trailingPadding: NSLayoutConstraint!
     private var statusColor: NSColor = AgentWorkbenchTheme.secondaryText
     override init(frame: NSRect) {
         super.init(frame: frame); translatesAutoresizingMaskIntoConstraints = false; wantsLayer = true; layer?.cornerRadius = 9
+        title = ""; setButtonType(.momentaryPushIn); isBordered = false; isEnabled = false; focusRingType = .exterior
         label.font = .systemFont(ofSize: 12, weight: .medium)
         label.setContentCompressionResistancePriority(.required, for: .horizontal)
-        for view in [icon, label] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([heightAnchor.constraint(equalToConstant: 22), icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), icon.widthAnchor.constraint(equalToConstant: 12), icon.heightAnchor.constraint(equalToConstant: 12), icon.centerYAnchor.constraint(equalTo: centerYAnchor), label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 5), label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), label.centerYAnchor.constraint(equalTo: centerYAnchor)])
+        label.setAccessibilityElement(false)
+        setAccessibilityRole(.staticText); setAccessibilityElement(true)
+        arrow.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+        arrow.isHidden = true
+        for view in [icon, label, arrow] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        trailingPadding = label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 22),
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), icon.widthAnchor.constraint(equalToConstant: 12), icon.heightAnchor.constraint(equalToConstant: 12), icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 5), trailingPadding, label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            arrow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7), arrow.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard isEnabled, super.hitTest(point) != nil else { return nil }
+        return self
+    }
+    override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: 9, yRadius: 9).fill() }
+    override func draw(_ dirtyRect: NSRect) {}
+    override func highlight(_ flag: Bool) { super.highlight(flag); needsDisplay = true }
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = AgentThemeContext.resolve(statusColor, in: self).withAlphaComponent(0.08).cgColor
+            layer?.backgroundColor = AgentThemeContext.resolve(statusColor, in: self).withAlphaComponent(isHighlighted ? 0.2 : 0.08).cgColor
         }
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
-    override var intrinsicContentSize: NSSize { NSSize(width: label.intrinsicContentSize.width + 33, height: 22) }
+    override var intrinsicContentSize: NSSize { NSSize(width: label.intrinsicContentSize.width + (isEnabled ? 46 : 33), height: 22) }
     func update(_ task: AgentTaskRecord) {
         let appearance = AgentTaskStatusAppearance(task)
         appearance.apply(to: icon)
+        arrow.contentTintColor = appearance.color
         label.stringValue = task.statusTitle; label.textColor = appearance.color; statusColor = appearance.color; needsDisplay = true
         invalidateIntrinsicContentSize()
-        setAccessibilityLabel(task.statusTitle)
+        updateAccessibilityTitle()
+    }
+    func setOpenTitle(_ title: String?) {
+        guard toolTip != title else { return }
+        toolTip = title; isEnabled = title != nil; arrow.isHidden = title == nil
+        setAccessibilityRole(title == nil ? .staticText : .button); updateAccessibilityTitle()
+        trailingPadding.constant = title == nil ? -8 : -21
+        invalidateIntrinsicContentSize()
+        window?.invalidateCursorRects(for: self)
+    }
+    private func updateAccessibilityTitle() {
+        setAccessibilityLabel(toolTip.map { label.stringValue + "，" + $0 } ?? label.stringValue)
     }
 }
 
