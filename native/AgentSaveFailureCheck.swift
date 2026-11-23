@@ -225,6 +225,33 @@ import AppKit
         guard left && discarded else { throw PetError("公开冲突草稿留存后未能关闭验收页") }
         try ruleFiles.writeData(ruleOriginal, to: rule.source, permissions: ruleMode)
         checks["RuleAcceptanceRestoresExactOriginalFilePermissionsAndTask"] = try Data(contentsOf: rule.source) == ruleOriginal && (fm.attributesOfItem(atPath: rule.source.path)[.posixPermissions] as? NSNumber)?.intValue == ruleMode && encoder.encode(tasks.task(taskID)!) == taskBefore
+
+        let validSource = try AgentRuleDocument.text(name: rule.name, trigger: .glob, description: "", patterns: ["src/**/*.ts"], body: "公开源文件正文。")
+        let malformed = "---\nunknown_public_field: true\n" + validSource.dropFirst(4)
+        try ruleFiles.writeData(Data(malformed.utf8), to: rule.source, permissions: ruleMode)
+        defer { try? ruleFiles.writeData(ruleOriginal, to: rule.source, permissions: ruleMode) }
+        let sourcePage = AgentRuleWindow(store: tasks, taskID: taskID)
+        guard pane.show(category: "rules", identity: "malformed-rule-source", scope: "公开规则验收", make: { _ in sourcePage }),
+              let list = find(NSTableView.self, in: sourcePage.pageContentView, matching: { $0.accessibilityLabel() == "规则列表" }),
+              let action = list.action else { throw PetError("缺少格式错误规则入口") }
+        NSApp.sendAction(action, to: list.target, from: list)
+        let sourceDetail = pane.currentController?.pageContentView
+        guard let sourceEditor = find(NSTextView.self, in: sourceDetail, matching: { $0.accessibilityLabel() == "规则源文件" }),
+              let sourceState = find(AgentSettingsStatusField.self, in: sourceDetail, matching: { $0.accessibilityLabel() == "规则保存状态" }),
+              let sourceSave = find(NSButton.self, in: sourceDetail, matching: { $0.title == "保存" }) else { throw PetError("缺少规则源文件编辑入口") }
+        func visibleTrigger() -> NSPopUpButton? {
+            find(NSPopUpButton.self, in: sourceDetail, matching: { $0.accessibilityLabel() == "规则触发方式" && !$0.isHiddenOrHasHiddenAncestor })
+        }
+        checks["MalformedRuleShowsItsEditableSourceInsteadOfFallbackTrigger"] = sourceEditor.isEditable && sourceEditor.string == malformed && visibleTrigger() == nil &&
+            find(NSTextField.self, in: sourceDetail, matching: { $0.stringValue == "规则源文件" && !$0.isHiddenOrHasHiddenAncestor }) != nil
+        let savedSource = try sourcePage.captureSettingsRecovery().map { try JSONSerialization.jsonObject(with: $0.state) as? [String: Any] } ?? nil
+        checks["MalformedRulePreservesItsActualErrorStatus"] = sourceState.stringValue.contains("unknown_public_field") && sourceState.textColor == AgentDialogStyle.error && savedSource?["statusIsError"] as? Bool == true
+        sourceEditor.string = validSource
+        sourcePage.textDidChange(Notification(name: NSText.didChangeNotification, object: sourceEditor))
+        sourceSave.performClick(nil)
+        checks["CorrectedRuleShowsItsSavedTriggerAndBody"] = try Data(contentsOf: rule.source) == Data(validSource.utf8) && sourceState.stringValue == "已保存" &&
+            visibleTrigger()?.titleOfSelectedItem == "匹配文件" && sourceEditor.accessibilityLabel() == "规则正文"
+        guard pane.leave() else { throw PetError("修正规则后未能返回") }
         _ = rulePage
         host.appearance = nil; host.setContentSize(NSSize(width: 800, height: 540))
         observations["geometry"] = geometry

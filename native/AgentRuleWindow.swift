@@ -5,6 +5,7 @@ import AppKit
     private let managementWorkspace: String?
     private let scopes = NSSegmentedControl(labels: ["全部", "用户", "项目"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), table = AgentSettingsCatalogTable(), name = AgentDialogTextField(), editor = NSTextView(), descriptionField = NSTextField(), patterns = NSTextField()
+    private let nameCaption = NSTextField(labelWithString: "名称")
     private let trigger = NSPopUpButton(), createScope = NSPopUpButton()
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let save = AgentDialogButton(title: "保存", target: nil, action: nil), use = AgentDialogButton(title: "在任务中使用", target: nil, action: nil)
@@ -17,10 +18,10 @@ import AppKit
     private var layout: (toolbar: NSStackView, add: AgentDialogButton, form: NSStackView, source: NSStackView, viewer: NSView, footer: NSStackView)?
     private var detailPage: AgentSettingsDetailPage?
     private var catalogScrollY: CGFloat?
-    private var descriptionRow = NSStackView(), patternsRow = NSStackView(), scopeRow = NSStackView()
+    private var descriptionRow = NSStackView(), patternsRow = NSStackView(), scopeRow = NSStackView(), triggerRow = NSStackView()
     private let triggers: [AgentRuleTrigger] = [.always, .manual, .decision, .glob]
     private var items: [AgentLocalRuleItem] = [], selected: AgentLocalRuleItem?, creating = false, dirty = false, loading = false, selectedScope = 0
-    private var readOnlySaveFailed = false
+    private var readOnlySaveFailed = false, statusIsError = false
     private lazy var draftViewport: AgentSettingsDraftViewport = {
         let view = AgentSettingsDraftViewport(text: editor, fields: ["name": name, "description": descriptionField, "patterns": patterns, "search": search], catalog: table, host: { [weak self] in self?.presentingWindow })
         view.onChange = { [weak self] in self?.onSettingsRecoveryChange?() }; return view
@@ -52,14 +53,17 @@ import AppKit
         trigger.addItems(withTitles: triggers.map(\.title)); trigger.selectItem(at: 0); trigger.target = self; trigger.action = #selector(changeTrigger); trigger.setAccessibilityLabel("规则触发方式")
         createScope.addItems(withTitles: ["用户", "项目"]); createScope.autoenablesItems = false; createScope.item(at: 1)?.isEnabled = task?.workspace != nil; createScope.target = self; createScope.action = #selector(formChanged); createScope.setAccessibilityLabel("新规则范围")
         enabled.target = self; enabled.action = #selector(toggleEnabled)
-        let titleRow = NSStackView(views: [name, enabled]); titleRow.spacing = 10
-        func row(_ title: String, _ field: NSView) -> NSStackView {
-            let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 13); label.widthAnchor.constraint(equalToConstant: 92).isActive = true
+        let identity = NSStackView(views: [name, enabled]); identity.spacing = 10
+        func row(_ label: NSTextField, _ field: NSView) -> NSStackView {
+            label.font = .systemFont(ofSize: 13); label.widthAnchor.constraint(equalToConstant: 92).isActive = true
             let control: NSView = (field as? NSPopUpButton).map(AgentSettingsPopupFrame.init) ?? field
             let view = NSStackView(views: [label, control]); view.spacing = 8; return view
         }
-        let triggerRow = row("触发方式", trigger)
-        scopeRow = row("范围", createScope); descriptionRow = row("适用场景", descriptionField); patternsRow = row("匹配模式", patterns)
+        let titleRow = row(nameCaption, identity)
+        triggerRow = row(NSTextField(labelWithString: "触发方式"), trigger)
+        scopeRow = row(NSTextField(labelWithString: "范围"), createScope)
+        descriptionRow = row(NSTextField(labelWithString: "适用场景"), descriptionField)
+        patternsRow = row(NSTextField(labelWithString: "匹配模式"), patterns)
         patterns.toolTip = "每行一个模式，使用 ! 排除"
         let form = NSStackView(views: [titleRow, scopeRow, triggerRow, descriptionRow, patternsRow]); form.orientation = .vertical; form.alignment = .leading; form.spacing = 10
         for view in form.arrangedSubviews { view.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true }
@@ -172,7 +176,7 @@ import AppKit
             }
             if next?.error == nil { setState(detailPage == nil ? (items.isEmpty ? "暂无规则" : "\(items.count) 项") : "") }
             catalogState.stringValue = ""; updateCatalogEmptyState()
-        } catch { catalogState.stringValue = error.localizedDescription; setState(error.localizedDescription); updateControls() }
+        } catch { catalogState.stringValue = error.localizedDescription; setState(error.localizedDescription, isError: true); updateControls() }
     }
     private func updateCatalogEmptyState() {
         if detailPage != nil { AgentSettingsStyle.listState(table, text: search.stringValue.isEmpty ? "暂无规则" : "未找到匹配规则") }
@@ -195,10 +199,13 @@ import AppKit
         }
         editor.setAccessibilityLabel(item.definition == nil ? "规则源文件" : "规则正文")
         enabled.state = item.enabled ? .on : .off; location.stringValue = item.scope + " · @rule:" + item.invocation; location.toolTip = item.source.path
-        dirty = false; loading = false; setState(item.error ?? ""); updateControls()
+        dirty = false; loading = false; setState(item.error ?? "", isError: item.error != nil); updateControls()
     }
     private func updateControls() {
         let has = creating || selected != nil, structured = creating || selected?.definition != nil
+        let isSource = selected != nil && !structured
+        nameCaption.stringValue = isSource ? "规则源文件" : "名称"
+        name.isHidden = isSource; triggerRow.isHidden = isSource
         name.isEnabled = has && structured; trigger.isEnabled = has && structured; editor.isEditable = has && (structured || selected?.text != nil)
         descriptionRow.isHidden = !structured || triggers[trigger.indexOfSelectedItem] != .decision
         patternsRow.isHidden = !structured || triggers[trigger.indexOfSelectedItem] != .glob; scopeRow.isHidden = !creating
@@ -213,7 +220,13 @@ import AppKit
         window?.isDocumentEdited = dirty
         onSettingsRecoveryChange?()
     }
-    private func setState(_ text: String) { state.stringValue = text; state.toolTip = text.isEmpty ? nil : text; onSettingsRecoveryChange?() }
+    private func setState(_ text: String, isError: Bool = false) {
+        statusIsError = isError
+        state.stringValue = text
+        if isError { state.textColor = AgentDialogStyle.error }
+        state.toolTip = text.isEmpty ? nil : text
+        onSettingsRecoveryChange?()
+    }
     private func markDirty() { guard !loading else { return }; draftViewport.changed(); dirty = true; setState("未保存"); updateControls() }
     func textDidChange(_ notification: Notification) { markDirty() }
     func controlTextDidChange(_ notification: Notification) {
@@ -253,15 +266,18 @@ import AppKit
             open(value, keepingBody: keepingBody)
             reload(keepingEditor: true)
             setState("已保存"); return true
-        } catch { readOnlySaveFailed = (error as? AgentSaveFailure)?.reason == .readOnly; state.showSaveFailure(error); onSettingsRecoveryChange?(); return false }
+        } catch {
+            readOnlySaveFailed = (error as? AgentSaveFailure)?.reason == .readOnly
+            statusIsError = true; state.showSaveFailure(error); onSettingsRecoveryChange?(); return false
+        }
     }
     @objc private func saveItem() { _ = saveChanges() }
     @objc private func toggleEnabled() {
         guard let selected else { return }
         do { try store.rules.setEnabled(selected, enabled.state == .on, task: editingTask()); reload(select: selected.id) }
-        catch { enabled.state = selected.enabled ? .on : .off; setState(error.localizedDescription) }
+        catch { enabled.state = selected.enabled ? .on : .off; setState(error.localizedDescription, isError: true) }
     }
-    @objc private func useItem() { guard let selected else { return }; do { try onInsert?(selected) } catch { setState(error.localizedDescription) } }
+    @objc private func useItem() { guard let selected else { return }; do { try onInsert?(selected) } catch { setState(error.localizedDescription, isError: true) } }
     @objc private func revealItem() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([selected.source]) } }
     @objc private func removeItem() {
         guard let selected, let window = presentingWindow else { return }
@@ -271,7 +287,7 @@ import AppKit
             do {
                 try store.rules.trash(selected, task: editingTask()); self.selected = nil; reload(); setState("已移到废纸篓")
                 if let detailPage { detailPage.close(); catalogState.stringValue = "已移到废纸篓" }
-            } catch { setState(error.localizedDescription) }
+            } catch { setState(error.localizedDescription, isError: true) }
         }
     }
     func confirmClosing() -> Bool {
@@ -297,6 +313,7 @@ import AppKit
         var selected: AgentLocalRuleItem?, creating: Bool, dirty: Bool, readOnlySaveFailed: Bool
         var scope: Int, query: String, createScope: Int, trigger: Int
         var name: String, description: String, patterns: String, body: String, status: String
+        var statusIsError: Bool?
         var viewport: AgentSettingsDraftViewport.State
         var showsDetail: Bool?, catalogY: CGFloat?
     }
@@ -305,14 +322,14 @@ import AppKit
         let value = Recovery(taskID: taskID, workspace: managementWorkspace, selected: selected, creating: creating, dirty: dirty,
             readOnlySaveFailed: readOnlySaveFailed, scope: selectedScope, query: search.stringValue, createScope: createScope.indexOfSelectedItem,
             trigger: trigger.indexOfSelectedItem, name: name.stringValue, description: descriptionField.stringValue, patterns: patterns.stringValue,
-            body: editor.string, status: state.stringValue, viewport: try draftViewport.capture(),
+            body: editor.string, status: state.stringValue, statusIsError: statusIsError ? true : nil, viewport: try draftViewport.capture(),
             showsDetail: detailPage?.settingsHostWindow != nil,
             catalogY: catalogScrollY ?? table.enclosingScrollView.map { max(0, $0.contentView.bounds.minY) })
         return try AgentSettingsRecovery.page("rules", value)
     }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
         guard page.kind == "rules" else { throw PetError("设置草稿不属于规则编辑器") }
-        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "taskID", "workspace", "selected", "creating", "dirty", "readOnlySaveFailed", "scope", "query", "createScope", "trigger", "name", "description", "patterns", "body", "status", "viewport", "showsDetail", "catalogY"])
+        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "taskID", "workspace", "selected", "creating", "dirty", "readOnlySaveFailed", "scope", "query", "createScope", "trigger", "name", "description", "patterns", "body", "status", "statusIsError", "viewport", "showsDetail", "catalogY"])
         if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
         if let item = raw["selected"], !(item is NSNull) {
             let item = try AgentSettingsRecovery.object(item, keys: ["id", "invocation", "source", "owner", "base", "rootPath", "relative", "scope", "project", "enabled", "text", "sha256", "signature", "permissions", "definition", "error"])
@@ -340,7 +357,9 @@ import AppKit
         location.stringValue = selected.map { $0.scope + " · @rule:" + $0.invocation } ?? ""; location.toolTip = selected?.source.path
         let changed = value.selected.map { old in !all.contains { $0.id == old.id && $0.source == old.source && $0.owner == old.owner && $0.sha256 == old.sha256 } } ?? false
         dirty = value.dirty || changed; table.delegate = nil; table.reloadData(); table.delegate = self; selectRow(selected?.id)
-        setState(changed ? "原规则已变化，恢复草稿已保留；刷新可重新读取" : value.status); updateControls(); updateCatalogEmptyState(); editor.undoManager?.removeAllActions()
+        let restoredError = value.statusIsError == true || value.readOnlySaveFailed || value.status == value.selected?.error
+        setState(changed ? "原规则已变化，恢复草稿已保留；刷新可重新读取" : value.status, isError: changed || restoredError)
+        updateControls(); updateCatalogEmptyState(); editor.undoManager?.removeAllActions()
         catalogScrollY = value.catalogY
         let listFocus = ["catalog", "search"].contains(value.viewport.focus)
         let restoreDetail = dirty || creating || (value.selected != nil && (value.showsDetail ?? !listFocus))
