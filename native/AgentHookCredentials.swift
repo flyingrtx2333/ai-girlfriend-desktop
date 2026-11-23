@@ -110,7 +110,7 @@ import Foundation
         }
     }
     // Roll back keychain writes when the caller cannot commit source and grants.
-    func save(_ data: Data, file: URL, write: (Data, Set<String>) throws -> Void) throws -> Set<String> {
+    func save(_ data: Data, file: URL, write: (Data, Set<String>) throws -> Void) throws -> (data: Data, changed: Set<String>) {
         let files = try? AgentFiles(workspace: file.deletingLastPathComponent().path)
         let oldData = files.flatMap { try? $0.readData($0.resolve(file.lastPathComponent), maximum: 128_000) }
         let oldRows = try oldData.map { try rows($0, file: file) } ?? []
@@ -141,7 +141,7 @@ import Foundation
             for (key, before, after) in changes { try keychain.write(after, account: key); written.append((key, before)) }
             try write(normalized, changedIDs)
         } catch { for (key, before) in written.reversed() { try? keychain.write(before, account: key) }; throw error }
-        return changedIDs
+        return (normalized, changedIDs)
     }
     func clear(_ hook: AgentHookDefinition) throws { try keychain.write("", account: account(hook.id, binding(hook))) }
 }

@@ -53,11 +53,11 @@ struct AgentImportedHookReceipt: Codable {
         let data = try files.readData(file, maximum: 128_000)
         return (String(decoding: try credentials.mask(data), as: UTF8.self), AgentFiles.hash(data))
     }
-    func saveImportedDocument(_ text: String, path: String, workspace: String?, expectedHash: String?) throws {
+    @discardableResult func saveImportedDocument(_ text: String, path: String, workspace: String?, expectedHash: String?) throws -> Data {
         let (files, file) = try importedStorage(path: path, workspace: workspace), data = Data(text.utf8)
         guard data.count <= 128_000 else { throw PetError("Hooks 配置不超过 128KB") }
         _ = try parse(data, file: file, scope: workspace == nil ? "导入 · 全局" : "导入 · 项目", workspace: workspace)
-        try commitConfiguration(data, target: file, files: files, expectedHash: expectedHash)
+        return try commitConfiguration(data, target: file, files: files, expectedHash: expectedHash)
     }
 }
 

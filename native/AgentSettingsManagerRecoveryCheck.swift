@@ -146,12 +146,30 @@ import AppKit
                         checks["invalidHookKeepsExactDraftAndSource"] = try input(hooks, NSTextView.self, "Hooks JSON 配置").string == badHook && tasks.hooks.document(project: true, workspace: fixture.alpha).1 == fixture.hookHash
                         let original = try tasks.hooks.file(project: true, workspace: fixture.alpha)
                         let previous = try Data(contentsOf: original), external = Data(hook("公开外部改动").utf8)
+                        let handlers = (1...24).map { index in
+                            let name = index == 22 ? marker : "公开续写 Hook \(index)"
+                            return #"""
+                              {
+                                "type": "prompt",
+                                "name": "\#(name)",
+                                "prompt": "Public fixture"
+                              }
+                            """#
+                        }.joined(separator: ",\n")
+                        let edited = "{\n\"hooks\":{\"Stop\":[{\"hooks\":[\n" + handlers + "\n]}]}\n}"
                         try external.write(to: original)
-                        try text(hooks, "Hooks JSON 配置", hook("公开续写 Hook")); try button(hooks, "保存").performClick(nil)
-                        checks["staleHookCannotOverwriteOrRetarget"] = try Data(contentsOf: original) == external && input(hooks, NSTextView.self, "Hooks JSON 配置").string == hook("公开续写 Hook")
-                        try previous.write(to: original); try button(hooks, "保存").performClick(nil)
+                        try text(hooks, "Hooks JSON 配置", edited); try button(hooks, "保存").performClick(nil)
+                        checks["staleHookCannotOverwriteOrRetarget"] = try Data(contentsOf: original) == external && input(hooks, NSTextView.self, "Hooks JSON 配置").string == edited
+                        try previous.write(to: original); try button(hooks, "保存").performClick(nil); await wait(0.12)
                         checks["retryWritesOnlySecondaryHookSource"] = try tasks.hooks.document(project: true, workspace: fixture.alpha).0.contains("公开续写 Hook") &&
                             tasks.hooks.document(project: true, workspace: fixture.beta).0.contains("公开 Beta") && tasks.hooks.document(project: false, workspace: nil).1 == nil
+                        checks["hookSaveKeepsFormattingSelectionAndScroll"] = try state(hooks, "Hooks JSON 配置", edited) &&
+                            input(hooks, NSTextField.self, "Hooks 配置保存状态").stringValue == "已保存"
+                        let again = edited.replacingOccurrences(of: "公开续写 Hook 1\"", with: "公开第二次保存\"")
+                        try text(hooks, "Hooks JSON 配置", again); try button(hooks, "保存").performClick(nil)
+                        checks["hookSecondSaveUsesNewSourceRevision"] = try tasks.hooks.document(project: true, workspace: fixture.alpha).0.contains("公开第二次保存")
+                        try button(hooks, "返回 ").performClick(nil)
+                        checks["hookSavedDraftCanReturnWithoutConfirmation"] = hooks.settingsRecoveryControllers.count == 1
                         agent.window?.makeKeyAndOrderFront(nil)
                         try field(agent, "Agent 名称", "PUBLIC_SAVED_AGENT")
                         try text(agent, "Agent 指令", longBody)

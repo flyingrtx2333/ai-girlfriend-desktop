@@ -112,19 +112,19 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         let files = try AgentFiles(workspace: file.deletingLastPathComponent().path), data = try files.readData(files.resolve(file.lastPathComponent), maximum: 128_000)
         guard let text = String(data: try credentials.mask(data), encoding: .utf8) else { throw PetError("Hooks 配置不是 UTF-8") }; return (text, AgentFiles.hash(data))
     }
-    func save(_ text: String, project: Bool, workspace: String?, expectedHash: String?) throws {
+    @discardableResult func save(_ text: String, project: Bool, workspace: String?, expectedHash: String?) throws -> Data {
         guard text.utf8.count <= 128_000 else { throw PetError("Hooks 配置不超过 128KB") }
         let target = try file(project: project, workspace: workspace), current = try document(project: project, workspace: workspace)
         guard current.1 == expectedHash else { throw PetError("配置已变化，请重新打开后编辑") }
         _ = try parse(Data(text.utf8), file: target, scope: project ? "项目" : "全局", workspace: project ? workspace : nil)
         let files = try AgentFiles(workspace: project ? workspace : profile.path)
-        try commitConfiguration(Data(text.utf8), target: target, files: files, expectedHash: expectedHash)
+        return try commitConfiguration(Data(text.utf8), target: target, files: files, expectedHash: expectedHash)
     }
-    func commitConfiguration(_ data: Data, target: URL, files: AgentFiles, expectedHash: String?) throws {
+    func commitConfiguration(_ data: Data, target: URL, files: AgentFiles, expectedHash: String?) throws -> Data {
         let write = try AgentKnowledgeFileWrite(files: files, path: target.path, data: data, expectedHash: expectedHash,
             missing: expectedHash == nil, permissions: 0o600, label: "Hooks 配置")
         try write.requireCurrent()
-        let changed = try credentials.save(data, file: target) { data, changed in
+        let (saved, changed) = try credentials.save(data, file: target) { data, changed in
             let previous = settings
             for id in changed where settings[id] != nil { settings[id]?.enabled = false }
             do { try persistSettings() } catch { settings = previous; throw error }
@@ -135,6 +135,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             for list in jobs.values { for job in list.values where job.hookID == id { cancel(job) } }
         }
         for list in jobs.values { for job in list.values where job.source == target.path { cancel(job) } }
+        return saved
     }
     func parse(_ data: Data, file: URL, scope: String, workspace: String?, resource: URL? = nil, fingerprintSuffix: Data = Data(), inspectResources: Bool = true, inspectCredentials: Bool = true) throws -> [AgentHookDefinition] {
         let object = try AgentConfigurationJSON.object(data)

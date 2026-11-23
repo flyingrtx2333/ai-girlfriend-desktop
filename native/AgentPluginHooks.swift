@@ -115,14 +115,14 @@ struct AgentPluginHookDefinition {
         let data = saved ?? config.data; try validatePluginConfiguration(data, canonical: config.data)
         return (String(decoding: try credentials.mask(data), as: UTF8.self), saved.map(AgentFiles.hash), data)
     }
-    func savePluginDocument(_ text: String, reference: AgentPluginHookReference, original: Data, expectedHash: String?) throws {
+    @discardableResult func savePluginDocument(_ text: String, reference: AgentPluginHookReference, original: Data, expectedHash: String?) throws -> Data {
         guard text.utf8.count <= 128_000 else { throw PetError("插件 Hooks 配置超过128KB") }
         let config = try plugins.hookConfiguration(reference), files = try AgentFiles(workspace: profile.path), previous = try pluginDocument(reference)
         guard previous.hash == expectedHash else { throw PetError("插件 Hook 本机配置已变化，请重新打开") }
         let data = try credentials.restoreImported(Data(text.utf8), original: original, file: config.file)
         try validatePluginConfiguration(data, canonical: config.data)
         _ = try parse(data, file: config.file, scope: "插件", workspace: nil, resource: config.root, inspectResources: false, inspectCredentials: false)
-        try commitConfiguration(data, target: config.file, files: files, expectedHash: expectedHash)
+        return try commitConfiguration(data, target: config.file, files: files, expectedHash: expectedHash)
     }
     func validatePlugin(_ hook: AgentHookDefinition, workspace: String? = nil) throws { if let reference = hook.plugin { try plugins.validateHook(reference, workspace: workspace ?? hook.workspace) } }
 }

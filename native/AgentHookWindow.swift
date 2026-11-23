@@ -487,8 +487,9 @@ private struct AgentHookEditTarget: Codable, Equatable {
         case .plugin(let reference, _): title = "插件 Hooks · " + (try AgentPlugins.scope(reference.name).name)
         case .standalone(_, let workspace): title = workspace == nil ? "导入 · 全局 Hooks" : "导入 · 项目 Hooks"
         }
-        let editor = AgentHookConfigWindow(text: text, title: title, target: target) { [weak self] text in
+        let editor = AgentHookConfigWindow(text: text, title: title, target: target) { [weak self] text, target in
             guard let self else { throw PetError("Hooks 页面已关闭") }
+            let saved: Data
             switch target.source {
             case .local(let project, let path, let imported):
                 let file = try service.file(project: project, workspace: workspace)
@@ -498,16 +499,17 @@ private struct AgentHookEditTarget: Codable, Equatable {
                     let bytes = try Self.readImport(imported.path, expectedHash: imported.hash).1
                     data = try service.credentials.restoreImported(data, original: bytes, file: file)
                 }
-                try service.save(String(decoding: data, as: UTF8.self), project: project, workspace: workspace, expectedHash: target.expectedHash)
+                saved = try service.save(String(decoding: data, as: UTF8.self), project: project, workspace: workspace, expectedHash: target.expectedHash)
             case .plugin(let reference, let originalHash):
                 let current = try service.pluginDocument(reference)
                 guard current.hash == target.expectedHash, AgentFiles.hash(current.original) == originalHash else { throw PetError("插件 Hook 已变化，请重新打开") }
-                try service.savePluginDocument(text, reference: reference, original: current.original, expectedHash: target.expectedHash)
+                saved = try service.savePluginDocument(text, reference: reference, original: current.original, expectedHash: target.expectedHash)
             case .standalone(let path, let sourceWorkspace):
                 guard sourceWorkspace == nil || sourceWorkspace == workspace else { throw PetError("原 Hooks 所属项目已变化") }
-                try service.saveImportedDocument(text, path: path, workspace: sourceWorkspace, expectedHash: target.expectedHash)
+                saved = try service.saveImportedDocument(text, path: path, workspace: sourceWorkspace, expectedHash: target.expectedHash)
             }
             reload()
+            return saved
         }
         configWindow = editor
         return editor
@@ -565,10 +567,9 @@ private struct AgentHookEditTarget: Codable, Equatable {
 @MainActor private final class AgentHookConfigWindow: AgentSettingsPageController, NSWindowDelegate, NSTextViewDelegate {
     private let editor = NSTextView()
     private lazy var state = AgentSettingsJSONFeedback("Hooks 配置保存状态", editor: editor)
-    private let save: (String) throws -> Void
-    private let target: AgentHookEditTarget
+    private let save: (String, AgentHookEditTarget) throws -> Data
+    private var target: AgentHookEditTarget
     private var originalHash: String
-    private var saved = false
     private lazy var viewport: AgentSettingsDraftViewport = {
         let viewport = AgentSettingsDraftViewport(text: editor, fields: [:], catalog: editor, host: { [weak self] in self?.presentingWindow })
         viewport.onChange = { [weak self] in self?.onSettingsRecoveryChange?() }
@@ -576,7 +577,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
     }()
     override var minimumSettingsContentHeight: CGFloat { 220 }
     override var usesInternalScrolling: Bool { true }
-    init(text: String, title: String, target: AgentHookEditTarget, save: @escaping (String) throws -> Void) {
+    init(text: String, title: String, target: AgentHookEditTarget, save: @escaping (String, AgentHookEditTarget) throws -> Data) {
         self.save = save; self.target = target; originalHash = AgentFiles.hash(Data(text.utf8))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 540), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 560, height: 350); window.center(); window.isReleasedWhenClosed = false
@@ -601,9 +602,37 @@ private struct AgentHookEditTarget: Codable, Equatable {
     override func settingsDidAppear() { super.settingsDidAppear(); viewport.appear(default: editor) }
     override func pageDidLayout() { viewport.schedule() }
     func textDidChange(_ notification: Notification) { state.stringValue = ""; viewport.changed() }
-    @objc private func saveConfig() { do { try save(editor.string); saved = true; close() } catch { state.showSaveFailure(error) } }
+    @objc private func saveConfig() {
+        let draft = editor.string, draftData = Data(draft.utf8)
+        let position = try? viewport.capture()
+        do {
+            let committed = try save(draft, target)
+            if case .local(_, _, .some) = target.source {
+                originalHash = AgentFiles.hash(draftData)
+                close()
+                return
+            }
+            let revision = AgentFiles.hash(committed)
+            target.expectedHash = revision
+            if case .plugin(let reference, _) = target.source {
+                target.source = .plugin(reference: reference, originalHash: revision)
+            }
+
+            // Keep the user's formatting and undo history when only JSON
+            // serialization changed. Replace any newly entered credentials.
+            let preserveDraft = AgentHookCredentials.canPreserveDraft(draft)
+                && (try? JSONSerialization.jsonObject(with: draftData) as? NSDictionary) == (try? JSONSerialization.jsonObject(with: committed) as? NSDictionary)
+            if !preserveDraft {
+                viewport.loadEditor(text: String(decoding: committed, as: UTF8.self), fields: [:], preservingInput: false)
+            }
+            originalHash = AgentFiles.hash(Data(editor.string.utf8))
+            state.stringValue = "已保存"
+            viewport.changed()
+            if preserveDraft, let position { try? viewport.restore(position) }
+        } catch { state.showSaveFailure(error) }
+    }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard !saved, AgentFiles.hash(Data(editor.string.utf8)) != originalHash else { return true }
+        guard AgentFiles.hash(Data(editor.string.utf8)) != originalHash else { return true }
         return AgentUnsavedChanges.discard("放弃未保存的更改？", discardTitle: "放弃")
     }
     struct Recovery: Codable {

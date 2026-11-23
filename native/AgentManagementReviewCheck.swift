@@ -164,7 +164,9 @@ import AppKit
         }
         try FileManager.default.setAttributes([.posixPermissions: sourceMode], ofItemAtPath: source.path)
         host.setContentSize(NSSize(width: 800, height: 540)); editor.string = originalConfig; try press("保存", page: configuration)
-        checks["hookConfigValidRetryReturnsToListAndPreservesDefinition"] = try pane.currentController === manager && service.document(project: false, workspace: workspace).0 == originalConfig && bytes(authorization) == grantsBefore
+        checks["hookConfigValidRetryKeepsEditorAndPreservesDefinition"] = try pane.currentController === configuration && feedback.stringValue == "已保存" &&
+            service.document(project: false, workspace: workspace).0 == originalConfig && bytes(authorization) == grantsBefore
+        configuration.close()
         func refusesReadOnly(_ file: URL, operation: () throws -> Void) throws -> Bool {
             let before = try Data(contentsOf: file), grants = try bytes(authorization), mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as! NSNumber
             try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: file.path)
@@ -178,12 +180,24 @@ import AppKit
         checks["hookProjectConfigRefusesReadOnlySource"] = try refusesReadOnly(projectFile) { try service.save(projectSaved.0, project: true, workspace: workspace, expectedHash: projectSaved.1) }
         guard let reference = try tasks.extensions.plugins.hookReferences().first(where: { $0.name == "review-inline" }) else { throw PetError("缺少公开插件 Hooks 配置") }
         let pluginDocument = try service.pluginDocument(reference)
-        try service.savePluginDocument(pluginDocument.text, reference: reference, original: pluginDocument.original, expectedHash: pluginDocument.hash)
+        guard let pluginHook = try service.catalog(workspace: workspace).first(where: { $0.plugin == reference }) else { throw PetError("缺少公开插件 Hook") }
+        manager.selectHook(pluginHook.id)
+        try control(NSButton.self, "编辑所选 Hook 配置", page: manager).performClick(nil)
+        guard let pluginEditor = pane.currentController, pluginEditor !== manager else { throw PetError("缺少公开插件 Hook 编辑器") }
+        try press("保存", page: pluginEditor)
         let pluginFile = try tasks.extensions.plugins.hookConfiguration(reference).file, pluginSaved = try service.pluginDocument(reference)
+        checks["hookPluginFirstSaveKeepsEditorAndCreatesOverride"] = pane.currentController === pluginEditor && pluginSaved.hash != pluginDocument.hash &&
+            pluginSaved.text == pluginDocument.text
         checks["hookPluginConfigRefusesReadOnlySource"] = try refusesReadOnly(pluginFile) { try service.savePluginDocument(pluginSaved.text, reference: reference, original: pluginSaved.original, expectedHash: pluginSaved.hash) }
         try service.save(projectSaved.0, project: true, workspace: workspace, expectedHash: projectSaved.1)
-        try service.savePluginDocument(pluginSaved.text, reference: reference, original: pluginSaved.original, expectedHash: pluginSaved.hash)
-        checks["hookProjectAndPluginConfigRetryAfterRestoringPermissions"] = try service.document(project: true, workspace: workspace).0 == projectSaved.0 && service.pluginDocument(reference).text == pluginSaved.text
+        let pluginInput = try control(NSTextView.self, "Hooks JSON 配置", page: pluginEditor)
+        let pluginDraft = pluginInput.string + "\n\n"
+        pluginInput.string = pluginDraft; pluginInput.didChangeText()
+        try press("保存", page: pluginEditor)
+        checks["hookProjectAndPluginConfigRetryAfterRestoringPermissions"] = try service.document(project: true, workspace: workspace).0 == projectSaved.0 &&
+            service.pluginDocument(reference).text == pluginSaved.text && pluginInput.string == pluginDraft &&
+            control(NSTextField.self, "Hooks 配置保存状态", page: pluginEditor).stringValue == "已保存"
+        pluginEditor.close()
         let sourceBeforeGrantFailure = try bytes(source), currentDocument = try service.document(project: false, workspace: workspace), currentHook = try hook(names[0]), wasEnabled = service.enabled(currentHook)
         checks["hookReadOnlyGrantRejectsConfigSave"] = try refusesReadOnly(authorization) { try service.save(currentDocument.0, project: false, workspace: workspace, expectedHash: currentDocument.1) }
         checks["hookReadOnlyGrantRejectsEnableChange"] = try refusesReadOnly(authorization) { try service.setEnabled(currentHook, !wasEnabled, workspace: workspace) }
