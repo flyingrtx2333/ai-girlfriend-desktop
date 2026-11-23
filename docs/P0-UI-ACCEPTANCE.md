@@ -1,5 +1,11 @@
 # P0 逐页界面验收台账
 
+## 2026-11-23 Excel 编辑区明暗外观
+
+- 旧版在深色窗口仅更新了备注侧栏，工具栏、公式栏、标签和折叠菜单仍使用浅色。`c35d78b` 将这些控件及单元格编辑框纳入应用外观。780×540 实窗核对了菜单边界、最低项可达、输入焦点、取消编辑和锁定样式。切换过程保持 B3 原公式和备注草稿选区。[编辑器工具栏接口](https://docs.betteroffice.dev/docs/javascript#compose-the-xlsx-toolbar)
+- 同一份含两色单元格和两组柱形的公开工作簿用于改前、改后对照。780×540 与 1320×800 下，分别核对明暗切换及改版前后的工作表像素，颜色和画布指纹逐项一致。样例原文件字节一致。候选通过 **14 项外观检查、31 项富文本备注回归及 10 项独立文件核对**。Qoder 同内容外观对照待补。
+- 日用版 0.9.4 已安装并正常重开，关于页读回 **`c35d78b`／2026-11-23 15:09（北京时间）／本地签名**，正常进程 32696。原对话、未发送草稿和模型预算 8192／512 已读回。新包及 `063503f` 备份各核对 229 份文件，14 份正式资料内容及权限一致，模型请求 **0 次**。同一工作簿和原图索引位于 `evidence/agent/xlsx-editor-appearance-w2knxrkz/acceptance-index.json`。
+
 ## 2026-11-23 Excel 备注主题色与日用更新
 
 - 同一份公开工作簿的「审阅」E35 使用直接 RGB 和自定义主题强调色。旧版按普通文字显示主题色段落。`063503f` 从工作簿关系定位自定义主题并计算色调，浅色预览独立读回 `175A9E` 和 `89451B`。深色续写和保存后再开仍显示两段颜色。十三个配色样例覆盖浅色／深色索引、系统颜色、正负色调、无效索引、直接 RGB 及主题文件缺失。[工作簿主题色](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.spreadsheet.colortype.theme?view=openxml-3.0.1) · [色调计算](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.spreadsheet.colortype.tint?view=openxml-3.0.1)
