@@ -1,6 +1,17 @@
 import Foundation
 
 struct AgentPluginMarketCredential: Codable {
+    enum FieldError: LocalizedError {
+        case username, token
+
+        var errorDescription: String? {
+            switch self {
+            case .username: return "请输入有效的 Git 或 HTTPS 用户名"
+            case .token: return "请输入有效的访问令牌"
+            }
+        }
+    }
+
     let username: String?, token: String
 
     init(username: String, token: String, requiresUsername: Bool) throws {
@@ -8,9 +19,9 @@ struct AgentPluginMarketCredential: Codable {
         let secret = token.trimmingCharacters(in: .whitespacesAndNewlines)
         func visibleASCII(_ text: String) -> Bool { text.utf8.allSatisfy { (33...126).contains($0) } }
         guard name.utf8.count <= 256, visibleASCII(name), !name.contains(":"), !requiresUsername || !name.isEmpty else {
-            throw PetError("请输入有效的 Git 或 HTTPS 用户名")
+            throw FieldError.username
         }
-        guard !secret.isEmpty, secret.utf8.count <= 2048, visibleASCII(secret) else { throw PetError("请输入有效的访问令牌") }
+        guard !secret.isEmpty, secret.utf8.count <= 2048, visibleASCII(secret) else { throw FieldError.token }
         self.username = name.isEmpty ? nil : name
         self.token = secret
     }
