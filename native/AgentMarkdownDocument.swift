@@ -216,9 +216,17 @@ import ImageIO
 
     private static func render(_ source: String, access: FileAccess, width: CGFloat, cachedImages: [String: NSImage] = [:]) -> Self {
         let output = NSMutableAttributedString(), font = NSFont.systemFont(ofSize: 14)
-        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 4; paragraph.paragraphSpacing = 9
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 3
+        paragraph.paragraphSpacing = 4
+        let blank = NSMutableParagraphStyle(), consecutiveBlank = NSMutableParagraphStyle()
+        blank.minimumLineHeight = 5
+        blank.maximumLineHeight = 5
+        consecutiveBlank.maximumLineHeight = 1
+        let headingSizes: [CGFloat] = [21, 18, 16, 15, 14, 14]
         let sourceLines = AgentMarkdownEditing.lines(source), lines = sourceLines.map(\.text)
         var headings: [Heading] = [], anchors: Set<String> = [], index = 0
+        var previousWasBlank = false
         var diagrams: [Diagram] = []
         var regions: [AgentMarkdownEditing.Region] = []
         var loader = ImageLoader(cached: cachedImages), imageRetries: [ImageRetry] = [], legacyImageText: [LegacyImageText] = []
@@ -232,17 +240,20 @@ import ImageIO
         func inline(_ text: String, font: NSFont = font, style: NSParagraphStyle = paragraph) -> NSAttributedString {
             NativeMarkdown.inline(text, font: font, color: .labelColor, paragraph: style, resolveLink: resolveLink)
         }
-        func append(_ value: NSAttributedString) {
+        func append(_ value: NSAttributedString, style: NSParagraphStyle = paragraph) {
             output.append(value)
-            output.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: paragraph]))
+            output.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: style]))
         }
         func heading(_ title: String, level: Int) {
-            let rendered = inline(title, font: .systemFont(ofSize: CGFloat(25 - min(5, level) * 2), weight: .semibold))
+            let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+            style.paragraphSpacingBefore = output.length == 0 ? 0 : 8
+            style.paragraphSpacing = 6
+            let rendered = inline(title, font: .systemFont(ofSize: headingSizes[level - 1], weight: .semibold), style: style)
             let headingTitle = AgentFileIcons.plainText(rendered), base = anchor(headingTitle)
             var name = base, count = 0
             while anchors.contains(name) { count += 1; name = base + "-\(count)" }; anchors.insert(name)
             headings.append(Heading(title: headingTitle, anchor: name, level: level, range: NSRange(location: output.length, length: rendered.length)))
-            append(rendered)
+            append(rendered, style: style)
         }
         while index < lines.count {
             let firstLine = index, displayStart = output.length
@@ -261,8 +272,12 @@ import ImageIO
                     diagrams.append(Diagram(source: code, range: range, attachment: attachment)); append(value)
                 } else {
                     if mermaid { append(inline("图表超过本页 16 张或单张 32KB 的预览上限")) }
-                    append(NSAttributedString(string: code, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor, .backgroundColor: AgentWorkbenchTheme.subtle, .paragraphStyle: style]))
+                    append(NSAttributedString(string: code, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor, .backgroundColor: AgentWorkbenchTheme.subtle, .paragraphStyle: style]), style: style)
                 }
+            } else if trimmed.isEmpty {
+                // Keep the existing characters and ranges used by selection and viewport recovery.
+                let style = previousWasBlank ? consecutiveBlank : blank
+                append(inline(original, style: style), style: style)
             } else if let match = trimmed.range(of: "^#{1,6}\\s+", options: .regularExpression) {
                 heading(String(trimmed[match.upperBound...]).replacingOccurrences(of: "\\s+#+\\s*$", with: "", options: .regularExpression), level: trimmed.prefix(while: { $0 == "#" }).count)
             } else if index + 1 < lines.count, !trimmed.isEmpty, lines[index + 1].trimmingCharacters(in: .whitespaces).range(of: "^(={3,}|-{3,})$", options: .regularExpression) != nil {
@@ -310,7 +325,7 @@ import ImageIO
                 }
             } else if trimmed.hasPrefix(">") {
                 let style = paragraph.mutableCopy() as! NSMutableParagraphStyle; style.headIndent = 16; style.firstLineHeadIndent = 16
-                append(inline(trimmed.replacingOccurrences(of: "^>\\s?", with: "", options: .regularExpression), style: style))
+                append(inline(trimmed.replacingOccurrences(of: "^>\\s?", with: "", options: .regularExpression), style: style), style: style)
             } else if trimmed.range(of: "^([-*_])(?:\\s*\\1){2,}$", options: .regularExpression) != nil {
                 append(NSAttributedString(string: "────────────", attributes: [.foregroundColor: NSColor.separatorColor, .paragraphStyle: paragraph]))
             } else {
@@ -324,12 +339,13 @@ import ImageIO
                     value = (marker.first?.isNumber == true ? marker : "•") + " " + value
                     value = value.replacingOccurrences(of: "• [x] ", with: "☑ ").replacingOccurrences(of: "• [X] ", with: "☑ ").replacingOccurrences(of: "• [ ] ", with: "☐ ")
                 }
-                append(inline(value, style: style))
+                append(inline(value, style: style), style: style)
             }
             if !tableRegion {
                 let last = sourceLines[min(index, sourceLines.count - 1)], first = sourceLines[firstLine]
                 regions.append(AgentMarkdownEditing.Region(source: NSRange(location: first.range.location, length: NSMaxRange(last.range) - first.range.location), display: NSRange(location: displayStart, length: output.length - displayStart), kind: .block))
             }
+            previousWasBlank = trimmed.isEmpty
             index += 1
         }
         return Self(body: output, headings: headings, diagrams: diagrams, regions: regions, images: loader.images,

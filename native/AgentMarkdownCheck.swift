@@ -75,6 +75,22 @@ import AppKit
             checks["symlinkEscapeIsRejected"] = (try? AgentMarkdownDocument.target(URL(string: "../../escape/outside.txt")!, document: wiki, files: files)) == nil
             let code = AgentMarkdownDocument.render("````text\n# literal\n```\nkept\n````\n# 标题\n# 标题", document: wiki, files: files, width: 400)
             checks["fencesAndDuplicateAnchorsPreserveContent"] = code.body.string.contains("# literal\n```\nkept") && code.headings.map(\.anchor) == ["标题", "标题-1"]
+            let spacingSource = "# 排版\n\n第一段\n\n\n## 列表\n- 第一条\n- 第二条\n\n```text\n第一行\n\n第二行\n```\n"
+            let spacing = AgentMarkdownDocument.render(spacingSource, document: wiki, files: files, width: 440)
+            checks["compactSpacingPreservesRenderedCharactersAndHeadingOffsets"] = spacing.body.string == "排版\n\n第一段\n\n\n列表\n• 第一条\n• 第二条\n\n第一行\n\n第二行\n\n"
+                && spacing.headings.map(\.range.location) == [0, 10]
+            let layoutText = NSTextStorage(attributedString: spacing.body), layout = NSLayoutManager()
+            let container = NSTextContainer(size: NSSize(width: 440, height: 1_000))
+            layoutText.addLayoutManager(layout); layout.addTextContainer(container)
+            layout.ensureLayout(for: container)
+            func top(_ phrase: String) -> CGFloat {
+                let range = (spacing.body.string as NSString).range(of: phrase)
+                guard range.location != NSNotFound else { return .infinity }
+                let glyph = layout.glyphIndexForCharacter(at: range.location)
+                return layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).minY
+            }
+            checks["compactSpacingFitsBlocksWithoutCollapsingFencedCode"] = (25...44).contains(top("第一段") - top("排版"))
+                && (18...42).contains(top("列表") - top("第一段")) && top("第二行") - top("第一行") >= 30
             checks["escapedAndCodePipesStayInCells"] = AgentMarkdownEditing.cells("| A\\|B | `C|D` |").map(\.text) == ["A|B", "`C|D`"]
             let reader = AgentMarkdownReader(frame: NSRect(x: 0, y: 0, width: 600, height: 400)); reader.show(readme, file: workspace.appendingPathComponent("README.md"), workspace: workspace.path)
             checks["readerNavigatesRealHeading"] = reader.navigate("原生任务工作台") && !reader.navigate("missing-heading")
