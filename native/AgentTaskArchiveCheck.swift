@@ -134,6 +134,13 @@ import AppKit
         }
         func state(_ owner: ControlWindow) -> [String: Any] { owner.archiveReadback()["archive"] as? [String: Any] ?? [:] }
         func rowIDs(_ value: [String: Any]) -> [String] { (value["rows"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String } }
+        func showsEmpty(_ owner: ControlWindow, message: String) -> Bool {
+            guard let content = owner.window?.contentView,
+                  let card = find(content, AgentSettingsCatalogEmptyView.self, matching: { _ in true }) else { return false }
+            return card.label.stringValue == message && card.bounds.height > 100 && state(owner)["controlsFit"] as? Bool == true &&
+                find(content, NSTableView.self, matching: { $0.accessibilityLabel() == "归档列表" }) == nil &&
+                find(content, NSButton.self, matching: { ["清空当前列表…", "永久删除…", "恢复任务", "恢复工作区"].contains($0.title) }) == nil
+        }
         func selectScope(_ host: NSWindow, path: String?, mode: AgentWorkMode?) throws {
             guard let content = host.contentView, let menu = find(content, NSPopUpButton.self, matching: { $0.accessibilityLabel() == "筛选归档项目" }),
                   let item = menu.itemArray.first(where: { option in
@@ -224,16 +231,33 @@ import AppKit
                 scoped.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
                 let codeBefore = try coding.map { try Data(contentsOf: tasks.directory.appendingPathComponent($0 + ".json")) }
                 let restore = try button(host, "恢复任务")
-                guard restore.isEnabled else { throw PetError("通用归档恢复不可用") }
+                guard restore.isEnabled, host.makeFirstResponder(scoped) else { throw PetError("通用归档恢复不可用") }
                 restore.performClick(nil)
                 checks["restoreChangesOnlySelectedGeneralTask"] = try tasks.task(general)?.archived == false &&
                     coding.enumerated().allSatisfy { try Data(contentsOf: tasks.directory.appendingPathComponent($0.element + ".json")) == codeBefore[$0.offset] }
                 let empty = state(control)
                 checks["emptyScopeStaysSelectedAndActionsAreDisabled"] = rowIDs(empty).isEmpty && empty["projectMode"] as? String == "general" &&
                     empty["canClear"] as? Bool == false && empty["canRestore"] as? Bool == false
+                checks["restoringLastRowShowsEmptyCardAndKeepsKeyboardInArchive"] = showsEmpty(control, message: "暂无归档的任务") &&
+                    field.currentEditor() != nil && field.currentEditor() === host.firstResponder
                 checks["otherWindowKeepsArchivedStandaloneTask"] = rowIDs(state(child)) == [standalone] && tasks.task(standalone)?.archived == true
                 checks["finalCheckpoint"] = await flushWorkspaceWindows()
             } else {
+                if final {
+                    control.show(tab: "chat")
+                    host.appearance = NSAppearance(named: .darkAqua); host.setContentSize(NSSize(width: 780, height: 540))
+                    guard control.showSettingsCategory("archived") else { throw PetError("空归档设置入口不可用") }
+                    try selectTab(host, 0)
+                    try picture(host, to: "archive-empty-workspaces-compact-dark")
+                    checks["workspaceEmptyUsesSharedCardWithoutListOrActions"] = showsEmpty(control, message: "暂无归档的工作区")
+                    try selectTab(host, 1)
+                    host.setContentSize(NSSize(width: 1320, height: 800))
+                    try picture(host, to: "archive-empty-tasks-wide-dark")
+                    checks["taskEmptyUsesSharedCardInDarkAppearance"] = showsEmpty(control, message: "暂无归档的任务")
+                    host.appearance = NSAppearance(named: .aqua)
+                    try picture(host, to: "archive-empty-tasks-wide-light")
+                    checks["taskEmptyUsesSharedCardInLightAppearance"] = showsEmpty(control, message: "暂无归档的任务")
+                }
                 let first = output.appendingPathComponent("甲/Studio"), second = output.appendingPathComponent("乙/Studio")
                 let primary = output.appendingPathComponent("当前主要源"), secondary = output.appendingPathComponent("此前主要源")
                 for path in [first, second, primary, secondary] {
@@ -299,6 +323,15 @@ import AppKit
                     checks["sameFolderGeneralTasksAreIndependent"] = rowIDs(state(control)) == [general]
                     try selectScope(host, path: first.path, mode: .coding)
                     checks["historicalPrimaryFoldersFindAllTenTasks"] = Set(rowIDs(state(control))) == Set(coding)
+                    guard let field = find(content, NSSearchField.self, matching: { $0.accessibilityLabel() == "搜索归档" }),
+                          host.makeFirstResponder(field), let searchEditor = field.currentEditor() as? NSTextView else { throw PetError("归档搜索不可用") }
+                    searchEditor.insertText("公开样例无匹配", replacementRange: searchEditor.selectedRange())
+                    try picture(host, to: "archive-search-no-results-compact-dark")
+                    checks["unmatchedSearchKeepsScopeAndFocusWithoutActions"] = showsEmpty(control, message: "未找到匹配的归档") &&
+                        state(control)["project"] as? String == first.path && searchEditor === host.firstResponder
+                    searchEditor.insertText("", replacementRange: NSRange(location: 0, length: searchEditor.string.utf16.count))
+                    checks["clearingSearchRestoresRowsAndBulkActionInSameScope"] = Set(rowIDs(state(control))) == Set(coding) &&
+                        state(control)["project"] as? String == first.path && (try? button(host, "清空当前列表…").isEnabled) == true
                     let before = try coding.map { try Data(contentsOf: tasks.directory.appendingPathComponent($0 + ".json")) }
                     let preview = try await cancelBulkPreview(host)
                     checks["bulkPreviewNamesOnlyExactFilteredScope"] = preview.contains("永久删除10项任务？") &&
@@ -307,8 +340,7 @@ import AppKit
                     checks["cancelPreservesEveryScopedTaskByte"] = try coding.enumerated().allSatisfy {
                         try Data(contentsOf: tasks.directory.appendingPathComponent($0.element + ".json")) == before[$0.offset]
                     }
-                    guard let field = find(content, NSSearchField.self, matching: { $0.accessibilityLabel() == "搜索归档" }),
-                          host.makeFirstResponder(field), let editor = field.currentEditor() as? NSTextView,
+                    guard host.makeFirstResponder(field), let editor = field.currentEditor() as? NSTextView,
                           let scroll = table.enclosingScrollView else { throw PetError("归档过滤或列表滚动不可用") }
                     editor.insertText("甲编程归档 ", replacementRange: editor.selectedRange())
                     table.selectRowIndexes(IndexSet(integer: 7), byExtendingSelection: false)

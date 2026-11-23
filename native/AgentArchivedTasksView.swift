@@ -72,6 +72,9 @@ struct AgentArchivedTaskNavigation: Codable, Equatable, Sendable {
     private let tabs = NSSegmentedControl(labels: ["工作区", "任务"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), project = NSPopUpButton(), list = NSScrollView(), table = NSTableView()
     private lazy var projectFrame = AgentSettingsPopupFrame(project)
+    private let listCard = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
+    private let emptyCard = AgentSettingsCatalogEmptyView(symbol: "archivebox", text: "")
+    private let actions = NSStackView()
     private let state = AgentSettingsStatusField("归档状态")
     private let count = NSTextField(labelWithString: "")
     private let restore = AgentDialogButton(title: "恢复", target: nil, action: nil)
@@ -103,7 +106,7 @@ struct AgentArchivedTaskNavigation: Codable, Equatable, Sendable {
         table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("归档列表"); table.backgroundColor = .clear
         list.documentView = table; list.hasVerticalScroller = true; list.drawsBackground = false; list.scrollerStyle = .overlay
         list.identifier = .init("settings-catalog-scroll")
-        let card = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
+        let card = listCard
         card.layer?.cornerRadius = 10; card.layer?.borderWidth = 1
         card.addSubview(list); list.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -117,9 +120,10 @@ struct AgentArchivedTaskNavigation: Codable, Equatable, Sendable {
         let filters = NSStackView(views: [search, projectFrame]); filters.spacing = 8; filters.alignment = .centerY
         count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText
         count.setAccessibilityLabel("归档数量")
-        let actions = NSStackView(views: [count, NSView(), clear, remove, restore]); actions.spacing = 8; actions.alignment = .centerY
+        for view in [count, NSView(), clear, remove, restore] { actions.addArrangedSubview(view) }
+        actions.spacing = 8; actions.alignment = .centerY
         let flexibleSpace = NSView()
-        let column = NSStackView(views: [tabs, filters, card, flexibleSpace, state, actions])
+        let column = NSStackView(views: [tabs, filters, card, emptyCard, flexibleSpace, state, actions])
         column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -128,8 +132,9 @@ struct AgentArchivedTaskNavigation: Codable, Equatable, Sendable {
             search.widthAnchor.constraint(greaterThanOrEqualToConstant: 150), projectFrame.widthAnchor.constraint(lessThanOrEqualToConstant: 228),
             card.heightAnchor.constraint(greaterThanOrEqualToConstant: 90), flexibleSpace.heightAnchor.constraint(greaterThanOrEqualToConstant: 0)
         ])
-        for view in [filters, card, state, actions] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        for view in [filters, card, emptyCard, state, actions] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         column.setCustomSpacing(0, after: card)
+        column.setCustomSpacing(0, after: emptyCard)
         let preferredHeight = card.heightAnchor.constraint(equalToConstant: 90)
         preferredHeight.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1)
         preferredHeight.isActive = true; preferredListHeight = preferredHeight
@@ -298,8 +303,16 @@ struct AgentArchivedTaskNavigation: Codable, Equatable, Sendable {
         if let selected = navigation.cursor.selected, let row = rows.firstIndex(where: { $0.id == selected }) {
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
-        let filtered = !query.isEmpty || navigation.tab == 1 && navigation.scope != nil
-        AgentSettingsStyle.listState(table, text: filtered ? "没有匹配的归档" : navigation.tab == 0 ? "暂无归档的工作区" : "暂无归档的任务")
+        let empty = rows.isEmpty
+        if empty {
+            let message = navigation.tab == 0 ? "暂无归档的工作区" : "暂无归档的任务"
+            emptyCard.setMessage(query.isEmpty ? message : "未找到匹配的归档")
+            if visible, let focused = window?.firstResponder as? NSView,
+               focused.isDescendant(of: listCard) || focused.isDescendant(of: actions) {
+                focusSearch()
+            }
+        }
+        listCard.isHidden = empty; emptyCard.isHidden = !empty; actions.isHidden = empty
         preferredListHeight?.constant = max(90, CGFloat(rows.count) * (table.rowHeight + table.intercellSpacing.height) + 6)
         count.stringValue = rows.isEmpty ? "" : "\(rows.count) 项"
         if let operationIssue { state.stringValue = operationIssue; state.textColor = AgentDialogStyle.error }
@@ -369,6 +382,7 @@ struct AgentArchivedTaskNavigation: Codable, Equatable, Sendable {
         guard CommandLine.arguments.contains("--task-archive-check") || CommandLine.arguments.contains("--task-records-check") else { return [:] }
         layoutSubtreeIfNeeded()
         func fits(_ control: NSView) -> Bool { bounds.insetBy(dx: -1, dy: -1).contains(control.convert(control.bounds, to: self)) }
+        let resultControls: [NSView] = rows.isEmpty ? [emptyCard] : [listCard, restore, remove, clear]
         return ["tab": navigation.tab, "query": navigation.query, "project": navigation.scope?.path as Any? ?? NSNull(),
             "projectMode": navigation.scope?.mode?.rawValue as Any? ?? NSNull(),
             "scopes": project.itemArray.map { option in
@@ -380,6 +394,6 @@ struct AgentArchivedTaskNavigation: Codable, Equatable, Sendable {
             "selected": selected?.id as Any? ?? NSNull(), "state": state.stringValue, "canRestore": restore.isEnabled,
             "canDelete": remove.isEnabled, "canClear": clear.isEnabled, "busy": busy, "visible": visible,
             "scroll": Double(list.contentView.bounds.minY), "tableHeight": Double(list.contentSize.height),
-            "controlsFit": fits(search) && fits(tabs) && fits(restore) && fits(remove) && fits(clear)]
+            "controlsFit": ([search, tabs] + resultControls).allSatisfy(fits)]
     }
 }
