@@ -62,6 +62,7 @@ struct AgentAttachmentReadingTarget {
         let part: Int
         let showsText: Bool
         let viewport: AgentTextViewport?
+        var table: AgentDelimitedPosition?
     }
 
     private let store: AgentStore, file: AgentAttachment
@@ -73,22 +74,32 @@ struct AgentAttachmentReadingTarget {
     private let title = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("附件状态")
     private let partControls = NSStackView()
     private let body = NSView(), text = NSTextView(), textScroll = NSScrollView()
+    private let grid: AgentDelimitedPreview?
     private var preview: QLPreviewView?, item: AgentPreviewItem?, job: Task<Void, Never>?
     private var pdfPreview: PDFView?, pendingPDFPage: Int?
     private var started = false, textReady = false, applyingPosition = false
     private var pendingViewport: AgentTextViewport?, pendingLine: Int?
+    private var pendingTable: AgentDelimitedPosition?
     private var textOnly: Bool { AgentDocument.textTypes.contains(file.fileExtension) }
     private var showsText: Bool { mode.selectedSegment == 1 }
 
     init(store: AgentStore, taskID: String, id: String, target: AgentAttachmentReadingTarget? = nil) throws {
         self.store = store; self.taskID = taskID; file = try AgentAttachments.record(store: store, taskID: taskID, id: id)
         _ = try AgentAttachments.source(store: store, taskID: taskID, id: id)
+        grid = AgentDelimitedText.supports(file.fileExtension) ? AgentDelimitedPreview() : nil
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = file.name; window.minSize = NSSize(width: 410, height: 370); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
-        mode.selectedSegment = textOnly ? 1 : 0; mode.target = self; mode.action = #selector(modeChanged)
-        mode.controlSize = .small; mode.isHidden = textOnly; mode.setAccessibilityLabel("附件显示方式")
+        mode.selectedSegment = textOnly && grid == nil ? 1 : 0; mode.target = self; mode.action = #selector(modeChanged)
+        mode.controlSize = .small; mode.isHidden = textOnly && grid == nil; mode.setAccessibilityLabel("附件显示方式")
+        if let grid {
+            mode.setLabel("表格", forSegment: 0); mode.setLabel("原文", forSegment: 1)
+            grid.isHidden = true; grid.controls.isHidden = true
+            grid.onSummary = { [weak self] value in self?.state.stringValue = value }
+            grid.onChange = { [weak self] in self?.onSettingsRecoveryChange?() }
+            installPreview(grid)
+        }
         number.integerValue = 1; number.alignment = .center; number.font = .systemFont(ofSize: 12); number.outlined = true
         number.widthAnchor.constraint(equalToConstant: 44).isActive = true; number.target = self; number.action = #selector(numberChanged)
         number.setAccessibilityLabel("附件部分编号")
@@ -109,8 +120,11 @@ struct AgentAttachmentReadingTarget {
         count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText
         for control in [title, number, count, stepper] { partControls.addArrangedSubview(control) }
         partControls.spacing = 8; partControls.alignment = .centerY
-        let header = NSStackView(views: [mode, NSView(), partControls]); header.spacing = 8
-        header.isHidden = textOnly && file.totalParts <= 1
+        var headerViews: [NSView] = [mode, NSView()]
+        if let grid { headerViews.append(grid.controls) }
+        headerViews.append(partControls)
+        let header = NSStackView(views: headerViews); header.spacing = 8
+        header.isHidden = textOnly && grid == nil && file.totalParts <= 1
         let column = NSStackView(views: [header, body, state]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 8
         content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for row in [header, body, state] { row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
@@ -137,7 +151,7 @@ struct AgentAttachmentReadingTarget {
     override func settingsWillLeave() { releaseReader() }
     private func releaseReader() {
         job?.cancel(); job = nil; textReady = false
-        closePreview(); text.string = ""; pendingViewport = nil; pendingLine = nil
+        closePreview(); text.string = ""; pendingViewport = nil; pendingLine = nil; pendingTable = nil
     }
     private func closePreview() {
         preview?.close(); preview?.removeFromSuperview(); preview = nil; item = nil
@@ -169,6 +183,10 @@ struct AgentAttachmentReadingTarget {
 
     private func loadPart() {
         job?.cancel(); textReady = false
+        if let grid {
+            pendingTable = pendingTable ?? grid.position
+            grid.isHidden = true; grid.controls.isHidden = true
+        }
         let selected = number.integerValue
         onSettingsRecoveryChange?()
         do {
@@ -176,6 +194,10 @@ struct AgentAttachmentReadingTarget {
             updatePartTitle(selected)
             partControls.isHidden = file.totalParts <= 1 || !showsText && file.fileExtension != "pdf"
             state.stringValue = file.partial ? "部分内容已提取" : ""
+            if let grid {
+                loadDelimited(url, grid: grid)
+                return
+            }
             if !showsText {
                 if file.fileExtension == "pdf" {
                     try showPDF(url, page: selected)
@@ -209,6 +231,37 @@ struct AgentAttachmentReadingTarget {
                 } catch { if !Task.isCancelled { showError(error) } }
             }
         } catch { showError(error) }
+    }
+    private func loadDelimited(_ url: URL, grid: AgentDelimitedPreview) {
+        text.string = ""; textScroll.isHidden = true; state.stringValue = "读取中…"
+        let type = file.fileExtension, hash = file.sha256, wantsTable = !showsText
+        let load = Task.detached(priority: .userInitiated) { () throws -> (String, AgentDelimitedText?) in
+            let files = try AgentFiles(workspace: url.deletingLastPathComponent().path)
+            let data = try files.readData(url, maximum: 2_000_000)
+            guard AgentFiles.hash(data) == hash else { throw PetError("附件已被外部修改，请重新添加") }
+            try Task.checkCancellation()
+            let source = try AgentTextFile.decode(data)
+            if wantsTable { return ("", try AgentDelimitedText.parse(source.text, type: type)) }
+            return (source.text, nil)
+        }
+        job = Task { [weak self] in
+            do {
+                let (source, table) = try await withTaskCancellationHandler(operation: { try await load.value }, onCancel: { load.cancel() })
+                try Task.checkCancellation()
+                guard let self else { return }
+                if let table {
+                    grid.isHidden = false; grid.controls.isHidden = false
+                    grid.display(table, position: pendingTable)
+                    pendingTable = nil
+                } else {
+                    text.string = source
+                    text.setSelectedRange(NSRange(location: 0, length: 0))
+                    textScroll.contentView.scroll(to: .zero); textScroll.reflectScrolledClipView(textScroll.contentView)
+                    textScroll.isHidden = false; textReady = true; state.stringValue = ""
+                }
+                presentingWindow?.contentView?.layoutSubtreeIfNeeded(); pageDidLayout(); onSettingsRecoveryChange?()
+            } catch { if !Task.isCancelled { self?.showError(error) } }
+        }
     }
     private func updatePartTitle(_ part: Int) {
         title.stringValue = file.partTitles?.indices.contains(part - 1) == true ? file.partTitles![part - 1] : "第 \(part) 部分"
@@ -269,23 +322,29 @@ struct AgentAttachmentReadingTarget {
     func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page {
         let viewport = try pendingViewport ?? (textReady && showsText ? AgentTextViewport(text) : nil)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        let value = ReadingState(attachmentID: file.id, hash: file.sha256, part: number.integerValue, showsText: showsText, viewport: viewport)
+        let table = pendingTable ?? grid?.position
+        let version = grid != nil && (!showsText || table != nil) ? 2 : 1
+        let value = ReadingState(version: version, attachmentID: file.id, hash: file.sha256, part: number.integerValue,
+                                 showsText: showsText, viewport: viewport, table: table)
         return .init(taskID: taskID, kind: "attachment", state: try encoder.encode(value), dirty: false, asset: nil)
     }
     func restoreWorkspaceRecovery(_ page: AgentWorkspaceRecovery.Page) throws {
         guard page.kind == "attachment", page.taskID == taskID, !page.dirty, page.asset == nil,
               let raw = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(raw.keys).isSubset(of: ["version", "attachmentID", "hash", "part", "showsText", "viewport"]) else {
+              Set(raw.keys).isSubset(of: ["version", "attachmentID", "hash", "part", "showsText", "viewport", "table"]) else {
             throw PetError("附件阅读状态与原任务不符")
         }
         if let viewport = raw["viewport"] { try AgentTextViewport.validateObject(viewport) }
+        if let table = raw["table"] { try AgentDelimitedPosition.validateObject(table) }
         let value = try JSONDecoder().decode(ReadingState.self, from: page.state)
-        guard value.version == 1, value.attachmentID == file.id, value.hash == file.sha256,
+        let supportsReadingState = value.version == 1 ? value.table == nil && (!textOnly || value.showsText) : value.version == 2 && grid != nil
+        guard supportsReadingState, value.attachmentID == file.id, value.hash == file.sha256,
               (1...max(1, file.totalParts)).contains(value.part), value.viewport?.valid != false,
-              value.viewport == nil || value.showsText, !textOnly || value.showsText else {
+              value.viewport == nil || value.showsText, value.table?.valid != false else {
             throw PetError("附件内容或阅读位置已变化")
         }
         setPart(value.part); mode.selectedSegment = value.showsText ? 1 : 0; pendingViewport = value.viewport
+        pendingTable = value.table
     }
 
     func workspaceReadback() async -> [String: Any] {
@@ -295,10 +354,11 @@ struct AgentAttachmentReadingTarget {
         let range = text.selectedRange(), raw = text.string as NSString
         let selected = NSMaxRange(range) <= raw.length ? raw.substring(with: range) : ""
         let pdfPart = pdfPreview.flatMap { view in view.currentPage.flatMap { view.document?.index(for: $0) }.map { $0 + 1 } }
-        return ["part": number.integerValue, "mode": showsText ? "text" : "preview", "text": String(text.string.prefix(1000)),
+        return ["part": number.integerValue, "mode": showsText ? "text" : grid == nil ? "preview" : "table", "text": String(text.string.prefix(1000)),
                 "selection": selected, "scrollY": Double(textScroll.contentView.bounds.minY), "readingWidth": Double(body.bounds.width), "readingHeight": Double(body.bounds.height),
                 "previewPDFPart": pdfPart as Any? ?? NSNull(), "previewPDFText": pdfPreview?.currentPage?.string ?? "",
-                "visible": isPageVisible, "readOnly": !text.isEditable, "status": state.stringValue]
+                "visible": isPageVisible, "readOnly": !text.isEditable, "status": state.stringValue,
+                "table": grid?.readback() ?? [:]]
     }
 
     func checkChoosePart(_ part: Int) {

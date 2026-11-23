@@ -84,10 +84,56 @@ import AppKit
             let compact = await pdf.workspaceReadback(); report["compact"] = compact
             checks["compactReaderHasUsableBodyAndControls"] = compact["visible"] as? Bool == true && (compact["readingWidth"] as? Double ?? 0) >= 400 && (compact["readingHeight"] as? Double ?? 0) >= 310
             checks["previewDoesNotRewriteTaskOrSourceFiles"] = try tasks.recordVersion(f.taskID) == starting && AgentFiles.hash(Data(contentsOf: AgentAttachments.source(store: tasks, taskID: f.taskID, id: f.pdfID))) == AgentFiles.hash(Data(contentsOf: output.appendingPathComponent("公开双页样例.pdf")))
+            checks.merge(try await checkDelimitedAttachment(output, tasks: tasks, taskID: f.otherTaskID)) { _, value in value }
             host.finish()
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["modelRequests"] = requests
         report["success"] = report["error"] == nil && requests == 0 && !checks.isEmpty && checks.values.allSatisfy { $0 }
         try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("attachment-workspace-report.json"))
+    }
+
+    private func checkDelimitedAttachment(_ output: URL, tasks: AgentStore, taskID: String) async throws -> [String: Bool] {
+        var checks: [String: Bool] = [:]
+        let csv = "订单号,商品,备注,核对\r\n0007,\"青茶, 大杯\",\"第一行 \"\"引号\"\"\r\n第二行\",\r\n"
+        let model = try AgentDelimitedText.parse(csv, type: "csv")
+        checks["quotedSeparatorsAndLineEndingsKeepExactValues"] = model.rows == [
+            ["订单号", "商品", "备注", "核对"], ["0007", "青茶, 大杯", "第一行 \"引号\"\r\n第二行", ""]
+        ] && model.rowCount == 2 && model.columnCount == 4
+        let empty = try AgentDelimitedText.parse("", type: "csv")
+        let wide = try AgentDelimitedText.parse(String(repeating: ",", count: AgentDelimitedText.columnLimit + 1), type: "csv")
+        let tall = try AgentDelimitedText.parse(String(repeating: "1\n", count: AgentDelimitedText.rowLimit + 2), type: "csv")
+        checks["emptyTableAndFullCountsForBoundedPreview"] = empty.rows.isEmpty && empty.rowCount == 0
+            && wide.rows.first?.count == AgentDelimitedText.columnLimit && wide.columnCount == AgentDelimitedText.columnLimit + 2
+            && tall.rows.count == AgentDelimitedText.rowLimit && tall.rowCount == AgentDelimitedText.rowLimit + 2
+        let source = output.appendingPathComponent("公开对账.tsv")
+        let contents = "凭证\t备注\r\n00071\t\"保留\t分隔符\"\r\n"
+        let bytes = try AgentTextFormat(encoding: .utf16LE, bom: true).encode(contents)
+        try bytes.write(to: source)
+        let attachment = try await AgentAttachments.importFile(source, store: tasks, taskID: taskID)
+        control.showAgentTask(taskID); control.checkOpenAttachment(taskID: taskID, id: attachment.id)
+        guard let reader = control.taskWorkspace.currentController as? AgentAttachmentWindow else { throw PetError("表格附件没有打开") }
+        let initial = await reader.workspaceReadback()
+        let table = initial["table"] as? [String: Any]
+        checks["utf16TsvOpensWithNativeHeadersAndUntypedValues"] = initial["mode"] as? String == "table"
+            && table?["headers"] as? [String] == ["凭证", "备注"] && table?["firstVisibleValues"] as? [String] == ["00071", "保留\t分隔符"]
+        let page = try reader.captureWorkspaceRecovery()
+        let restored = try AgentAttachmentWindow(store: tasks, taskID: taskID, id: attachment.id)
+        try restored.restoreWorkspaceRecovery(page)
+        restored.settingsDidAppear()
+        let reading = await restored.workspaceReadback()
+        checks["tableStateResumesOriginalAttachment"] = reading["mode"] as? String == "table"
+            && (reading["table"] as? [String: Any])?["firstVisibleValues"] as? [String] == ["00071", "保留\t分隔符"]
+        restored.close()
+        checks["structuredAndRawReadingPreserveActualAttachedBytes"] =
+            try Data(contentsOf: AgentAttachments.source(store: tasks, taskID: taskID, id: attachment.id)) == bytes
+        let malformed = output.appendingPathComponent("未闭合.csv")
+        try Data("编号,说明\n0009,\"未闭合".utf8).write(to: malformed)
+        let invalid = try await AgentAttachments.importFile(malformed, store: tasks, taskID: taskID)
+        control.checkOpenAttachment(taskID: taskID, id: invalid.id)
+        guard let fallback = control.taskWorkspace.currentController as? AgentAttachmentWindow else { throw PetError("错误表格附件没有打开") }
+        let error = await fallback.workspaceReadback()
+        let canReadOriginal = await fallback.checkText("0009,\"未闭合", output: output)
+        checks["invalidDelimitedDataKeepsItsOriginalReadable"] = (error["status"] as? String)?.contains("引号未闭合") == true && canReadOriginal
+        return checks
     }
 }

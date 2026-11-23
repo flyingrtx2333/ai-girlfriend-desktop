@@ -97,7 +97,14 @@ enum AgentDocument {
         if partial {
             for _ in 0..<3 where String(data: data, encoding: .utf8) == nil { data.removeLast() }
         }
-        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else { throw PetError("文件不是 UTF-8 文本") }
+        let text: String
+        if !partial, AgentDelimitedText.supports(type) {
+            text = try AgentTextFile.decode(data).text
+        } else if !data.contains(0), let decoded = String(data: data, encoding: .utf8) {
+            text = decoded
+        } else {
+            throw PetError("文件不是 UTF-8 文本")
+        }
         return AgentDocumentContent(format: type, parts: [AgentDocumentPart(title: url.lastPathComponent, text: String(text.prefix(500_000)))], totalParts: 1, partial: partial || text.count > 500_000, notes: type == "svg" ? ["SVG源码，未渲染或执行脚本"] : [])
     }
     private static func xml(_ entry: String, archive: URL, scratch: URL, optional: Bool = false) async throws -> Data? {
