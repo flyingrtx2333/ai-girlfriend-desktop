@@ -1448,12 +1448,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
                 return
             }
         }
-        if taskWorkspace.requested {
-            taskWorkspace.hideForNavigation()
-            guard !taskWorkspace.requested else { return }
-        }
-        if terminalSplit.isHidden, !workbenchInspector.isHidden { closeTaskMonitor() }
-        guard !terminalSplit.isHidden else { return }
+        guard revealWorkbenchConversation() else { return }
         window.contentView?.layoutSubtreeIfNeeded()
         if !approvalPanel.isHidden {
             if !approveButton.isHidden, !approvalScroll.isHidden, window.makeFirstResponder(approvalText) { return }
@@ -1463,6 +1458,15 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             if window.makeFirstResponder(status), window.firstResponder !== window { return }
         }
         focusTaskInput()
+    }
+    private func revealWorkbenchConversation() -> Bool {
+        guard terminalSplit.isHidden else { return true }
+        if taskWorkspace.requested {
+            taskWorkspace.hideForNavigation()
+            guard !taskWorkspace.requested else { return false }
+        }
+        if terminalSplit.isHidden, !workbenchInspector.isHidden { closeTaskMonitor() }
+        return !terminalSplit.isHidden
     }
     @objc private func toggleTaskInspector() {
         guard selectedTab == "chat", let id = agentTaskID else { return }
@@ -1842,6 +1846,14 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         checks["ExpandedMonitorMovesKeyboardFocusOutOfHiddenInput"] = window.firstResponder !== composer
         resultsButton.performClick(nil); root.layoutSubtreeIfNeeded()
         checks["ClosingMonitorRestoresUnsentDraftAndCaret"] = workbenchInspector.isHidden && !terminalSplit.isHidden && window.firstResponder === composer && composer.string == draft && composer.selectedRange() == caret
+        resultsButton.performClick(nil)
+        let monitorWasFull = terminalSplit.isHidden && visible(workbenchInspector), reading = taskMonitorState(primary).reading
+        performShortcut(.findInTask); root.layoutSubtreeIfNeeded()
+        let findField = taskFind.arrangedSubviews.first as? NSSearchField
+        checks["FindShortcutRevealsConversationFromFullMonitor"] = monitorWasFull && fullyInConversation([taskFind, history]) &&
+            findField?.currentEditor() != nil && workbenchInspector.isHidden && taskMonitorState(primary).reading == reading
+        taskFind.close()
+        checks["ClosingFindFromMonitorRestoresDraftAndCaret"] = window.firstResponder === composer && composer.string == draft && composer.selectedRange() == caret
         showAgentTask(complete); taskBack.performClick(nil); root.layoutSubtreeIfNeeded()
         checks["TaskBackRestoresExactTitleDraftSelectionAndMonitorState"] = agentTaskID == primary && tasks.task(primary).map(header) == true && taskSidebar.workbenchSelectionIsVisible(primary) && composer.string == draft && workbenchInspector.isHidden
         taskForward.performClick(nil); root.layoutSubtreeIfNeeded()
@@ -1853,6 +1865,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         checks["WideMonitorSharesSpaceWithVisibleConversationAndActions"] = tasks.task(complete).map(header) == true && rect(workbenchInspector).width == 281 && visible(workbenchInspector) && visible(history) && visible(sendButton) && rect(history).maxX < rect(workbenchInspector).minX
         checks["WideWorkbenchShowsDirectToolsAndSeparateSidebarRows"] = visible(desktopButton) && visible(gitButton) &&
             tasks.task(complete).map { overflowTools($0).isEmpty } == true && abs(rect(sidebarMore).midY - rect(settingsNav).midY) >= 32
+        performShortcut(.findInTask); root.layoutSubtreeIfNeeded()
+        checks["FindShortcutKeepsWideMonitorOpen"] = visible(workbenchInspector) && fullyInConversation([taskFind]) && findField?.currentEditor() != nil
+        taskFind.close()
         if let long = ids["longApproval"] {
             showAgentTask(long); root.layoutSubtreeIfNeeded()
             capture("wide-approval")
@@ -1952,6 +1967,18 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             tasks.task(question)?.draft == draft && tasks.task(question)?.messages.count == 1 && tasks.task(question)?.approvals.last?.decision == nil
         showTaskDocument("README.md")
         checks["OpeningQuestionKeepsOriginalDocumentTab"] = document != nil && taskWorkspace.currentController === document && taskWorkspace.requested
+        performShortcut(.findInTask)
+        if let field = taskFind.arrangedSubviews.first as? NSSearchField, field.currentEditor() != nil {
+            field.stringValue = "哪个章节"
+            _ = field.sendAction(field.action, to: field.target)
+        }
+        for _ in 0..<25 where messageSearch == nil { try? await Task.sleep(for: .milliseconds(20)) }
+        root.layoutSubtreeIfNeeded()
+        checks["FindShortcutRevealsHistoryAndKeepsDocumentAndQuestion"] = visible(taskFind) && isMessageSearchVisible &&
+            messageSearch?.messageID == tasks.task(question)?.messages.first?.id && !taskWorkspace.requested &&
+            taskWorkspace.currentController === document && composer.string == draft && tasks.task(question)?.approvals.last?.decision == nil
+        taskFind.close()
+        showTaskDocument("README.md")
 
         showAgentTask(failed)
         checks["TaskSwitchFromDocumentWithShorterDraftKeepsValidSelection"] = agentTaskID == failed && composer.string.isEmpty &&
@@ -2004,7 +2031,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         }
     }
     private func showTaskFind() {
-        guard let task = currentAgentTask else { return }
+        guard let task = currentAgentTask, revealWorkbenchConversation() else { return }
         if taskFind.isHidden { taskSidebar.dismissSearch(); clearMessageSearchHighlight(); renderAgentMessages() }
         taskFind.open(taskID: task.id, sources: taskFindSources(task))
         reserveApprovalSpaceInTerminalSplit()
