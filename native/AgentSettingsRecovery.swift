@@ -47,6 +47,9 @@ enum AgentSettingsRecovery {
         hash.map { $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } } ?? true
     }
     static func validScroll(_ value: Double?) -> Bool { value.map { $0.isFinite && (0...1_000_000_000).contains($0) } ?? true }
+    private static func routeIdentifier(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 40 && value.utf8.allSatisfy { (97...122).contains($0) || $0 == 45 }
+    }
     static let roots: Set<String> = ["memory", "rules", "skills", "commands", "hooks", "agents", "teams", "plugins", "mcp", "git", "worktrees"]
     struct SidebarMenuLocation: Codable, Equatable, Sendable {
         var parentY: Double, y: Double
@@ -66,10 +69,7 @@ enum AgentSettingsRecovery {
         var voiceDraft: AgentVoiceSettingsDraft? = nil
 
         var valid: Bool {
-            func identifier(_ value: String) -> Bool {
-                !value.isEmpty && value.utf8.count <= 40 && value.utf8.allSatisfy { (97...122).contains($0) || $0 == 45 }
-            }
-            return version == 1 && identifier(category) && page.map(identifier) != false &&
+            version == 1 && AgentSettingsRecovery.routeIdentifier(category) && page.map(AgentSettingsRecovery.routeIdentifier) != false &&
                 source.map({ $0.hasPrefix("/") && !$0.contains("\0") && $0.utf8.count <= 16_384 }) != false &&
                 query.utf8.count <= 20_000_000 && !query.contains("\0") &&
                 selection?.valid(in: query.utf16.count) != false &&
@@ -82,6 +82,31 @@ enum AgentSettingsRecovery {
                 sidebarMenu.map({ category == "appearance" && page == nil && source == nil && $0.valid }) != false &&
                 modelSettings.map({ category == "model" && page == nil && source == nil && $0.valid }) != false &&
                 voiceDraft.map({ category == "voice" && page == nil && source == nil && $0.valid }) != false
+        }
+    }
+    struct SearchReturn: Codable, Equatable, Sendable {
+        var category: String, query: String, selection: AgentTextViewport.Selection?, result: String
+        var contentY: Double, sidebarY: Double
+
+        var valid: Bool {
+            AgentSettingsRecovery.routeIdentifier(category) && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                query.utf8.count <= 20_000_000 && !query.contains("\0") && selection?.valid(in: query.utf16.count) != false &&
+                AgentSettingsRecovery.validHash(result) && AgentSettingsRecovery.validScroll(contentY) && AgentSettingsRecovery.validScroll(sidebarY)
+        }
+    }
+    struct SearchReturnRecord: Codable, Equatable, Sendable {
+        var version = 1
+        var windowID: String, layoutHash: String
+        var origin: SearchReturn?
+
+        var valid: Bool { version == 1 && UUID(uuidString: windowID) != nil && AgentSettingsRecovery.validHash(layoutHash) && origin?.valid != false }
+
+        static func validateObject(_ raw: Any) throws {
+            let value = try AgentSettingsRecovery.object(raw, keys: ["version", "windowID", "layoutHash", "origin"])
+            if let origin = value["origin"], !(origin is NSNull) {
+                let origin = try AgentSettingsRecovery.object(origin, keys: ["category", "query", "selection", "result", "contentY", "sidebarY"])
+                if let selection = origin["selection"], !(selection is NSNull) { _ = try AgentSettingsRecovery.object(selection, keys: ["location", "length"]) }
+            }
         }
     }
     struct State: Codable, Equatable, Sendable {

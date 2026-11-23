@@ -49,6 +49,28 @@ import AppKit
             try invalidBytes.write(to: sidebarURL, options: .atomic)
             do { _ = try journal.loadTaskSidebar(windowID: windowID); checks["invalidSidebarLeavesOtherWindowStateReadable"] = false }
             catch { checks["invalidSidebarLeavesOtherWindowStateReadable"] = try files.readData(sidebarURL) == invalidBytes && journal.loadWindow(windowID)?.value == window }
+            let searchURL = try files.resolve("workspace-recovery/" + windowID + "/settings-search-return.json")
+            let searchBefore = try files.readData(layoutURL)
+            let origin = AgentSettingsRecovery.SearchReturn(category: "appearance", query: "规则🐋", selection: .init(location: 2, length: 2),
+                result: AgentFiles.hash(Data("rule-result".utf8)), contentY: 381, sidebarY: 9)
+            var searchReturn = AgentSettingsRecovery.SearchReturnRecord(windowID: windowID, layoutHash: savedWindow.hash, origin: origin)
+            checks["legacyWindowDoesNotRequireSearchReturnRecord"] = try journal.loadSettingsSearchReturn(windowID: windowID) == nil
+            let savedSearch = try journal.saveSettingsSearchReturn(searchReturn, expected: nil)
+            let searchBytes = try files.readData(searchURL)
+            checks["searchReturnIsPrivateAndIndependentOfOlderLayout"] = try journal.loadSettingsSearchReturn(windowID: windowID)?.value == searchReturn &&
+                files.readData(layoutURL) == searchBefore && (FileManager.default.attributesOfItem(atPath: searchURL.path)[.posixPermissions] as? Int) == 0o600
+            searchReturn.layoutHash = AgentFiles.hash(Data())
+            do { _ = try journal.saveSettingsSearchReturn(searchReturn, expected: savedSearch.hash); checks["searchReturnRejectsDifferentLayoutGeneration"] = false }
+            catch { checks["searchReturnRejectsDifferentLayoutGeneration"] = try files.readData(searchURL) == searchBytes }
+            searchReturn.layoutHash = savedWindow.hash; searchReturn.origin = nil
+            let dismissed = try journal.saveSettingsSearchReturn(searchReturn, expected: savedSearch.hash)
+            checks["dismissedSearchReturnErasesQueryAndKeepsLayoutReadable"] = try journal.loadSettingsSearchReturn(windowID: windowID)?.value == dismissed.value &&
+                files.readData(searchURL).range(of: Data(origin.query.utf8)) == nil && journal.loadWindow(windowID)?.value == window
+            searchReturn.origin = origin; searchReturn.origin?.selection = .init(location: 3, length: 2)
+            let malformed = try JSONEncoder().encode(searchReturn)
+            try malformed.write(to: searchURL, options: .atomic)
+            do { _ = try journal.loadSettingsSearchReturn(windowID: windowID); checks["corruptSearchReturnDoesNotChangeLayoutOrSearchBytes"] = false }
+            catch { checks["corruptSearchReturnDoesNotChangeLayoutOrSearchBytes"] = try files.readData(searchURL) == malformed && files.readData(layoutURL) == searchBefore }
             let pageBefore = try files.readData(pageURL), firstAssetURL = loaded.asset!
             try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: pageURL.path)
             do { _ = try journal.savePage(page, asset: secondAsset, windowID: windowID, pageID: pageID, expected: savedPage.hash); checks["readOnlyDraftRejectsWriteBeforeChangingResources"] = false }

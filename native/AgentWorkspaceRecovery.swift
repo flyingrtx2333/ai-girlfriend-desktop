@@ -433,6 +433,15 @@ struct AgentWorkspaceRecovery: Sendable {
         guard value.valid else { throw PetError("任务侧栏位置无效") }
         return try saveWindowState(value, windowID: value.windowID, name: "task-sidebar.json", label: "任务侧栏位置", layoutHash: layoutHash, expected: expected)
     }
+    func loadSettingsSearchReturn(windowID: String) throws -> Saved<AgentSettingsRecovery.SearchReturnRecord>? {
+        try loadWindowState(windowID: windowID, name: "settings-search-return.json", label: "设置搜索返回位置", inspect: AgentSettingsRecovery.SearchReturnRecord.validateObject) {
+            $0.windowID == windowID && $0.valid
+        }
+    }
+    func saveSettingsSearchReturn(_ value: AgentSettingsRecovery.SearchReturnRecord, expected: String?) throws -> Saved<AgentSettingsRecovery.SearchReturnRecord> {
+        guard value.valid else { throw PetError("设置搜索返回位置无效") }
+        return try saveWindowState(value, windowID: value.windowID, name: "settings-search-return.json", label: "设置搜索返回位置", layoutHash: value.layoutHash, expected: expected)
+    }
     func loadDraftViewports(windowID: String) throws -> Saved<AgentDraftViewports>? {
         try loadWindowState(windowID: windowID, name: "draft-viewports.json", label: "草稿位置", inspect: AgentDraftViewports.validateObject) {
             $0.windowID == windowID && $0.valid

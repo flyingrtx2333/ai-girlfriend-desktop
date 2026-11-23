@@ -52,6 +52,9 @@ private actor AgentWorkspaceJournal {
     func saveTaskSidebar(_ record: AgentTaskSidebarRecovery, layoutHash: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTaskSidebarRecovery> {
         try storage.saveTaskSidebar(record, layoutHash: layoutHash, expected: expected)
     }
+    func saveSettingsSearchReturn(_ record: AgentSettingsRecovery.SearchReturnRecord, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentSettingsRecovery.SearchReturnRecord> {
+        try storage.saveSettingsSearchReturn(record, expected: expected)
+    }
     func saveDraftViewports(_ record: AgentDraftViewports, layoutHash: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentDraftViewports> {
         try storage.saveDraftViewports(record, layoutHash: layoutHash, expected: expected)
     }
@@ -83,6 +86,9 @@ private actor AgentWorkspaceJournal {
     private var coldKnowledge: AgentWorkspaceRecovery.Knowledge?
     private var coldSettings: AgentSettingsRecovery.State?, settingsFailure: String?
     private var coldSettingsNavigation: AgentSettingsRecovery.Navigation?
+    private var coldSettingsSearchReturn: AgentSettingsRecovery.SearchReturn?
+    private var savedSettingsSearchReturn: AgentWorkspaceRecovery.Saved<AgentSettingsRecovery.SearchReturnRecord>?
+    private var settingsSearchReturnReadOnly = false
     private var coldAutomation: AgentWorkspaceRecovery.Automation?, automationFailure: String?
     private var coldAttention: AgentAttentionRecovery?
     private var savedAttention: AgentWorkspaceRecovery.Saved<AgentAttentionRecovery.Record>?
@@ -181,6 +187,16 @@ private actor AgentWorkspaceJournal {
             } catch {
                 taskSidebarReadOnly = true
                 owner.setStatus("任务侧栏位置未恢复，原记录已保留：" + error.localizedDescription, error: true)
+            }
+            do {
+                savedSettingsSearchReturn = try recovery.loadSettingsSearchReturn(windowID: id)
+                if let record = savedSettingsSearchReturn?.value, record.layoutHash == saved.hash,
+                   coldSettingsNavigation?.query.isEmpty == true, saved.value.taskID == owner.agentTaskID {
+                    coldSettingsSearchReturn = record.origin
+                }
+            } catch {
+                settingsSearchReturnReadOnly = true
+                owner.setStatus("设置搜索返回位置未恢复，原记录已保留：" + error.localizedDescription, error: true)
             }
             do {
                 savedDraftViewports = try recovery.loadDraftViewports(windowID: id)
@@ -305,8 +321,8 @@ private actor AgentWorkspaceJournal {
             }
             if failure == nil, let navigation = coldSettingsNavigation {
                 do {
-                    try owner.materializeSettingsNavigation(navigation)
-                    coldSettingsNavigation = nil; changed()
+                    try owner.materializeSettingsNavigation(navigation, searchReturn: coldSettingsSearchReturn)
+                    coldSettingsNavigation = nil; coldSettingsSearchReturn = nil; changed()
                 } catch { failure = error }
             }
             if let failure {
@@ -476,6 +492,8 @@ private actor AgentWorkspaceJournal {
                 if let coldSettings { layout.settings = coldSettings }
                 else { layout.settings = try owner.captureSettingsRecovery() }
                 layout.settingsNavigation = coldSettingsNavigation ?? owner.captureSettingsNavigation()
+                // Keep the return route with its cold editor until that editor is available.
+                let searchReturn = coldSettingsNavigation == nil ? owner.captureSettingsSearchReturn() : coldSettingsSearchReturn
                 layout.conversationPositions = owner.captureConversationPositions()
                 layout.automation = try coldAutomation ?? owner.captureAutomationRecovery()
                 let workspaceEditor = owner.workspaceEditor, editorDraft = owner.captureWorkspaceEditorDraft()
@@ -509,6 +527,12 @@ private actor AgentWorkspaceJournal {
                 if !taskSidebarReadOnly, taskSidebar != savedTaskSidebar?.value.state {
                     let record = AgentTaskSidebarRecovery(windowID: id, state: taskSidebar)
                     savedTaskSidebar = try await journal.saveTaskSidebar(record, layoutHash: saved.hash, expected: savedTaskSidebar?.hash)
+                }
+                if !settingsSearchReturnReadOnly, searchReturn != nil || savedSettingsSearchReturn?.value.origin != nil {
+                    let record = AgentSettingsRecovery.SearchReturnRecord(windowID: id, layoutHash: saved.hash, origin: searchReturn)
+                    if record != savedSettingsSearchReturn?.value {
+                        savedSettingsSearchReturn = try await journal.saveSettingsSearchReturn(record, expected: savedSettingsSearchReturn?.hash)
+                    }
                 }
                 if !draftViewportsReadOnly, draftViewports != (savedDraftViewports?.value.tasks ?? [:]) {
                     let record = AgentDraftViewports(windowID: id, tasks: draftViewports)
@@ -606,6 +630,7 @@ private actor AgentWorkspaceJournal {
         if !archivedTaskNavigationReadOnly, let state = owner?.captureArchivedTaskNavigation(),
            state != savedArchivedTaskNavigation?.value.state { revision &+= 1 }
         if !taskSidebarReadOnly, let state = owner?.captureTaskSidebar(), state != savedTaskSidebar?.value.state { revision &+= 1 }
+        if !settingsSearchReturnReadOnly, coldSettingsNavigation == nil, owner?.captureSettingsSearchReturn() != savedSettingsSearchReturn?.value.origin { revision &+= 1 }
         if attentionRecoveryError == nil, let owner, let attention = owner.captureAttentionRecovery(),
            attention != savedAttention?.value.state { revision &+= 1 }
         if !terminalRecoveryReadOnly, let owner, let terminals = owner.captureTerminalLayout(windowID: id) {

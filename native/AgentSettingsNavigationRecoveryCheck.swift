@@ -4,6 +4,7 @@ import AppKit
     private struct NavigationFixture: Codable {
         var windows: [String: String], tasks: [String: String]
         var global: AgentSettingsRecovery.Navigation, hooks: AgentSettingsRecovery.Navigation, back: AgentSettingsRecovery.Navigation
+        var searchReturn: AgentSettingsRecovery.SearchReturn?
     }
 
     func runSettingsNavigationRecoveryCheck(_ output: URL, interactive: Bool = false) async {
@@ -67,6 +68,11 @@ import AppKit
                 guard let back = additionalTaskWindows.last else { throw PetError("无法打开返回路径验收窗口") }
                 back.showAutomations()
                 guard back.automationWindow?.isVisible == true, back.showSettingsCategory("shortcuts") else { throw PetError("自动化返回路径不可用") }
+                try back.checkSettingsNavigationSearch("任务", selection: NSRange(location: 1, length: 1))
+                guard let result = find(back.window?.contentView, NSButton.self, { $0.accessibilityLabel() == "打开设置：快捷键 · 新的任务" }) else {
+                    throw PetError("缺少快捷键搜索结果")
+                }
+                result.performClick(nil)
                 if !interactive {
                     guard let window = back.window else { throw PetError("缺少设置分类验收窗口") }
                     window.setContentSize(NSSize(width: 780, height: 540)); window.contentView?.layoutSubtreeIfNeeded()
@@ -86,8 +92,10 @@ import AppKit
                 checks["resultListCanActuallyScroll"] = interactive || scoped.contentY > 0
                 checks["returnRouteRecordedWithoutSearch"] = noQuery.query.isEmpty && noQuery.category == "shortcuts" && noQuery.returnTab == "automation"
                 checks["manualSidebarPositionCheckpointed"] = interactive || noQuery.sidebarY > 0
+                let searchReturn = back.captureSettingsSearchReturn()
+                checks["searchOriginRecordedAlongsideItsOpenedSettings"] = searchReturn?.query == "任务" && searchReturn?.selection?.range == NSRange(location: 1, length: 1)
                 let fixture = NavigationFixture(windows: ["global":a, "hooks":b, "back":c], tasks: ["global":globalTask, "hooks":hookTask, "back":backTask],
-                    global: global, hooks: scoped, back: noQuery)
+                    global: global, hooks: scoped, back: noQuery, searchReturn: searchReturn)
                 try JSONEncoder().encode(fixture).write(to: fixtureURL, options: .atomic)
             } else {
                 let fixture = try JSONDecoder().decode(NavigationFixture.self, from: Data(contentsOf: fixtureURL))
@@ -110,6 +118,9 @@ import AppKit
                         back.captureSettingsNavigation()?.returnTab == "automation"
                 } else if stage == "closed" {
                     checks["explicitBackDoesNotReopenSettings"] = global.captureSettingsNavigation() == nil && back.captureSettingsNavigation() == nil
+                    let journal = AgentWorkspaceRecovery(profile: store.directory)
+                    checks["returnedSearchOriginDoesNotReappear"] = try back.captureSettingsSearchReturn() == nil &&
+                        journal.loadSettingsSearchReturn(windowID: fixture.windows["back"]!)?.value.origin == nil
                     checks["clearedSearchDoesNotReappearOverDraft"] = hooks.captureSettingsNavigation()?.query.isEmpty == true &&
                         find(hooks.window?.contentView, NSTextView.self, { $0.accessibilityLabel() == "Hooks JSON 配置" })?.string == body
                 } else {
@@ -127,6 +138,8 @@ import AppKit
                         back.captureSettingsNavigation()?.returnTab == "automation" && back.automationWindow == nil
                     checks["restoresManualSidebarPositionWithOriginalCategory"] = interactive ||
                         abs((back.captureSettingsNavigation()?.sidebarY ?? 0) - fixture.back.sidebarY) < 0.5
+                    checks["onlyOriginalWindowRestoresSearchReturnRoute"] = fixture.searchReturn != nil && back.captureSettingsSearchReturn() == fixture.searchReturn &&
+                        global.captureSettingsSearchReturn() == nil && hooks.captureSettingsSearchReturn() == nil
                     if !interactive {
                         try hooks.checkSettingsNavigationSearch(""); await wait(0.1)
                         guard let editor = find(hooks.window?.contentView, NSTextView.self, { $0.accessibilityLabel() == "Hooks JSON 配置" }) else {
@@ -134,6 +147,13 @@ import AppKit
                         }
                         checks["clearingSearchRetainsOriginalBodyAndSelection"] = editor.string == body && editor.selectedRange() == (body as NSString).range(of: "中文😀")
                         try button(global, "返回对话").performClick(nil)
+                        guard let searchBack = find(back.window?.contentView, NSButton.self, { $0.accessibilityLabel() == "返回搜索结果" }) else {
+                            throw PetError("缺少重开后的搜索返回入口")
+                        }
+                        searchBack.performClick(nil)
+                        let returned = back.captureSettingsNavigation()
+                        checks["restoredSearchReturnOpensOriginalQueryAndResult"] = returned?.query == fixture.searchReturn?.query &&
+                            returned?.focus == fixture.searchReturn?.result && returned?.selection == fixture.searchReturn?.selection && back.captureSettingsSearchReturn() == nil
                         try button(back, "返回自动化").performClick(nil)
                         checks["returnReopensActualAutomationPage"] = back.automationWindow?.isVisible == true && back.captureSettingsNavigation() == nil
                     }

@@ -172,13 +172,12 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
     }
     private var settingsResults: [SettingsSearchResult] = []
     private var settingsResultButtons: [NSButton] = []
-    private struct SettingsSearchOrigin {
-        let category: String, input: SettingsNavigationInput, result: String
-        let contentY: CGFloat, sidebarY: CGFloat
-    }
     private let settingsSearchBack = AgentWorkbenchButton()
-    private var settingsSearchOrigin: SettingsSearchOrigin? {
-        didSet { settingsSearchBack.isHidden = settingsSearchOrigin == nil }
+    private var settingsSearchOrigin: AgentSettingsRecovery.SearchReturn? {
+        didSet {
+            settingsSearchBack.isHidden = settingsSearchOrigin == nil
+            if settingsSearchOrigin != oldValue { workspaceSession?.changed() }
+        }
     }
     private var settingsNavigationInput = SettingsNavigationInput()
     private var pendingSettingsNavigation: AgentSettingsRecovery.Navigation?
@@ -2435,7 +2434,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         settingsSearchOrigin = origin
         if result.category == "archived" { archivedTasksView?.focusSearch(); return }
         if let key = result.key { settingsPageHost.selectPage(key); return }
-        let target = result.category == "general" ? generalSettingsPanel?.revealSearchTarget(result.target, query: origin.input.query.lowercased()) ?? result.target : result.target
+        let target = result.category == "general" ? generalSettingsPanel?.revealSearchTarget(result.target, query: origin.query.lowercased()) ?? result.target : result.target
         window?.contentView?.layoutSubtreeIfNeeded()
         let bounds = target.bounds, height = min(44, bounds.height)
         target.scrollToVisible(NSRect(x: bounds.minX, y: target.isFlipped ? bounds.minY : bounds.maxY - height, width: bounds.width, height: height))
@@ -2447,9 +2446,10 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         }
         if let input = input(target) { window?.makeFirstResponder(input) }
     }
-    private func captureSettingsSearchOrigin(_ result: SettingsSearchResult) -> SettingsSearchOrigin {
-        .init(category: settingsCategory, input: currentSettingsNavigationInput(), result: result.identity,
-              contentY: settingsScroll.contentView.bounds.minY, sidebarY: settingsNavigationScroll.contentView.bounds.minY)
+    private func captureSettingsSearchOrigin(_ result: SettingsSearchResult) -> AgentSettingsRecovery.SearchReturn {
+        let input = currentSettingsNavigationInput()
+        return .init(category: settingsCategory, query: input.query, selection: input.selection, result: result.identity,
+                     contentY: max(0, settingsScroll.contentView.bounds.minY), sidebarY: max(0, settingsNavigationScroll.contentView.bounds.minY))
     }
     private func focusSettingsSearchResult(_ index: Int) {
         guard settingsResultButtons.indices.contains(index), let window else { return }
@@ -2470,7 +2470,8 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         let input = settingsEditingInput, selection = settingsEditingSelection
         guard canLeaveMainPage() else { restoreSettingsEditingFocus(input, selection: selection); return }
         settingsSearchOrigin = nil; pendingSettingsNavigation = nil
-        settingsCategory = origin.category; settingsSearch.stringValue = origin.input.query; settingsNavigationInput = origin.input
+        settingsCategory = origin.category; settingsSearch.stringValue = origin.query
+        settingsNavigationInput = SettingsNavigationInput(query: origin.query, selection: origin.selection)
         updateSettingsSections()
         window?.contentView?.layoutSubtreeIfNeeded()
         restoreSettingsScroll(origin.sidebarY, to: settingsNavigationScroll)
@@ -4037,7 +4038,12 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             modelSettings: captureModelSettings(), voiceDraft: captureVoiceDraft())
         return value.valid ? value : nil
     }
-    func materializeSettingsNavigation(_ value: AgentSettingsRecovery.Navigation) throws {
+    func captureSettingsSearchReturn() -> AgentSettingsRecovery.SearchReturn? {
+        guard selectedTab == "settings", (pendingSettingsNavigation?.query ?? settingsSearch.stringValue).isEmpty,
+              let origin = settingsSearchOrigin, origin.valid else { return nil }
+        return origin
+    }
+    func materializeSettingsNavigation(_ value: AgentSettingsRecovery.Navigation, searchReturn: AgentSettingsRecovery.SearchReturn? = nil) throws {
         guard value.valid, settingsCategories.contains(where: { $0.0 == value.category }) else { throw PetError("原设置页面暂不可用") }
         guard selectedTab == "settings" || canLeaveMainPage() else { throw PetError("请先处理当前页面的更改") }
         if restoredSettingsContext != nil, !settingsPageHost.controllers.isEmpty {
@@ -4049,6 +4055,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         if let source = value.source, let id = agentTaskID, currentAgentTask?.workspacePaths.contains(source) == true { settingsSourceFolders[id] = source }
         pendingSettingsNavigation = value
         show(tab: "settings")
+        settingsSearchOrigin = value.query.isEmpty && settingsCategories.contains(where: { $0.0 == searchReturn?.category }) ? searchReturn : nil
         if let modelSettings = value.modelSettings {
             if let draft = modelSettings.draft { applyModelDraft(draft, base: draft.base) }
             if let directory = modelSettings.directory {
@@ -7144,6 +7151,9 @@ extension ControlWindow {
                 "resultWidths": settingsResultButtons.map { $0.bounds.width }, "rowHeights": settingsResultButtons.map { $0.bounds.height },
                 "formWidth": settingsForm.bounds.width, "contentY": settingsScroll.contentView.bounds.minY,
                 "heading": settingsHeading.stringValue, "category": settingsCategory, "page": settingsPageHost.selectedPageKey ?? "", "canReturn": !settingsSearchBack.isHidden] as [String: Any]
+            if let origin = captureSettingsSearchReturn(), let data = try? JSONEncoder().encode(origin) {
+                value["settingsSearchReturn"] = try? JSONSerialization.jsonObject(with: data)
+            }
             value["leftSidebar"] = ["requested": sidebarRequested, "visible": !workbenchSidebar.isHidden, "mainLeading": sidebarWidth?.constant ?? 0, "navigationLeading": navigationLeading?.constant ?? 0]
             value["taskSwitcher"] = taskSwitcher?.checkState() ?? ["visible": false]
             value["nameEditor"] = workspaceEditor?.checkState() ?? nameEditor?.checkState() ?? ["visible": false]
