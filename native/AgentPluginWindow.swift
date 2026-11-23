@@ -3,10 +3,12 @@ import UniformTypeIdentifiers
 
 @MainActor final class AgentPluginWindow: AgentSettingsPageController, NSTableViewDelegate, NSTableViewDataSource, NSSearchFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
     private enum DetailTab: Int, Codable { case readme, components }
+    private enum ReadmeMode: Int, Codable { case preview, source }
     private struct DetailRecovery: Codable {
         let instance: String, sourceHash: String, tab: DetailTab, component: String?
         let selectedVisible: Bool
         var listY: Double?, readme: AgentTextViewport?, rule: AgentTextViewport?
+        var display: ReadmeMode?, preview: AgentMarkdownReader.ViewRecovery?
     }
     private struct Recovery: Codable {
         var version = 1
@@ -23,6 +25,9 @@ import UniformTypeIdentifiers
     private var catalogLayout: (toolbar: NSStackView, actions: NSStackView, components: NSScrollView, document: NSScrollView, footer: NSStackView)?
     private var detailPage: AgentSettingsDetailPage?
     private let detailTabs = NSSegmentedControl(labels: ["说明", "组件"], trackingMode: .selectOne, target: nil, action: nil)
+    private let readmeMode = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
+    private let readmePreview = AgentMarkdownReader(), previewSurface = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
+    private var readmeFile: URL?
     private let ruleText = NSTextView()
     private lazy var ruleScroll = Self.documentScroll(ruleText, label: "插件规则正文")
     private var pendingDetail: DetailRecovery?
@@ -123,12 +128,28 @@ import UniformTypeIdentifiers
             detailTabs.selectedSegment = DetailTab.readme.rawValue
             detailTabs.target = self; detailTabs.action = #selector(changeDetailTab)
             detailTabs.setAccessibilityLabel("插件详情内容")
-            let subtitle = NSStackView(views: [detailTabs, NSView(), metadata, enabled]); subtitle.spacing = 12; subtitle.alignment = .centerY
+            readmeMode.selectedSegment = ReadmeMode.preview.rawValue
+            readmeMode.target = self; readmeMode.action = #selector(changeDetailTab)
+            readmeMode.setAccessibilityLabel("插件说明显示方式")
+            let subtitle = NSStackView(views: [detailTabs, readmeMode, NSView(), metadata, enabled]); subtitle.spacing = 12; subtitle.alignment = .centerY
             subtitle.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
             metadata.setContentHuggingPriority(.defaultLow, for: .horizontal)
             AgentSettingsStyle.primaryAction(use)
             let actions = AgentSettingsDetailActions([moreFrame, use])
-            let detail = NSStackView(views: [subtitle, actions, layout.document, layout.components, ruleScroll, state])
+            readmePreview.text.setAccessibilityLabel("插件说明预览")
+            readmePreview.text.drawsBackground = false
+            readmePreview.text.enclosingScrollView?.drawsBackground = false
+            readmePreview.onViewportChange = { [weak self] in self?.detailViewportChanged() }
+            readmePreview.onLink = { [weak self] url in self?.followReadmeLink(url) }
+            previewSurface.layer?.cornerRadius = 12; previewSurface.layer?.borderWidth = 1
+            previewSurface.addSubview(readmePreview); readmePreview.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                readmePreview.leadingAnchor.constraint(equalTo: previewSurface.leadingAnchor, constant: 1),
+                readmePreview.trailingAnchor.constraint(equalTo: previewSurface.trailingAnchor, constant: -1),
+                readmePreview.topAnchor.constraint(equalTo: previewSurface.topAnchor, constant: 4),
+                readmePreview.bottomAnchor.constraint(equalTo: previewSurface.bottomAnchor, constant: -4)
+            ])
+            let detail = NSStackView(views: [subtitle, actions, layout.document, previewSurface, layout.components, ruleScroll, state])
             detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 8
             for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
             NSLayoutConstraint.deactivate(layout.components.constraints.filter { $0.firstAttribute == .height && $0.secondItem == nil })
@@ -233,12 +254,15 @@ import UniformTypeIdentifiers
         if !sameSource {
             pendingDetail = nil
             detailTabs.selectedSegment = DetailTab.readme.rawValue
+            readmeMode.selectedSegment = ReadmeMode.preview.rawValue
+            readmePreview.clear()
             ruleText.string = ""
         }
         selected = next; entries = []; connectors = []; agents = []; hooks = []; rules = []
         title.stringValue = ""; metadata.stringValue = ""; enabled.state = .off
         state.stringValue = ""
         var body = ""
+        readmeFile = nil
         detailPage?.detailHeading = selected.map { item in
             let scope = item.workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户插件"
             return .init(title: item.metadata.title, scope: scope, location: item.root.path)
@@ -246,7 +270,7 @@ import UniformTypeIdentifiers
         if let item = selected {
             title.stringValue = item.metadata.title; metadata.stringValue = [item.metadata.version, item.metadata.author, item.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · "); enabled.state = item.enabled ? .on : .off
             do {
-                body = try service.readme(item)
+                (body, readmeFile) = try service.readmeSource(item)
                 entries = try service.extensionItems(workspace: item.workspace, onlyScope: true).filter { $0.pluginName == item.id }
                 connectors = store.mcp.availableServers(workspace: item.workspace, onlyScope: true).filter { $0.plugin?.name == item.id }
                 agents = try store.agents.packagedProfiles(workspace: item.workspace, onlyScope: true).filter { $0.pluginSource?.name == item.id }
@@ -270,6 +294,7 @@ import UniformTypeIdentifiers
         item.definition.trigger.title + (item.definition.patterns.isEmpty ? "" : " · " + item.definition.patterns.joined(separator: ", ")) + "\n" + item.source.path + "\n\n" + item.definition.body
     }
     private var detailTab: DetailTab { DetailTab(rawValue: detailTabs.selectedSegment) ?? .readme }
+    private var showsReadmePreview: Bool { readmeFile != nil && readmeMode.selectedSegment == ReadmeMode.preview.rawValue }
     private var componentIDs: [String] {
         entries.map { "extension:" + $0.id } + connectors.map { "mcp:" + $0.id }
             + agents.map { "agent:" + $0.id } + hooks.map { "hook:" + $0.id } + rules.map { "rule:" + $0.id }
@@ -292,12 +317,25 @@ import UniformTypeIdentifiers
     private func updateDetailVisibility() {
         guard detailPage != nil else { return }
         let showsComponents = detailTab == .components
-        readme.enclosingScrollView?.isHidden = showsComponents
+        let previewsReadme = !showsComponents && showsReadmePreview
+        readmeMode.isHidden = showsComponents || readmeFile == nil
+        readme.enclosingScrollView?.isHidden = showsComponents || previewsReadme
+        previewSurface.isHidden = !previewsReadme
+        if previewsReadme, detailPage?.isPageVisible == true, let readmeFile {
+            readmePreview.show(readme.string, file: readmeFile, workspace: readmeFile.deletingLastPathComponent().path, reuseIfUnchanged: true)
+        }
         components.enclosingScrollView?.isHidden = !showsComponents
         use.isHidden = !showsComponents
         let rule = selectedRuleIndex.map { ruleBody(rules[$0]) }
         ruleScroll.isHidden = !showsComponents || rule == nil
         setBody(rule ?? "", in: ruleText)
+    }
+    private func followReadmeLink(_ url: URL) {
+        if ["https", "http"].contains(url.scheme?.lowercased()) { NSWorkspace.shared.open(url); return }
+        guard url.isFileURL, let readmeFile,
+              let files = try? AgentFiles(workspace: readmeFile.deletingLastPathComponent().path),
+              let target = try? AgentMarkdownDocument.target(url, document: readmeFile, files: files) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([target])
     }
     @objc private func changeDetailTab() {
         updateDetailVisibility()
@@ -312,7 +350,13 @@ import UniformTypeIdentifiers
         guard let host = detailPage?.presentingWindow else { return }
         applyingDetail = true; defer { applyingDetail = false }
         host.contentView?.layoutSubtreeIfNeeded()
-        if detailTab == .readme {
+        if detailTab == .readme, showsReadmePreview {
+            host.makeFirstResponder(readmePreview.text)
+            if let position = pendingDetail?.preview {
+                do { try readmePreview.restoreViewRecovery(position); pendingDetail?.preview = nil }
+                catch { state.showSaveFailure(error) }
+            }
+        } else if detailTab == .readme {
             host.makeFirstResponder(readme)
             if let position = pendingDetail?.readme, position.apply(to: readme, focus: false) { pendingDetail?.readme = nil }
         } else {
@@ -364,10 +408,12 @@ import UniformTypeIdentifiers
         if showsDetail, let item = selected {
             let readmePosition = try pendingDetail?.readme ?? AgentTextViewport(readme)
             let rulePosition = try pendingDetail?.rule ?? (selectedRuleIndex == nil ? nil : AgentTextViewport(ruleText))
+            let previewPosition = try pendingDetail?.preview ?? readmePreview.captureViewRecovery(source: readme.string)
             detail = DetailRecovery(instance: item.instanceID, sourceHash: item.receipt.sourceHash,
                 tab: detailTab, component: componentID, selectedVisible: pendingDetail?.listY != nil
                     ? pendingDetail?.selectedVisible == true : AgentSettingsRecovery.selectionIsVisible(in: components),
-                listY: pendingDetail?.listY ?? componentY, readme: readmePosition, rule: rulePosition)
+                listY: pendingDetail?.listY ?? componentY, readme: readmePosition, rule: rulePosition,
+                display: ReadmeMode(rawValue: readmeMode.selectedSegment), preview: previewPosition)
         }
         return try AgentSettingsRecovery.page("plugins", Recovery(workspace: workspace, selectedID: selected?.id,
             project: scopes.selectedSegment == 1, query: search.stringValue, showsDetail: showsDetail, detail: detail))
@@ -377,10 +423,11 @@ import UniformTypeIdentifiers
         let fields = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state),
             keys: ["version", "workspace", "selectedID", "project", "query", "showsDetail", "detail"])
         if let raw = fields["detail"], !(raw is NSNull) {
-            let details = try AgentSettingsRecovery.object(raw, keys: ["instance", "sourceHash", "tab", "component", "selectedVisible", "listY", "readme", "rule"])
+            let details = try AgentSettingsRecovery.object(raw, keys: ["instance", "sourceHash", "tab", "component", "selectedVisible", "listY", "readme", "rule", "display", "preview"])
             for key in ["readme", "rule"] {
                 if let value = details[key], !(value is NSNull) { try AgentTextViewport.validateObject(value) }
             }
+            if let value = details["preview"], !(value is NSNull) { try AgentMarkdownReader.ViewRecovery.validateObject(value) }
         }
         let recovery = try JSONDecoder().decode(Recovery.self, from: page.state)
         guard recovery.version == 1, recovery.workspace == workspace, !recovery.project || workspace != nil else {
@@ -395,13 +442,15 @@ import UniformTypeIdentifiers
             if let detail = recovery.detail {
                 guard AgentSettingsRecovery.validHash(detail.sourceHash), (1...128).contains(detail.instance.utf8.count),
                       detail.listY.map(AgentSettingsRecovery.validScroll) != false, (detail.component?.utf8.count ?? 0) <= 160,
-                      detail.readme?.valid != false, detail.rule?.valid != false else { throw PetError("插件阅读位置无效，原记录已保留") }
+                      detail.readme?.valid != false, detail.rule?.valid != false,
+                      detail.preview?.valid != false, detail.preview?.editing != true, detail.preview?.editor == nil else { throw PetError("插件阅读位置无效，原记录已保留") }
                 if detail.instance == item.instanceID, detail.sourceHash == item.receipt.sourceHash {
                     components.delegate = nil
                     selectComponent(detail.component.flatMap { componentIDs.firstIndex(of: $0) } ?? -1)
                     components.delegate = self
                     pendingDetail = detail
                     detailTabs.selectedSegment = detail.tab.rawValue
+                    readmeMode.selectedSegment = (detail.display ?? (detail.readme == nil ? .preview : .source)).rawValue
                     updateDetailVisibility()
                     updateControls()
                 }

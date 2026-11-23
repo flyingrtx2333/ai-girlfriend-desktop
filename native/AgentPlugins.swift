@@ -380,8 +380,14 @@ struct AgentPluginInstallation: Identifiable {
         catch { try? files.writeData(original, to: files.literalURL("receipt.json"), permissions: 0o600); notify(current.id); throw error }
     }
     func readme(_ item: AgentPluginInstallation) throws -> String {
-        for path in ["README.md", "readme.md"] where item.receipt.hashes[path] != nil { return String(String(decoding: try content(path, installation: item), as: UTF8.self).prefix(80_000)) }
-        return item.metadata.description
+        try readmeSource(item).text
+    }
+    func readmeSource(_ item: AgentPluginInstallation) throws -> (text: String, file: URL?) {
+        for path in ["README.md", "readme.md"] where item.receipt.hashes[path] != nil {
+            let text = String(decoding: try content(path, installation: item), as: UTF8.self)
+            return (String(text.prefix(80_000)), try payload(item).literalURL(path))
+        }
+        return (item.metadata.description, nil)
     }
     func extensionItems(workspace: String? = nil, onlyScope: Bool = false) throws -> [AgentExtensionItem] {
         var result: [AgentExtensionItem] = []

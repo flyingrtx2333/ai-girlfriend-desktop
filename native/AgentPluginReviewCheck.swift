@@ -45,7 +45,7 @@ import AppKit
             let values = ["README.md": "公开插件版本 \(version)。\n", "skills/check/SKILL.md": "---\nname: check\ndescription: 公开技能\n---\n完整技能正文 version-\(version)。\n", "commands/check.md": "公开命令 version-\(version)。\n$ARGUMENTS\n", "agents/reviewer.md": "---\nname: reviewer\ndescription: 公开只读审阅角色\ntools: [read_file]\nreadOnly: true\nnetwork: false\n---\n完整角色指令 version-\(version)。\n", "rules/check.md": "---\ntrigger: always_on\n---\n完整规则正文 version-\(version)。\n"]
             for (name, value) in values { files[name] = Data(value.utf8) }
             if history {
-                let lines = (1...140).map { "HISTORY-LINE-\($0)-v\(version) 公开阅读样例" }
+                let lines = ["# 公开插件说明", "", "保留 **阅读位置**。", ""] + (1...140).map { "HISTORY-LINE-\($0)-v\(version) 公开阅读样例" }
                 files["README.md"] = Data((lines.joined(separator: "\n") + "\n").utf8)
             }
             files[".mcp.json"] = try JSONSerialization.data(withJSONObject: ["mcpServers": ["local": ["command": "/usr/bin/true", "args": ["public-v\(version)"]]]], options: [.sortedKeys])
@@ -251,8 +251,16 @@ import AppKit
         }
         guard let detail = pane.currentController else { throw PetError("缺少插件详情") }
         let tabs = try control(NSSegmentedControl.self, "插件详情内容", page: detail)
+        let display = try control(NSSegmentedControl.self, "插件说明显示方式", page: detail)
+        let preview = try control(NSTextView.self, "插件说明预览", page: detail)
         let readme = try control(NSTextView.self, "插件说明", page: detail)
         let components = try control(NSTableView.self, "插件组件", page: detail)
+        let heading = (preview.string as NSString).range(of: "公开插件说明")
+        let headingFont = heading.location == NSNotFound ? nil : preview.textStorage?.attribute(.font, at: heading.location, effectiveRange: nil) as? NSFont
+        checks["pluginReadmeDefaultsToFormattedHeadingsAndText"] = display.selectedSegment == 0 && headingFont.map { $0.pointSize > 18 } == true &&
+            !preview.isHiddenOrHasHiddenAncestor && readme.isHiddenOrHasHiddenAncestor && !preview.string.contains("**阅读位置**")
+        let previewSelection = try reveal("HISTORY-LINE-96-v2", in: preview, host: host)
+        select(display, 1)
         let selection = try reveal("HISTORY-LINE-109-v2", in: readme, host: host)
         checks["pluginDetailOpensTheActualReadmeWithoutASecondScroller"] = tabs.selectedSegment == 0 && !readme.isHiddenOrHasHiddenAncestor
             && components.isHiddenOrHasHiddenAncestor && readme.string.contains("HISTORY-LINE-140-v2")
@@ -280,6 +288,14 @@ import AppKit
             && (reopenedReadme.enclosingScrollView?.contentView.bounds.minY ?? 0) > 0
             && (reopenedReadme.enclosingScrollView?.documentVisibleRect.height ?? 0) > 240
             && reopenedReadme.string == currentFiles["README.md"].map { String(decoding: $0, as: UTF8.self) }
+        let restoredDisplay = try control(NSSegmentedControl.self, "插件说明显示方式", page: reopened)
+        let sourceRestored = restoredDisplay.selectedSegment == 1
+        select(restoredDisplay, 0)
+        try await Task.sleep(nanoseconds: 80_000_000)
+        let reopenedPreview = try control(NSTextView.self, "插件说明预览", page: reopened)
+        checks["pluginPreviewAndSourceKeepIndependentPositionsAcrossRestart"] = sourceRestored &&
+            reopenedPreview.selectedRange() == previewSelection && (reopenedPreview.enclosingScrollView?.contentView.bounds.minY ?? 0) > 0 &&
+            !reopenedPreview.isHiddenOrHasHiddenAncestor && reopenedReadme.selectedRange() == selection
         var oldDetailState = detailState
         let prior = try AgentConfigurationJSON.object(oldDetailState.pages[0].state).filter { $0.key != "detail" }
         oldDetailState.pages[0].state = try JSONSerialization.data(withJSONObject: prior)
