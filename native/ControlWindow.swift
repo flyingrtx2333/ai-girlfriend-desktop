@@ -1321,6 +1321,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         let hasRecords = monitorContent.hasContent
         let compactWidth = width < 900, compactHeight = (window?.contentView?.bounds.height ?? 800) < 650
         workbenchSidebarWidth.constant = compactWidth ? 218 : 252
+        taskSidebar.setCompactRows(compactHeight)
         brandTop.constant = compactHeight ? 43 : 55
         sidebarTasksTop.constant = compactHeight ? 14 : 22
         sidebarTasksBottom.constant = compactHeight ? -8 : -12
@@ -1716,7 +1717,12 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             frames[key] = views.mapValues {
                 let frame = rect($0); return [frame.minX, frame.minY, frame.width, frame.height]
             }
-            frames[key]?["taskListHeight"] = [sidebarLayoutReadback()["taskListHeight"] as? CGFloat ?? 0]
+            let sidebar = sidebarLayoutReadback()
+            frames[key]?["taskListHeight"] = [sidebar["taskListHeight"] as? CGFloat ?? 0]
+            if let row = sidebar["selectedTaskRow"] as? [String: CGFloat], let height = row["rowHeight"],
+               let width = row["titleWidth"], let required = row["requiredTitleWidth"] {
+                frames[key]?["sidebarTitle"] = [width, required, height]
+            }
         }
         func overflowTools(_ task: AgentTaskRecord) -> [NSMenuItem] {
             taskMenu(task).items.filter { $0.action == desktopButton.action || $0.action == gitButton.action }
@@ -1750,6 +1756,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             case "waiting":
                 checks["WaitingWorkbenchShowsApprovalWithDisabledSelectors"] = visible(approveButton) && visible(denyButton) && approveButton.isEnabled && denyButton.isEnabled && !modePopup.isEnabled && !taskModel.isEnabled
                 let tools = overflowTools(task)
+                if let row = frames[state]?["sidebarTitle"] {
+                    checks["CompactWaitingTaskNameFitsInSidebar"] = row[0] >= row[1] && row[2] <= 29
+                } else { checks["CompactWaitingTaskNameFitsInSidebar"] = false }
                 checks["CompactApprovalTitleFitsAndPrimaryToolsStayVisible"] = rect(pageTitle).width + 1 >= pageTitle.intrinsicContentSize.width &&
                     visible(browserButton) && visible(terminalButton) && visible(resultsButton) && visible(taskMore) && desktopButton.isHidden && gitButton.isHidden
                 checks["CompactTaskMenuKeepsBothToolActionsAndTheirAvailability"] = tools.map(\.action) == [desktopButton.action, gitButton.action] &&
@@ -1768,6 +1777,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         if let long = ids["longApproval"], let longDraft = tasks.task(long)?.draft, let question = ids["question"] {
             showAgentTask(long); root.layoutSubtreeIfNeeded()
             capture("long-approval")
+            if let row = frames["long-approval"]?["sidebarTitle"] {
+                checks["CompactLongApprovalNameFitsInSidebar"] = row[0] >= row[1] && row[2] <= 29
+            } else { checks["CompactLongApprovalNameFitsInSidebar"] = false }
             let viewport = approvalScroll.contentView.bounds
             let documentHeight = approvalText.bounds.height
             checks["LongApprovalScrollsInsideNarrowCardWithFixedActions"] = visible(approvalScroll) && documentHeight > viewport.height + 40
@@ -1864,6 +1876,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         if workbenchInspector.isHidden { resultsButton.performClick(nil) }
         try? await Task.sleep(for: .milliseconds(200)); root.layoutSubtreeIfNeeded()
         capture("monitor-docked")
+        if let row = frames["monitor-docked"]?["sidebarTitle"] {
+            checks["WideSidebarKeepsTallerRowsAndVisibleTaskName"] = row[0] >= row[1] && row[2] >= 33
+        } else { checks["WideSidebarKeepsTallerRowsAndVisibleTaskName"] = false }
         checks["WideMonitorSharesSpaceWithVisibleConversationAndActions"] = tasks.task(complete).map(header) == true && rect(workbenchInspector).width == 281 && visible(workbenchInspector) && visible(history) && visible(sendButton) && rect(history).maxX < rect(workbenchInspector).minX
         checks["WideWorkbenchShowsDirectToolsAndSeparateSidebarRows"] = visible(desktopButton) && visible(gitButton) &&
             tasks.task(complete).map { overflowTools($0).isEmpty } == true && abs(rect(sidebarMore).midY - rect(settingsNav).midY) >= 32

@@ -56,6 +56,7 @@ private final class AgentTaskTable: NSTableView {
     private let bulkCount = NSTextField(labelWithString: ""), bulkAction = NSButton(), bulkCancel = NSButton(title: "取消选择", target: nil, action: nil)
     private let bulkBar = NSStackView()
     private var bulkIDs = Set<String>(), bulkSelecting = false
+    private var compactRows = false
     private var dayObservers: [NSObjectProtocol] = []
     private var draggingRows = false
     private var dragDiagnostics: [String: String] = [:]
@@ -115,7 +116,7 @@ private final class AgentTaskTable: NSTableView {
         bulkHeader.widthAnchor.constraint(equalTo: bulkBar.widthAnchor).isActive = true; bulkAction.widthAnchor.constraint(equalTo: bulkBar.widthAnchor).isActive = true
         upperNavigation.configure([attention, searchButton], priority: 751); upperNavigation.setAccessibilityLabel("侧栏上方入口")
         let rule = AgentWorkbenchTheme.rule(), content = NSStackView(views: [workModePicker, create, upperNavigation, search, rule, header, empty, scroll, bulkBar])
-        content.orientation = .vertical; content.alignment = .leading; content.spacing = 3; content.setCustomSpacing(13, after: upperNavigation); content.setCustomSpacing(7, after: rule); content.setCustomSpacing(0, after: header)
+        content.orientation = .vertical; content.alignment = .leading; content.spacing = 3; content.setCustomSpacing(9, after: upperNavigation); content.setCustomSpacing(7, after: rule); content.setCustomSpacing(0, after: header)
         addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: leadingAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor), content.topAnchor.constraint(equalTo: topAnchor), content.bottomAnchor.constraint(equalTo: bottomAnchor)])
         for view in content.arrangedSubviews { view.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
@@ -126,10 +127,22 @@ private final class AgentTaskTable: NSTableView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func navigationButton(_ item: AgentSidebarItem) -> NSButton? { switch item { case .attention: return attention; case .search: return searchButton; default: return nil } }
     func setUpperNavigation(_ buttons: [NSButton]) { upperNavigation.configure(buttons, priority: 751) }
+    func setCompactRows(_ value: Bool) {
+        guard compactRows != value else { return }
+        compactRows = value
+        table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: rows.indices))
+    }
     var isSearchPresented: Bool { searchVisible }
     func navigationReadback() -> [String: Any] {
         let viewport = table.enclosingScrollView
-        return ["actualUpper": upperNavigation.buttons.map { $0.identifier?.rawValue ?? "" }, "upperHeight": upperNavigation.frame.height, "upperDocumentHeight": upperNavigation.documentView?.frame.height ?? 0, "newTaskFixed": create.window === window && create.superview != nil, "taskListHeight": viewport?.frame.height ?? 0, "searchVisible": searchVisible]
+        var result: [String: Any] = ["actualUpper": upperNavigation.buttons.map { $0.identifier?.rawValue ?? "" }, "upperHeight": upperNavigation.frame.height, "upperDocumentHeight": upperNavigation.documentView?.frame.height ?? 0, "newTaskFixed": create.window === window && create.superview != nil, "taskListHeight": viewport?.frame.height ?? 0, "searchVisible": searchVisible]
+        let row = table.selectedRow
+        if rows.indices.contains(row), case .task = rows[row],
+           let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? AgentTaskCell, let title = cell.textField {
+            result["selectedTaskRow"] = ["rowHeight": table.rect(ofRow: row).height, "titleWidth": title.bounds.width,
+                                         "requiredTitleWidth": title.intrinsicContentSize.width]
+        }
+        return result
     }
     func appearanceSelectionColor() -> [CGFloat]? {
         guard ["--appearance-check", "--theme-styles-check", "--manual-ui"].contains(where: CommandLine.arguments.contains), let selected,
@@ -378,7 +391,11 @@ private final class AgentTaskTable: NSTableView {
         return table.visibleRect.minY <= bounds.minY && table.visibleRect.maxY >= bounds.maxY
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { if case .group = rows[row] { return 32 }; if case .task(let task, _) = rows[row], searchSnippet(task) != nil { return 53 }; return 33 }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if case .group = rows[row] { return compactRows ? 28 : 32 }
+        if case .task(let task, _) = rows[row], searchSnippet(task) != nil { return compactRows ? 47 : 53 }
+        return compactRows ? 27 : 33
+    }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { if case .group(_, let key) = rows[row] { return !bulkSelecting && key != nil }; return true }
     func tableView(_ tableView: NSTableView, selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet) -> IndexSet {
         guard bulkSelecting || proposedSelectionIndexes.count > 1 else { return proposedSelectionIndexes }
@@ -423,14 +440,15 @@ private final class AgentTaskTable: NSTableView {
             }
             let closed = collapsed.contains(groupKey(path!)); button.image = NSImage(systemSymbolName: closed ? "chevron.right" : "chevron.down", accessibilityDescription: nil); button.tag = row; button.isBordered = false; button.contentTintColor = AgentWorkbenchTheme.secondaryText; button.setAccessibilityLabel((closed ? "展开 " : "收起 ") + title)
             button.isHidden = !search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            label.font = .systemFont(ofSize: 15); label.lineBreakMode = .byTruncatingTail; view.toolTip = effectiveGrouping == .custom ? "自定义分组" : path
+            label.font = .systemFont(ofSize: 14, weight: .medium); label.lineBreakMode = .byTruncatingTail; view.toolTip = effectiveGrouping == .custom ? "自定义分组" : path
             for child in [button, icon, label] as [NSView] { view.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
             NSLayoutConstraint.activate([button.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4), button.widthAnchor.constraint(equalToConstant: 20), button.heightAnchor.constraint(equalToConstant: 26), button.centerYAnchor.constraint(equalTo: view.centerYAnchor), icon.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28), icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16), icon.centerYAnchor.constraint(equalTo: view.centerYAnchor), label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 46), label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8), label.centerYAnchor.constraint(equalTo: view.centerYAnchor)])
             return view
         case .task(let task, let depth):
             let cell = AgentTaskCell(); cell.select(bulkSelecting ? bulkIDs.contains(task.id) : task.id == listSelection, animated: false)
             let unread = organization?.isTaskUnread(task.id) == true
-            let label = NSTextField(labelWithString: task.title); label.font = .systemFont(ofSize: 15, weight: unread ? .semibold : task.id == selected ? .medium : .regular); label.lineBreakMode = .byTruncatingTail
+            let label = NSTextField(labelWithString: task.title); label.font = .systemFont(ofSize: 13, weight: unread ? .semibold : task.id == selected ? .medium : .regular); label.lineBreakMode = .byTruncatingTail
+            cell.textField = label
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             let icon = NSImageView()
             AgentTaskStatusAppearance(task).apply(to: icon)
@@ -438,8 +456,8 @@ private final class AgentTaskTable: NSTableView {
             let text = NSStackView(views: [label]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 3
             if let snippet { let preview = NSTextField(labelWithString: snippet); preview.font = .systemFont(ofSize: 11); preview.textColor = AgentWorkbenchTheme.secondaryText; preview.lineBreakMode = .byTruncatingTail; text.addArrangedSubview(preview) }
             for child in text.arrangedSubviews { child.widthAnchor.constraint(equalTo: text.widthAnchor).isActive = true }
-            let line = NSStackView(views: [icon, text]); line.spacing = 9; cell.addSubview(line); line.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([line.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: CGFloat(37 + depth * 12)), line.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -9), line.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 12), icon.heightAnchor.constraint(equalToConstant: 12)])
+            let line = NSStackView(views: [icon, text]); line.spacing = 7; cell.addSubview(line); line.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([line.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: CGFloat(29 + depth * 12)), line.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -7), line.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 12), icon.heightAnchor.constraint(equalToConstant: 12)])
             cell.toolTip = task.title + " · " + task.statusTitle + (unread ? " · 未读" : "") + (snippet.map { "\n" + $0 } ?? ""); cell.setAccessibilityLabel(task.title + "，" + task.statusTitle + (unread ? "，未读" : "") + (snippet.map { "，" + $0 } ?? "")); return cell
         }
     }
