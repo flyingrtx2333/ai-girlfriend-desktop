@@ -192,10 +192,134 @@ import AppKit
             checks["allOriginalWikiAndTaskInputsRemain"] = try await AgentWiki.snapshot(tasks, id, "zh").pointer == before.pointer && before.data.allSatisfy { try files.readData(files.resolve(before.root + "/" + $0.key), maximum: 20_000_000) == $0.value } && tasks.task(id)?.draft == originalDraft && tasks.task(f["standaloneID"] as! String)?.draft == "无工作区任务未发送的草稿。"
             checks["actualJobsHaveNoModelUsageOrPublishedCompletion"] = created.count == 2 && created.compactMap(tasks.task).allSatisfy { !$0.hasConfirmedWikiCompletion && ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
             report["createdTaskIDs"] = created; report["fixture"] = f; host.finish()
+            let navigation = try await checkTaskWikiDirectory(output, taskID: id, window: mainWindow)
+            checks.merge(navigation.checks) { _, value in value }
+            report["taskWikiDirectory"] = navigation.scenes
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["blockedBeforeTransmission"] = blocked; report["modelTransmissions"] = 0; report["appPID"] = getpid()
         if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
         report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("wiki-lifecycle-report.json"))
+    }
+
+    private func checkTaskWikiDirectory(_ output: URL, taskID: String, window: NSWindow) async throws -> (checks: [String: Bool], scenes: [String: [String: Any]]) {
+        guard let tasks = agentStore, let task = tasks.task(taskID), let root = window.contentView else { throw PetError("缺少任务 Wiki 窗口") }
+        let before = try await AgentWiki.snapshot(tasks, taskID, "zh")
+        let originalAppearance = window.appearance, originalFrame = window.frame
+        defer { window.appearance = originalAppearance; window.setFrame(originalFrame, display: true) }
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        func visible(_ view: NSView) -> Bool { view.window === window && !view.isHiddenOrHasHiddenAncestor && !view.visibleRect.isEmpty }
+        func rect(_ view: NSView) -> NSRect { view.convert(view.bounds, to: root) }
+        func resize(_ width: CGFloat, _ height: CGFloat, _ appearance: NSAppearance.Name) async {
+            window.appearance = NSAppearance(named: appearance)
+            window.setContentSize(NSSize(width: width, height: height))
+            await wait(0.2); root.layoutSubtreeIfNeeded()
+        }
+
+        await resize(1200, 774, .darkAqua)
+        control.showAgentTask(taskID); control.presentAgentRecords(section: 4)
+        guard let sections = descendants(root).compactMap({ $0 as? NSSegmentedControl }).first(where: { $0.segmentCount == 7 && $0.label(forSegment: 6) == "Wiki" }),
+              let record = sections.target as? AgentRecordWindow, let page = record.pageContentView else { throw PetError("任务记录的 Wiki 标签未打开") }
+        sections.selectedSegment = 6; _ = sections.sendAction(sections.action, to: record)
+        await wait(0.2); root.layoutSubtreeIfNeeded()
+        guard let directory = descendants(page).compactMap({ $0 as? AgentWikiTree }).first,
+              let search = descendants(directory).compactMap({ $0 as? NSSearchField }).first,
+              let outline = descendants(directory).compactMap({ $0 as? NSOutlineView }).first, let scroll = outline.enclosingScrollView,
+              let language = descendants(directory).compactMap({ $0 as? NSPopUpButton }).first(where: { $0.accessibilityLabel() == "Wiki 语言" }),
+              let more = descendants(directory).compactMap({ $0 as? NSButton }).first(where: { $0.accessibilityLabel() == "Wiki 更多操作" }),
+              let plan = descendants(directory).compactMap({ $0 as? NSButton }).first(where: { $0.accessibilityLabel() == "Wiki 生成规划" }),
+              let toggle = descendants(page).compactMap({ $0 as? NSButton }).first(where: { $0.title == "目录" }),
+              let reader = descendants(page).compactMap({ $0 as? AgentMarkdownReader }).first else { throw PetError("Wiki 目录或正文控件未载入") }
+        var checks: [String: Bool] = [:], scenes: [String: [String: Any]] = [:]
+        func capture(_ name: String) throws {
+            root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            guard let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { throw PetError("无法保存任务 Wiki 窗口截图") }
+            bitmap.size = root.bounds.size; root.cacheDisplay(in: root.bounds, to: bitmap)
+            guard let png = bitmap.representation(using: .png, properties: [:]) else { throw PetError("任务 Wiki 窗口截图无效") }
+            try png.write(to: output.appendingPathComponent(name + ".png"), options: .atomic)
+            scenes[name] = ["size": NSStringFromSize(window.frame.size), "directory": NSStringFromRect(rect(directory)), "reader": NSStringFromRect(rect(reader)),
+                            "treeViewport": NSStringFromSize(scroll.contentSize), "rowHeight": outline.rowHeight, "rows": outline.numberOfRows,
+                            "lastRowBottom": outline.numberOfRows == 0 ? 0 : outline.rect(ofRow: outline.numberOfRows - 1).maxY,
+                            "columnWidth": outline.tableColumns.first?.width ?? 0, "tree": directory.checkState]
+        }
+        language.selectItem(withTitle: "简体中文"); _ = language.sendAction(language.action, to: language.target)
+        await wait(0.15)
+        try capture("task-wiki-split-dark")
+        checks["taskWikiCompactPaneShowsBothPagesAndReader"] = visible(search) && visible(language) && visible(reader) && outline.numberOfRows == 2 &&
+            scroll.contentSize.height >= outline.rect(ofRow: 1).maxY && scroll.contentSize.height <= 84 &&
+            rect(directory).minY >= rect(reader).maxY && rect(reader).height >= 300
+        let columnWidth = outline.tableColumns.first?.width ?? 0
+        checks["taskWikiColumnUsesAvailableWidth"] = columnWidth >= scroll.contentSize.width - 32 && columnWidth > 300
+
+        await resize(780, 540, .aqua)
+        try capture("task-wiki-beside-light")
+        checks["taskWikiAtMinimumWindowShowsDirectoryToLeftOfReadableContent"] = window.frame.size == NSSize(width: 780, height: 540) &&
+            visible(outline) && visible(reader) && rect(directory).maxX < rect(reader).minX && rect(reader).width >= 300
+        search.stringValue = "公开"; directory.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        if outline.numberOfRows == 1 { outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        await wait(0.1)
+        let picked = directory.selectedDocument
+        let selectedText = await record.markdownEditingReadback()["draft"] as? String
+        let fileBytes = try picked.map { path in
+            let files = try AgentFiles(workspace: task.workspace)
+            return try files.readData(files.resolve(path))
+        }
+        checks["taskWikiSearchOpensTheActualMatchingPublication"] = picked?.hasSuffix("/sources.md") == true &&
+            fileBytes.flatMap { String(data: $0, encoding: .utf8) } == selectedText && outline.selectedRow == 0
+        let readerWidth = rect(reader).width
+        toggle.performClick(nil); root.layoutSubtreeIfNeeded()
+        let collapsed = directory.superview == nil && visible(reader) && rect(reader).width > readerWidth && toggle.accessibilityLabel() == "显示 Wiki 目录"
+        toggle.performClick(nil); await wait(0.15)
+        let reopenedText = await record.markdownEditingReadback()["draft"] as? String
+        checks["taskWikiDirectoryCanCollapseAndRestoreItsFilterAndSelection"] = collapsed && visible(outline) && search.stringValue == "公开" &&
+            directory.selectedDocument == picked && outline.selectedRow == 0 && reopenedText == selectedText
+        search.stringValue = ""; directory.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+
+        language.selectItem(withTitle: "English"); _ = language.sendAction(language.action, to: language.target)
+        await resize(780, 540, .darkAqua)
+        try capture("task-wiki-empty-dark")
+        let importItem = more.menu?.items.first { $0.representedObject as? String == "import" }
+        checks["emptyTaskWikiShowsLanguagePlanningAndImportWithoutADisabledPicker"] = directory.selectedLanguage == "en" && outline.numberOfRows == 0 &&
+            directory.checkState["emptyVisible"] as? Bool == true && visible(language) && visible(plan) && visible(more) && plan.isEnabled && importItem?.isEnabled == true &&
+            !visible(reader) && !visible(toggle) && rect(directory).width >= page.bounds.width - 34
+        plan.performClick(nil); await wait(0.15); root.layoutSubtreeIfNeeded()
+        let planText = descendants(root).compactMap({ $0 as? NSTextView }).first { $0.accessibilityLabel() == "Wiki 规划 YAML" && visible($0) }
+        checks["emptyTaskWikiOpensPlanningInTheSameRecordTab"] = planText?.window === window && planText?.string.isEmpty == false && !window.hasBlockingDialog
+        if let close = descendants(root).compactMap({ $0 as? NSButton }).first(where: { $0.title == "关闭" && $0.target is AgentWikiPlanWindow && visible($0) }) {
+            close.performClick(nil)
+        }
+        root.layoutSubtreeIfNeeded()
+        checks["taskWikiReturnsFromPlanningToTheSameEmptyDirectory"] = visible(language) && directory.selectedLanguage == "en" && outline.numberOfRows == 0
+        let missingSource: String
+        do { _ = try await AgentWiki.previewWikiImport(store: tasks, taskID: taskID, language: "en"); missingSource = "" }
+        catch { missingSource = error.localizedDescription }
+        var importReadback: [String: Any] = ["expectedError": missingSource, "actionSent": false]
+        checks["emptyTaskWikiCanOpenImportAndSeeTheActualMissingSource"] = false
+        if let importItem, let action = importItem.action {
+            importReadback["actionSent"] = NSApp.sendAction(action, to: importItem.target, from: importItem)
+            var review: AgentKnowledgeReviewWindow?
+            for _ in 0..<80 {
+                review = descendants(root).compactMap { ($0 as? NSButton)?.target as? AgentKnowledgeReviewWindow }.first(where: \.isPageVisible)
+                if review != nil { break }
+                await wait(0.025)
+            }
+            if let review {
+                await review.checkLoad()
+                let state = review.checkState; importReadback["review"] = state
+                checks["emptyTaskWikiCanOpenImportAndSeeTheActualMissingSource"] = review.presentingWindow === window && review.window?.isVisible == false &&
+                    !window.hasBlockingDialog && state["applyEnabled"] as? Bool == false && missingSource.hasPrefix("缺少 Wiki 导入文件 .bluefatfish/repowiki/en/") &&
+                    state["state"] as? String == missingSource
+                review.close()
+            }
+        }
+        let importData = try JSONSerialization.data(withJSONObject: importReadback, options: [.prettyPrinted, .sortedKeys])
+        try importData.write(to: output.appendingPathComponent("task-wiki-import.json"), options: .atomic)
+        language.selectItem(withTitle: "简体中文"); _ = language.sendAction(language.action, to: language.target)
+        await resize(1320, 800, .aqua)
+        try capture("task-wiki-beside-wide-light")
+        let after = try await AgentWiki.snapshot(tasks, taskID, "zh")
+        checks["taskWikiSwitchesBackToPublishedLanguageWithOriginalFilesAndDraft"] = directory.selectedLanguage == "zh" && outline.numberOfRows == 2 && visible(reader) &&
+            before.pointer == after.pointer && before.data == after.data && tasks.task(taskID)?.draft == task.draft
+        return (checks, scenes)
     }
 }

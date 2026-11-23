@@ -43,7 +43,7 @@ import AppKit
     private var applying = false, selectedPath: String?
     private var pendingPosition: RecoveryState?, positionScheduled = false
     private var rootPath = ".bluefatfish/wiki"
-    private let language = NSPopUpButton(), plan = NSButton(title: "规划", target: nil, action: nil), more = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let language = NSPopUpButton(), plan = NSButton(title: "规划", target: nil, action: nil), more = AgentWorkbenchButton(), sharing = NSMenu()
     private var citationAvailable = false
     private var maintenanceAvailable = false
     var canSelect: ((String) -> Bool)?, onSelect: ((String) -> Void)?, onRefresh: (() -> Void)?
@@ -52,31 +52,41 @@ import AppKit
     var onWorkspaceChange: (() -> Void)?
     var selectedLanguage: String { ["zh", "en", "legacy"][max(0, min(2, language.indexOfSelectedItem))] }
     var selectedDocument: String? { selectedPath }
+    var preferredCompactHeight: CGFloat {
+        let rows = CGFloat(min(6, max(2, pages.count)))
+        return 78 + rows * (outline.rowHeight + outline.intercellSpacing.height)
+    }
     override init(frame: NSRect) {
         super.init(frame: frame)
         search.placeholderString = "搜索 Wiki"; search.setAccessibilityLabel("搜索 Wiki 文档"); search.delegate = self; search.sendsSearchStringImmediately = true
         search.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         refresh.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新 Wiki 目录"); refresh.bezelStyle = .texturedRounded; refresh.controlSize = .small; refresh.target = self; refresh.action = #selector(reloadCatalog); refresh.setAccessibilityLabel("刷新 Wiki 目录")
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("wiki")); column.width = 165; column.minWidth = 120
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("wiki")); column.width = 165; column.minWidth = 140; column.resizingMask = .autoresizingMask
         outline.addTableColumn(column); outline.outlineTableColumn = column; outline.headerView = nil; outline.rowHeight = 28; outline.indentationPerLevel = 12; outline.delegate = self; outline.dataSource = self; outline.setAccessibilityLabel("Wiki 文档树")
-        outline.columnAutoresizingStyle = .noColumnAutoresizing
+        outline.autoresizingMask = [.width]; outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         outline.target = self; outline.doubleAction = #selector(toggleFolder)
-        scroll.documentView = outline; scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
+        outline.backgroundColor = .clear
+        scroll.documentView = outline; scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false
         empty.textColor = AgentWorkbenchTheme.secondaryText; empty.font = .systemFont(ofSize: 12); empty.setAccessibilityLabel("Wiki 目录状态")
         let toolbar = NSStackView(views: [search, refresh]); toolbar.spacing = 4
         language.addItems(withTitles: ["简体中文", "English", "旧版"]); language.controlSize = .small; language.target = self; language.action = #selector(changeLanguage); language.setAccessibilityLabel("Wiki 语言")
         plan.controlSize = .small; plan.bezelStyle = .texturedRounded; plan.target = self; plan.action = #selector(editPlan); plan.setAccessibilityLabel("Wiki 生成规划")
         plan.title = ""; plan.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil); plan.toolTip = "规划"; plan.widthAnchor.constraint(equalToConstant: 25).isActive = true
-        more.controlSize = .small; more.setAccessibilityLabel("Wiki 更多操作"); more.addItem(withTitle: ""); more.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: nil); more.menu?.autoenablesItems = false
-        let update = NSMenuItem(title: "增量更新…", action: #selector(sharingAction(_:)), keyEquivalent: ""); update.target = self; update.representedObject = "update"; more.menu?.addItem(update)
-        let regenerate = NSMenuItem(title: "重新生成 Wiki…", action: #selector(sharingAction(_:)), keyEquivalent: ""); regenerate.target = self; regenerate.representedObject = "regenerate"; more.menu?.addItem(regenerate); more.menu?.addItem(.separator())
-        for (title, value) in [("导出项目知识", "knowledge-export"), ("从项目导入知识…", "knowledge-import"), ("恢复项目知识版本…", "knowledge-restore")] { let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value; more.menu?.addItem(item) }
-        more.menu?.addItem(.separator())
-        for (title, value) in [("导出 Wiki 到项目", "export"), ("从项目导入 Wiki…", "import"), ("恢复 Wiki 版本…", "restore"), ("打开共享目录", "open")] { let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value; more.menu?.addItem(item) }
-        more.menu?.addItem(.separator())
-        let citation = NSMenuItem(title: "自动引用 Wiki", action: #selector(sharingAction(_:)), keyEquivalent: ""); citation.target = self; citation.representedObject = "citation"; more.menu?.addItem(citation)
-        for (title, action) in [("自动更新", "auto-update"), ("自动导出", "auto-export")] { let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = action; more.menu?.addItem(item) }
-        more.widthAnchor.constraint(equalToConstant: 25).isActive = true
+        AgentWorkbenchTheme.toolbar(more, title: "Wiki 更多操作", symbol: "ellipsis")
+        more.target = self; more.action = #selector(showSharing); more.menu = sharing; sharing.autoenablesItems = false
+        let groups = [
+            [("增量更新…", "update"), ("重新生成 Wiki…", "regenerate")],
+            [("导出项目知识", "knowledge-export"), ("从项目导入知识…", "knowledge-import"), ("恢复项目知识版本…", "knowledge-restore")],
+            [("导出 Wiki 到项目", "export"), ("从项目导入 Wiki…", "import"), ("恢复 Wiki 版本…", "restore"), ("打开共享目录", "open")],
+            [("自动引用 Wiki", "citation"), ("自动更新", "auto-update"), ("自动导出", "auto-export")]
+        ]
+        for group in groups {
+            if !sharing.items.isEmpty { sharing.addItem(.separator()) }
+            for (title, value) in group {
+                let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: "")
+                item.target = self; item.representedObject = value; sharing.addItem(item)
+            }
+        }
         let options = NSStackView(views: [language, NSView(), plan, more]); options.spacing = 4
         for child in [toolbar, options, scroll, empty] { addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([toolbar.topAnchor.constraint(equalTo: topAnchor), toolbar.leadingAnchor.constraint(equalTo: leadingAnchor), toolbar.trailingAnchor.constraint(equalTo: trailingAnchor), refresh.widthAnchor.constraint(equalToConstant: 25), options.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 4), options.leadingAnchor.constraint(equalTo: leadingAnchor), options.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.topAnchor.constraint(equalTo: options.bottomAnchor, constant: 6), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor), empty.centerXAnchor.constraint(equalTo: scroll.centerXAnchor), empty.topAnchor.constraint(equalTo: scroll.topAnchor, constant: 12)])
@@ -130,19 +140,19 @@ import AppKit
     func setLanguage(_ value: String) { language.selectItem(at: ["zh", "en", "legacy"].firstIndex(of: value) ?? 0) }
     func setCitationState(_ enabled: Bool?, problem: String? = nil) {
         citationAvailable = enabled != nil
-        let item = more.itemArray.first { $0.representedObject as? String == "citation" }
+        let item = sharing.items.first { $0.representedObject as? String == "citation" }
         item?.state = enabled == true ? .on : .off; item?.toolTip = problem
     }
     func setSharingState(busy: Bool, writable: Bool, canRegenerate: Bool = false) {
         language.isEnabled = !busy; more.isEnabled = !busy; plan.isEnabled = !busy
-        for item in more.itemArray.dropFirst() where !item.isSeparatorItem {
+        for item in sharing.items where !item.isSeparatorItem {
             let action = item.representedObject as? String
             item.isEnabled = action == "citation" ? !busy && citationAvailable : !busy && selectedLanguage != "legacy" && (writable || action == "open") && (!["regenerate", "update"].contains(action ?? "") || canRegenerate) && (!["auto-update", "auto-export"].contains(action ?? "") || maintenanceAvailable)
         }
     }
     func setMaintenanceState(_ options: AgentWikiMaintenanceOptions?, problem: String? = nil) {
         maintenanceAvailable = options != nil
-        for (action, enabled) in [("auto-update", options?.autoUpdate), ("auto-export", options?.autoExport)] { let item = more.itemArray.first { $0.representedObject as? String == action }; item?.state = enabled == true ? .on : .off; item?.toolTip = problem }
+        for (action, enabled) in [("auto-update", options?.autoUpdate), ("auto-export", options?.autoExport)] { let item = sharing.items.first { $0.representedObject as? String == action }; item?.state = enabled == true ? .on : .off; item?.toolTip = problem }
     }
     func show(_ pages: [AgentWikiPage], selected: String?, root: String = ".bluefatfish/wiki") { self.pages = pages; selectedPath = selected; rootPath = root; rebuild(); scheduleRecoveredPosition() }
     private func rebuild() {
@@ -181,7 +191,8 @@ import AppKit
         }
         roots = ordered(roots)
         let depth = nodes.values.map { node -> Int in var depth = 0, parent = node.parent; while let item = parent { depth += 1; parent = item.parent }; return depth }.max() ?? 0
-        outline.outlineTableColumn?.width = max(165, CGFloat(depth) * 12 + 140)
+        outline.outlineTableColumn?.minWidth = CGFloat(depth) * 12 + 140
+        outline.sizeToFit()
         outline.reloadData()
         if !query.isEmpty { outline.expandItem(nil, expandChildren: true) }
         else { for path in expanded.sorted(by: { $0.count < $1.count }) { if let node = nodes[path] { outline.expandItem(node) } } }
@@ -203,6 +214,7 @@ import AppKit
     }
     @objc private func reloadCatalog() { onRefresh?() }
     @objc private func editPlan() { onPlan?() }
+    @objc private func showSharing() { sharing.popUp(positioning: nil, at: NSPoint(x: 0, y: more.bounds.height), in: more) }
     @objc private func sharingAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? String { onSharing?(value) } }
     @objc private func changeLanguage() { let value = selectedLanguage; if onLanguage?(value) == false { return } }
     @objc private func toggleFolder() { guard outline.clickedRow >= 0 else { return }; if let node = outline.item(atRow: outline.clickedRow) as? Node, !node.children.isEmpty { if outline.isItemExpanded(node) { outline.collapseItem(node) } else { outline.expandItem(node) } } }
@@ -240,6 +252,6 @@ import AppKit
     }
     var checkState: [String: Any] {
         guard AgentKnowledgePageHost.readbackEnabled || CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") || CommandLine.arguments.contains("--repo-wiki-overview-check") else { return [:] }
-        return ["language": selectedLanguage, "root": rootPath, "pages": pages.map { ["path": $0.path, "title": $0.title] }, "query": search.stringValue, "selected": selectedPath ?? "", "visible": (0..<outline.numberOfRows).compactMap { row -> [String: Any]? in guard let node = outline.item(atRow: row) as? Node else { return nil }; return ["path": node.path, "title": node.title, "directory": node.directory, "level": outline.level(forItem: node), "expanded": outline.isItemExpanded(node)] }, "emptyVisible": !empty.isHidden, "citationAvailable": citationAvailable, "citationEnabled": more.itemArray.first(where: { $0.representedObject as? String == "citation" })?.state == .on]
+        return ["language": selectedLanguage, "root": rootPath, "pages": pages.map { ["path": $0.path, "title": $0.title] }, "query": search.stringValue, "selected": selectedPath ?? "", "visible": (0..<outline.numberOfRows).compactMap { row -> [String: Any]? in guard let node = outline.item(atRow: row) as? Node else { return nil }; return ["path": node.path, "title": node.title, "directory": node.directory, "level": outline.level(forItem: node), "expanded": outline.isItemExpanded(node)] }, "emptyVisible": !empty.isHidden, "citationAvailable": citationAvailable, "citationEnabled": sharing.items.first(where: { $0.representedObject as? String == "citation" })?.state == .on]
     }
 }

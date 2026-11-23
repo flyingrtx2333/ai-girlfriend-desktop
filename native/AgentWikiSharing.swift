@@ -185,8 +185,12 @@ struct AgentWikiPublication {
         return prepared.snapshot.metadata.documents.count
     }
     static func previewWikiImport(store: AgentStore, taskID: String, language: String) async throws -> AgentWikiImportPreview {
-        let scope = try storage(store, taskID, language, writing: true), relative = try sharingPath(language), file = try target(scope.files, relative + "/" + transferMetadata)
-        let bytes = try scope.files.readData(file, maximum: 4_000_000), metadata = try JSONDecoder().decode(AgentWikiTransfer.self, from: bytes)
+        let scope = try storage(store, taskID, language, writing: true), relative = try sharingPath(language)
+        let metadataPath = relative + "/" + transferMetadata, file = try target(scope.files, metadataPath)
+        let bytes: Data
+        do { bytes = try scope.files.readData(file, maximum: 4_000_000) }
+        catch let error as POSIXError where error.code == .ENOENT { throw PetError("缺少 Wiki 导入文件 " + metadataPath) }
+        let metadata = try JSONDecoder().decode(AgentWikiTransfer.self, from: bytes)
         guard metadata.sourceCommit == nil || validCommit(metadata.sourceCommit!) else { throw PetError("共享 Wiki 的 Git 提交基线无效") }
         guard metadata.language == language else { throw PetError("共享 Wiki 不是当前选择的语言") }
         _ = try relativeDocuments(metadata, root: relative + "/content")

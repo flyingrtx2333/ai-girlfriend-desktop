@@ -72,8 +72,13 @@ import UniformTypeIdentifiers
     override var minimumSettingsContentHeight: CGFloat { sections.selectedSegment == 5 ? 220 : super.minimumSettingsContentHeight }
     var workspaceDocumentURL: URL? { documentOnly ? openedFile ?? selection.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil } : nil }
     private let itemPicker = NSPopUpButton(), filesToggle = NSButton(), taskFileArea = NSView(), taskNavigation = NSView(), taskSecondaryActions = NSStackView()
-    private var wideNavigation: [NSLayoutConstraint] = [], compactNavigation: [NSLayoutConstraint] = [], navigationWidth: NSLayoutConstraint!, navigationHeight: NSLayoutConstraint!, documentLeading: NSLayoutConstraint!, documentTop: NSLayoutConstraint!
-    private var compactTaskLayout: Bool?, filesRequested = false
+    private let taskPicker = NSStackView(), documentPane = NSStackView()
+    private var navigationBody: NSView?
+    private enum CatalogLayout { case beside, above, full }
+    private var catalogLayout: CatalogLayout?
+    private var wideNavigation: [NSLayoutConstraint] = [], compactNavigation: [NSLayoutConstraint] = [], fullNavigation: [NSLayoutConstraint] = []
+    private var navigationWidth: NSLayoutConstraint!, navigationHeight: NSLayoutConstraint!, documentLeading: NSLayoutConstraint!, documentTop: NSLayoutConstraint!, filesToggleWidth: NSLayoutConstraint!
+    private var filesRequested = false, wikiDirectoryRequested = true
     func requireDeletionAllowed(_ ids: Set<String>) throws {
         if ids.contains(taskID) { try markdown.finishEditing() }
         if ids.contains(taskID), dirty || saving || wikiSharingTask != nil || wikiReviewWindow?.hasPendingOperation == true || wikiPlanWindow?.hasUnsavedChanges == true { throw PetError("请先保存或关闭此任务未保存或正在处理的记录窗口") }
@@ -113,7 +118,6 @@ import UniformTypeIdentifiers
         table.headerView = nil; table.rowHeight = 31; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("任务产物与来源")
         list.documentView = table; list.hasVerticalScroller = true
         let navigation = taskNavigation
-        for child in [list, wikiTree] { navigation.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: navigation.topAnchor), child.leadingAnchor.constraint(equalTo: navigation.leadingAnchor), child.trailingAnchor.constraint(equalTo: navigation.trailingAnchor), child.bottomAnchor.constraint(equalTo: navigation.bottomAnchor)]) }
         wikiTree.canSelect = { [weak self] path in guard let self else { return false }; return path == self.selection || self.canLeave() }
         wikiTree.onSelect = { [weak self] path in guard let self, path != self.selection else { return }; self.loadSelection(path) }
         wikiTree.onRefresh = { [weak self] in self?.refreshWikiCatalog() }
@@ -150,7 +154,8 @@ import UniformTypeIdentifiers
         video.isHidden = true
         for child in [viewer, markdown, video] { pane.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: pane.topAnchor), child.leadingAnchor.constraint(equalTo: pane.leadingAnchor), child.trailingAnchor.constraint(equalTo: pane.trailingAnchor), child.bottomAnchor.constraint(equalTo: pane.bottomAnchor)]) }
         video.onPlaybackChange = { [weak self] in self?.onWorkspaceChange?() }
-        let documentPane = NSStackView(views: [readingToolbar, pane]); documentPane.orientation = .vertical; documentPane.distribution = .fill; documentPane.spacing = 6
+        documentPane.addArrangedSubview(readingToolbar); documentPane.addArrangedSubview(pane)
+        documentPane.orientation = .vertical; documentPane.distribution = .fill; documentPane.spacing = 6
         if memoryCatalogScope != nil {
             memoryPicker.target = self; memoryPicker.action = #selector(selectMemoryFile)
             memoryPicker.setAccessibilityLabel("记忆文件"); memoryPicker.identifier = .init("memory-files")
@@ -183,16 +188,18 @@ import UniformTypeIdentifiers
             let actions = NSStackView(views: [taskSecondaryActions, primary]); actions.orientation = .vertical; actions.alignment = .leading; actions.spacing = 8
             for row in [taskSecondaryActions, primary] { row.widthAnchor.constraint(equalTo: actions.widthAnchor).isActive = true }
             itemPicker.setAccessibilityLabel("记录中的文件与来源"); itemPicker.target = self; itemPicker.action = #selector(selectTaskItem); itemPicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); itemPicker.cell?.lineBreakMode = .byTruncatingMiddle
-            filesToggle.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil); filesToggle.isBordered = false; filesToggle.target = self; filesToggle.action = #selector(toggleTaskFiles); filesToggle.setAccessibilityLabel("显示记录列表"); filesToggle.widthAnchor.constraint(equalToConstant: 26).isActive = true
-            let picker = NSStackView(views: [itemPicker, filesToggle]); picker.spacing = 8; picker.isHidden = documentOnly
+            filesToggle.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil); filesToggle.isBordered = false; filesToggle.target = self; filesToggle.action = #selector(toggleTaskFiles)
+            filesToggleWidth = filesToggle.widthAnchor.constraint(equalToConstant: 26); filesToggleWidth.isActive = true
+            taskPicker.addArrangedSubview(itemPicker); taskPicker.addArrangedSubview(filesToggle); taskPicker.spacing = 8
             for child in [navigation, documentPane] { taskFileArea.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
             navigationWidth = navigation.widthAnchor.constraint(equalToConstant: 165); navigationHeight = navigation.heightAnchor.constraint(equalToConstant: 86)
             documentLeading = documentPane.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: 12); documentTop = documentPane.topAnchor.constraint(equalTo: navigation.bottomAnchor, constant: 8)
             wideNavigation = [navigationWidth, navigation.bottomAnchor.constraint(equalTo: taskFileArea.bottomAnchor), documentLeading, documentPane.topAnchor.constraint(equalTo: taskFileArea.topAnchor)]
             compactNavigation = [navigationHeight, navigation.trailingAnchor.constraint(equalTo: taskFileArea.trailingAnchor), documentTop, documentPane.leadingAnchor.constraint(equalTo: taskFileArea.leadingAnchor)]
+            fullNavigation = [navigation.trailingAnchor.constraint(equalTo: taskFileArea.trailingAnchor), navigation.bottomAnchor.constraint(equalTo: taskFileArea.bottomAnchor)]
             NSLayoutConstraint.activate([navigation.leadingAnchor.constraint(equalTo: taskFileArea.leadingAnchor), navigation.topAnchor.constraint(equalTo: taskFileArea.topAnchor), documentPane.trailingAnchor.constraint(equalTo: taskFileArea.trailingAnchor), documentPane.bottomAnchor.constraint(equalTo: taskFileArea.bottomAnchor)])
-            let column = NSStackView(views: [sections, picker, taskFileArea, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
-            for child in [sections, picker, taskFileArea, actions] { child.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+            let column = NSStackView(views: [sections, taskPicker, taskFileArea, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
+            for child in [sections, taskPicker, taskFileArea, actions] { child.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
             content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
             taskFileArea.setContentHuggingPriority(.defaultLow, for: .vertical)
@@ -226,19 +233,55 @@ import UniformTypeIdentifiers
     override func pageDidLayout() {
         defer { scheduleTextViewport(); markdown.scheduleViewRecovery() }
         guard taskHosted, let content = pageContentView, documentLeading != nil else { return }
-        let compact = content.bounds.width < 700, shown = !documentOnly && !items.isEmpty && filesRequested
-        if compactTaskLayout != compact { NSLayoutConstraint.deactivate(wideNavigation + compactNavigation); NSLayoutConstraint.activate(compact ? compactNavigation : wideNavigation); compactTaskLayout = compact }
-        taskNavigation.isHidden = !shown; navigationWidth.constant = shown ? 165 : 0; navigationHeight.constant = shown ? min(100, max(56, floor(content.bounds.height * 0.16))) : 0
+        let wiki = sections.selectedSegment == 6
+        let emptyWiki = wiki && items.isEmpty && selection == nil && unavailableWiki == nil
+        let shown = !documentOnly && (wiki ? emptyWiki || wikiDirectoryRequested : !items.isEmpty && filesRequested)
+        let layout: CatalogLayout = emptyWiki ? .full : content.bounds.width < (wiki ? 540 : 700) ? .above : .beside
+        if !shown { attachNavigation(nil) }
+        if layout != catalogLayout {
+            NSLayoutConstraint.deactivate(wideNavigation + compactNavigation + fullNavigation)
+            switch layout {
+            case .beside: NSLayoutConstraint.activate(wideNavigation)
+            case .above: NSLayoutConstraint.activate(compactNavigation)
+            case .full: NSLayoutConstraint.activate(fullNavigation)
+            }
+            catalogLayout = layout
+        }
+        taskPicker.isHidden = documentOnly || emptyWiki; documentPane.isHidden = emptyWiki
+        taskNavigation.isHidden = !shown
+        navigationWidth.constant = shown ? (wiki ? 184 : 165) : 0
+        let height = content.bounds.height
+        let catalogHeight = wiki ? min(wikiTree.preferredCompactHeight, max(138, floor(height * 0.36))) : min(100, max(56, floor(height * 0.16)))
+        navigationHeight.constant = shown ? catalogHeight : 0
         documentLeading.constant = shown ? 12 : 0; documentTop.constant = shown ? 8 : 0
-        filesToggle.setAccessibilityLabel(shown ? "隐藏记录列表" : "显示记录列表")
+        if shown { attachNavigation(wiki ? wikiTree : list) }
+        let title = wiki ? "目录" : ""
+        if filesToggle.title != title {
+            filesToggle.title = title; filesToggle.imagePosition = wiki ? .imageLeading : .imageOnly; filesToggleWidth.constant = wiki ? 58 : 26
+        }
+        let label = (shown ? "隐藏" : "显示") + (wiki ? " Wiki 目录" : "记录列表")
+        filesToggle.setAccessibilityLabel(label); filesToggle.toolTip = label
         taskSecondaryActions.isHidden = !taskSecondaryActions.arrangedSubviews.contains { ($0 is NSControl) && !$0.isHidden }
     }
+    private func attachNavigation(_ view: NSView?) {
+        guard navigationBody !== view else { return }
+        navigationBody?.removeFromSuperview(); navigationBody = view
+        guard let view else { return }
+        taskNavigation.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([view.topAnchor.constraint(equalTo: taskNavigation.topAnchor), view.leadingAnchor.constraint(equalTo: taskNavigation.leadingAnchor),
+                                     view.trailingAnchor.constraint(equalTo: taskNavigation.trailingAnchor), view.bottomAnchor.constraint(equalTo: taskNavigation.bottomAnchor)])
+    }
     private func updateTaskItemPicker() {
-        guard taskHosted else { return }; itemPicker.removeAllItems()
+        let wiki = sections.selectedSegment == 6
+        guard taskHosted else {
+            attachNavigation(taskNavigation.isHidden ? nil : wiki ? wikiTree : list)
+            return
+        }
+        itemPicker.setAccessibilityLabel(wiki ? "Wiki 文档" : "记录中的文件与来源"); itemPicker.removeAllItems()
         for item in items { itemPicker.addItem(withTitle: item.title); itemPicker.lastItem?.representedObject = item.value; itemPicker.lastItem?.toolTip = item.value }
         if let selection, let index = items.firstIndex(where: { $0.value == selection }) { itemPicker.selectItem(at: index) }
         if items.isEmpty { itemPicker.addItem(withTitle: sections.selectedSegment == 0 ? "计划" : "暂无记录") }
-        itemPicker.isEnabled = !items.isEmpty; filesToggle.isEnabled = !items.isEmpty
+        itemPicker.isEnabled = !items.isEmpty; filesToggle.isEnabled = wiki || !items.isEmpty
         if documentOnly { newOffice.isHidden = true; openOffice.isHidden = true }; pageDidLayout()
     }
     private func updateMemoryPicker() {
@@ -312,7 +355,11 @@ import UniformTypeIdentifiers
         catch { state.stringValue = error.localizedDescription }
     }
     @objc private func selectTaskItem() { if let value = itemPicker.selectedItem?.representedObject as? String { selectItem(section: sections.selectedSegment, value: value); updateTaskItemPicker() } }
-    @objc private func toggleTaskFiles() { filesRequested.toggle(); pageDidLayout() }
+    @objc private func toggleTaskFiles() {
+        if sections.selectedSegment == 6 { wikiDirectoryRequested.toggle() }
+        else { filesRequested.toggle() }
+        pageDidLayout()
+    }
     func prepareWorkspaceNavigation() -> Bool {
         guard wikiReviewWindow?.hasPendingOperation != true else { state.stringValue = "请等待当前知识操作完成"; return false }
         guard !saving else { state.stringValue = "正在保存…"; return false }
@@ -696,7 +743,6 @@ import UniformTypeIdentifiers
         allowInstruction.isHidden = true; revokeInstruction.isHidden = true
         generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil && wikiTree.selectedLanguage != "legacy"
         wikiCards.isHidden = sections.selectedSegment != 6 || onOpenKnowledgeCards == nil
-        wikiTree.isHidden = sections.selectedSegment != 6; list.isHidden = !wikiTree.isHidden
         newOffice.isHidden = sections.selectedSegment != 1; openOffice.isHidden = newOffice.isHidden
         if sections.selectedSegment == 5 {
             let existing = memoryTaskID != nil ? AgentMemoryScope.allCases : memoryWorkspace == nil ? [.global, .userInstructions] : [.project, .instructions, .localInstructions]
@@ -778,6 +824,7 @@ import UniformTypeIdentifiers
             wikiTree.show(pages, selected: document, root: view.root)
             if selection != nil, document == nil { state.stringValue = dirty ? "文档已移出目录，草稿已保留" : "文档已移出目录" }
             else if selection == nil, let first = items.first { _ = wikiTree.select(first.value) }
+            updateTaskItemPicker()
         } catch { state.stringValue = error.localizedDescription }
     }
     private func requireWikiFile(_ file: URL, task: AgentTaskRecord) throws {
@@ -1580,7 +1627,7 @@ import UniformTypeIdentifiers
         value["taskHosted"] = taskHosted; value["documentOnly"] = documentOnly; value["visible"] = isPageVisible; value["items"] = items.map { ["title": $0.title, "value": $0.value] }
         if !video.isHidden { value["video"] = await videoPreviewReadback() }
         value["checks"] = ["documentUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === presentingWindow && presentingWindow?.isVisible == true,
-            "recordWindowStaysHidden": window?.isVisible != true, "documentHasUsableWidth": taskFileArea.bounds.width - (taskNavigation.isHidden || compactTaskLayout == true ? 0 : taskNavigation.bounds.width + 12) >= 300,
+            "recordWindowStaysHidden": window?.isVisible != true, "documentHasUsableWidth": documentPane.isHidden || documentPane.bounds.width >= 300,
             "documentHasUsableHeight": taskFileArea.bounds.height >= 140,
             "catalogFitsAvailableWidth": sections.isHidden || sections.fittingSize.width <= (pageContentView?.bounds.width ?? 0) - 28,
             "documentTabHasNoCatalog": !documentOnly || sections.isHidden && itemPicker.isHiddenOrHasHiddenAncestor]
