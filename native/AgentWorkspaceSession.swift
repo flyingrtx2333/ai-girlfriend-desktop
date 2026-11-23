@@ -503,6 +503,10 @@ private actor AgentWorkspaceJournal {
                 for (_, _, controller) in editors {
                     if let browser = controller as? AgentBrowserWindow, preservedEditors.contains(ObjectIdentifier(browser)),
                        let annotation = browser.recoveryAnnotation, annotation.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(annotation)) }
+                    if let canvas = controller as? AgentCanvasWindow, preservedEditors.contains(ObjectIdentifier(canvas)),
+                       let annotation = canvas.recoveryAnnotation, annotation.settingsHostWindow != nil, annotation.canPreserveForQuit {
+                        preservedEditors.insert(ObjectIdentifier(annotation))
+                    }
                     if let git = controller as? AgentGitWindow, preservedEditors.contains(ObjectIdentifier(git)) {
                         if let remote = git.recoveryRemoteForm, remote.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(remote)) }
                         if let creation = git.recoveryWorktreeForm, creation.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(creation)) }

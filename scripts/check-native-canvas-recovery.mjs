@@ -35,6 +35,8 @@ for (const stage of ['seed', 'reopen']) {
   await writeFile(path.join(output, stage + '-result.json'), JSON.stringify(result, null, 2) + '\n');
   if (!success) { process.exitCode = 1; break; }
   const fixture = await json(path.join(output, 'canvas-recovery-fixture.json')), independent = {};
+  const annotationFile = path.join(output, 'saved-canvas-annotation.json');
+  const initialAnnotation = stage === 'reopen' && fixture.annotationImageHash ? await json(annotationFile) : null;
   for (const key of ['a', 'b', 'c', 'd']) {
     const owner = key === 'c' ? fixture.second : fixture.first, task = await json(path.join(output, 'profile/agent', owner + '.json'));
     const record = task.canvases.find(value => value.id === fixture.ids[key]);
@@ -48,7 +50,26 @@ for (const stage of ['seed', 'reopen']) {
     const pageFile = path.join(output, 'profile/workspace-recovery', fixture.windowID, 'pages', fixture.tabs[key] + '.json');
     const page = await json(pageFile), state = JSON.parse(Buffer.from(page.state, 'base64'));
     independent[key + 'PrivateWindowStateReferencesActualCanvas'] = page.kind === 'canvas' && page.taskID === owner && page.asset == null && state.canvasID === fixture.ids[key] && (await stat(pageFile)).mode % 0o1000 === 0o600;
-    independent[key + 'FullTaskComposerRetained'] = task.draft === '保留原任务输入 PUBLIC_CANVAS_INPUT_184';
+    const annotationSuffix = owner === fixture.first && initialAnnotation
+      ? '\n画布「' + initialAnnotation.draft.source.title + '」的批注（源码版本 ' + initialAnnotation.sourceHash.slice(0, 12) + '）：' + initialAnnotation.draft.note
+      : '';
+    independent[key + 'FullTaskComposerRetained'] = task.draft === '保留原任务输入 PUBLIC_CANVAS_INPUT_184' + annotationSuffix;
+    if (key === 'b' && fixture.annotationImageHash) {
+      if (stage === 'seed') {
+        const annotation = state.annotation;
+        independent.inlineAnnotationStoredWithOriginalImageAndVersion = page.dirty && annotation?.draft.source.tabID === record.id &&
+          annotation.sourceHash === record.hash && hash(Buffer.from(annotation.draft.image, 'base64')) === fixture.annotationImageHash &&
+          annotation.draft.marks.length === 1 && !task.draftAttachmentIDs?.length;
+        if (annotation) await writeFile(annotationFile, JSON.stringify(annotation, null, 2) + '\n');
+      } else {
+        const attachment = task.attachments?.find(item => item.id === task.draftAttachmentIDs?.[0]);
+        const png = attachment && await readFile(path.join(output, 'profile/agent', owner, 'attachments', attachment.id, 'source.png'));
+        independent.resumedAnnotationExportedOnceWithOriginalCanvasVersion = !page.dirty && state.annotation == null &&
+          task.draftAttachmentIDs?.length === 1 && attachment?.canvasCapture?.canvasID === record.id &&
+          attachment.canvasCapture.sourceHash === initialAnnotation.sourceHash && attachment.canvasCapture.annotations === 1 &&
+          png && hash(png) === attachment.sha256;
+      }
+    }
   }
   independent.projectFileUnchanged = await readFile(path.join(output, 'public-canvas-project/README.md'), 'utf8') === 'PUBLIC_CANVAS_SOURCE_SENTINEL_263\n';
   const proof = { success: Object.values(independent).every(Boolean), checks: independent };

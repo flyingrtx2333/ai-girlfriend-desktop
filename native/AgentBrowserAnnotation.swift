@@ -19,7 +19,8 @@ import AppKit
     init(shot: AgentBrowserShot) {
         self.shot = shot; super.init(frame: .zero)
         setAccessibilityElement(true); setAccessibilityRole(.image); setAccessibilityLabel("网页标注画布")
-        setAccessibilityHelp("选择绘图工具后在图片上拖动。元素模式可点选截图里的按钮、链接或标题。")
+        let help = "选择绘图工具后在图片上拖动。"
+        setAccessibilityHelp(shot.annotationTargets.isEmpty ? help : help + "元素模式可点选截图里的按钮、链接或标题。")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func draw(_ dirtyRect: NSRect) {
@@ -157,6 +158,7 @@ import AppKit
     private var job: Task<Void, Never>?, closed = false, submitted = false, discardAccepted = false
     private var recoveryImage: Data?, restoredNoteSelection: AgentBrowserRecoveryState.Selection?
     private var restoreNoteFocus = false
+    private var noteWasFocused = false
     var onWorkspaceChange: (() -> Void)?
     var workspaceIsClosed: Bool { closed }
     var hasIndependentWindow: Bool { !closed && settingsHostWindow == nil }
@@ -225,13 +227,21 @@ import AppKit
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func prepareWorkspaceNavigation() -> Bool {
-        guard job == nil || closed else { state.stringValue = "正在添加标注，请稍候"; return false }; return true
+        guard job == nil || closed else { state.stringValue = "正在添加标注，请稍候"; return false }
+        rememberNoteFocus()
+        return true
+    }
+    private func rememberNoteFocus() {
+        guard isPageVisible, !restoreNoteFocus else { return }
+        noteWasFocused = note.currentEditor().map { presentingWindow?.firstResponder === $0 } == true
     }
     override func canLeaveSettings() -> Bool {
         if closed || submitted || discardAccepted { return true }
         guard prepareWorkspaceNavigation(), presentingWindow?.hasBlockingDialog != true else { return false }
         guard hasPendingChanges else { return true }
-        discardAccepted = AgentUnsavedChanges.discard("放弃未添加的网页标注？", detail: canvas.shot.source.title, discardTitle: "放弃标注"); return discardAccepted
+        let kind = canvas.shot.source.method == "canvas" ? "画布批注" : "网页标注"
+        discardAccepted = AgentUnsavedChanges.discard("放弃未添加的\(kind)？", detail: canvas.shot.source.title, discardTitle: "放弃标注")
+        return discardAccepted
     }
     override func settingsWillLeave() { finishClose() }
     override func close() { if canLeaveSettings() { super.close() } }
@@ -327,18 +337,20 @@ import AppKit
     func captureWorkspaceRecovery() throws -> AgentBrowserRecoveryState.Annotation {
         guard canPreserveForQuit else { throw PetError("网页标注尚在添加，请稍候") }
         if recoveryImage == nil { recoveryImage = try canvas.shot.png() }
+        rememberNoteFocus()
         let editor = note.currentEditor() as? NSTextView
         let selected = editor.map { AgentBrowserRecoveryState.Selection(location: $0.selectedRange().location, length: $0.selectedRange().length) }
         return .init(source: canvas.shot.source, image: recoveryImage!, marks: canvas.recoveryMarks(), note: editor?.string ?? note.stringValue,
                      tool: canvas.selectsElements ? AgentBrowserMark.Kind.rectangle.rawValue : mode.selectedSegment,
-                     focusNote: editor != nil && presentingWindow?.firstResponder === editor, selection: selected ?? restoredNoteSelection,
+                     focusNote: noteWasFocused, selection: selected ?? restoredNoteSelection,
                      frame: hasIndependentWindow ? window.map { .init($0) } : nil, viewport: scroll.viewport.scale > 1 ? scroll.viewport : nil,
                      elementTargets: canvas.shot.annotationTargets.isEmpty ? nil : canvas.shot.annotationTargets,
                      elementTool: canvas.selectsElements ? true : nil)
     }
     func restoreWorkspaceRecovery(_ value: AgentBrowserRecoveryState.Annotation) {
         recoveryImage = value.image; mode.selectedSegment = value.elementTool == true ? elementSegment : value.tool
-        canvas.restoreMarks(value.marks); note.stringValue = value.note; restoredNoteSelection = value.selection; restoreNoteFocus = value.focusNote; updateControls()
+        canvas.restoreMarks(value.marks); note.stringValue = value.note; restoredNoteSelection = value.selection
+        noteWasFocused = value.focusNote; restoreNoteFocus = value.focusNote; updateControls()
         applyTool()
         let viewport = value.viewport ?? Viewport()
         zoom.selectItem(at: Viewport.scales.firstIndex(of: viewport.scale) ?? 0)

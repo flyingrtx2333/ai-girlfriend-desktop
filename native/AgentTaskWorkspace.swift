@@ -213,7 +213,7 @@ import AppKit
             let record = onResolveCanvas?(id, canvasID)
             if let canvas = page as? AgentCanvasWindow, canvas.selectedID == canvasID { title = canvas.window?.title ?? title }
             else if let record { title = "画布 · " + record.title }
-            if let record { dirty = record.draft != nil }
+            if let record { dirty = dirty || record.draft != nil }
         }
         else if case .editResend(let messageID) = root {
             if let editor = page as? AgentEditResendWindow { title = editor.window?.title ?? title }

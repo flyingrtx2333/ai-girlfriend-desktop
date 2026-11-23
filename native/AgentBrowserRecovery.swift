@@ -30,6 +30,50 @@ struct AgentBrowserRecoveryState: Codable, Equatable, Sendable {
         var viewport: Viewport? = nil
         var elementTargets: [AgentBrowserAnnotationTarget]?
         var elementTool: Bool?
+        var dirty: Bool { !marks.isEmpty || !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+        func validate() throws {
+            func require(_ valid: Bool) throws {
+                if !valid { throw PetError("标注恢复记录无效，原草稿已保留") }
+            }
+            try require(UUID(uuidString: source.tabID) != nil && source.title.utf8.count <= 4096 &&
+                source.created.timeIntervalSince1970.isFinite && source.annotations == 0 && source.annotatedElements == nil)
+            try require([source.viewportWidth, source.viewportHeight].allSatisfy { $0.isFinite && $0 > 0 && $0 <= 100_000 })
+            try require(image.count <= 8_000_000 && image.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]))
+            try require(note.utf8.count <= 64_000 && !note.contains("\0") && selection?.valid(in: note) != false &&
+                AgentBrowserMark.Kind(rawValue: tool) != nil)
+            try require(marks.count <= 10_000 && marks.reduce(0, { $0 + $1.points.count }) <= 200_000)
+            try require(frame?.valid != false && viewport?.valid != false)
+            let targets = elementTargets ?? []
+            try require(targets.count <= AgentBrowserAnnotationTarget.limit && targets.allSatisfy(\.isValid))
+            if elementTool == true { try require(!targets.isEmpty && tool == AgentBrowserMark.Kind.rectangle.rawValue) }
+            for mark in marks {
+                try require(mark.points.count >= 2 && (mark.kind == .pen || mark.points.count == 2) &&
+                    mark.points.allSatisfy { $0.x.isFinite && $0.y.isFinite && (0...1).contains($0.x) && (0...1).contains($0.y) })
+                if let element = mark.element { try require(mark.kind == .rectangle && element.corners == mark.points && targets.contains(element)) }
+            }
+        }
+
+        static func validateFields(_ value: Any) throws {
+            func object(_ value: Any, _ names: [String]) throws -> [String: Any] {
+                guard let result = value as? [String: Any], Set(result.keys).isSubset(of: Set(names)) else {
+                    throw PetError("标注恢复记录包含未知字段，原草稿已保留")
+                }
+                return result
+            }
+            let a = try object(value, ["source", "image", "marks", "note", "tool", "focusNote", "selection", "frame", "viewport", "elementTargets", "elementTool"])
+            _ = try object(a["source"] ?? NSNull(), ["tabID", "url", "title", "created", "viewportWidth", "viewportHeight", "annotations", "method"])
+            if let selection = a["selection"], !(selection is NSNull) { _ = try object(selection, ["location", "length"]) }
+            if let frame = a["frame"], !(frame is NSNull) { _ = try object(frame, ["x", "y", "width", "height"]) }
+            if let viewport = a["viewport"], !(viewport is NSNull) { _ = try object(viewport, ["scale", "x", "y"]) }
+            let elementFields = ["role", "label", "x", "y", "width", "height"]
+            for target in a["elementTargets"] as? [Any] ?? [] { _ = try object(target, elementFields) }
+            for value in a["marks"] as? [Any] ?? [] {
+                let mark = try object(value, ["kind", "points", "element"])
+                if let element = mark["element"], !(element is NSNull) { _ = try object(element, elementFields) }
+            }
+        }
+
         @MainActor func shot() throws -> AgentBrowserShot {
             guard let encoded = CGImageSourceCreateWithData(image as CFData, nil), CGImageSourceGetCount(encoded) == 1,
                   let properties = CGImageSourceCopyPropertiesAtIndex(encoded, 0, nil) as? [CFString: Any],
@@ -60,21 +104,9 @@ struct AgentBrowserRecoveryState: Codable, Equatable, Sendable {
             try page.forms?.validate(for: page.url)
         }
         if let annotation {
-            let source = annotation.source
-            _ = try AgentBrowser.url(source.url)
-            try require(UUID(uuidString: source.tabID) != nil && source.title.utf8.count <= 4096 && source.created.timeIntervalSince1970.isFinite && source.annotations == 0)
-            try require([source.viewportWidth, source.viewportHeight].allSatisfy { $0.isFinite && $0 > 0 && $0 <= 100_000 } && ["own-window", "webkit-software"].contains(source.method ?? ""))
-            try require(annotation.image.count <= 8_000_000 && annotation.image.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]))
-            try require(annotation.note.utf8.count <= 64_000 && !annotation.note.contains("\0") && annotation.selection?.valid(in: annotation.note) != false && AgentBrowserMark.Kind(rawValue: annotation.tool) != nil)
-            try require(annotation.marks.count <= 10_000 && annotation.marks.reduce(0, { $0 + $1.points.count }) <= 200_000)
-            try require(annotation.frame?.valid != false && annotation.viewport?.valid != false)
-            let targets = annotation.elementTargets ?? []
-            try require(targets.count <= AgentBrowserAnnotationTarget.limit && targets.allSatisfy(\.isValid))
-            if annotation.elementTool == true { try require(!targets.isEmpty && annotation.tool == AgentBrowserMark.Kind.rectangle.rawValue) }
-            for mark in annotation.marks {
-                try require(mark.points.count >= 2 && (mark.kind == .pen || mark.points.count == 2) && mark.points.allSatisfy { $0.x.isFinite && $0.y.isFinite && (0...1).contains($0.x) && (0...1).contains($0.y) })
-                if let element = mark.element { try require(mark.kind == .rectangle && element.corners == mark.points && targets.contains(element)) }
-            }
+            _ = try AgentBrowser.url(annotation.source.url)
+            try require(["own-window", "webkit-software"].contains(annotation.source.method ?? ""))
+            try annotation.validate()
         }
     }
     static func decode(_ page: AgentWorkspaceRecovery.Page) throws -> Self {
@@ -92,28 +124,16 @@ struct AgentBrowserRecoveryState: Codable, Equatable, Sendable {
                 for value in form["values"] as? [Any] ?? [] { _ = try object(value, ["value", "checked", "selected"]) }
             }
         }
-        if let value = root["annotation"], !(value is NSNull) {
-            let a = try object(value, ["source", "image", "marks", "note", "tool", "focusNote", "selection", "frame", "viewport", "elementTargets", "elementTool"])
-            _ = try object(a["source"] ?? NSNull(), ["tabID", "url", "title", "created", "viewportWidth", "viewportHeight", "annotations", "method"])
-            try selection(a["selection"])
-            if let frame = a["frame"], !(frame is NSNull) { _ = try object(frame, ["x", "y", "width", "height"]) }
-            if let viewport = a["viewport"], !(viewport is NSNull) { _ = try object(viewport, ["scale", "x", "y"]) }
-            let elementFields = ["role", "label", "x", "y", "width", "height"]
-            for target in a["elementTargets"] as? [Any] ?? [] { _ = try object(target, elementFields) }
-            for value in a["marks"] as? [Any] ?? [] {
-                let mark = try object(value, ["kind", "points", "element"])
-                if let element = mark["element"], !(element is NSNull) { _ = try object(element, elementFields) }
-            }
-        }
+        if let value = root["annotation"], !(value is NSNull) { try Annotation.validateFields(value) }
         let state = try JSONDecoder().decode(Self.self, from: page.state); try state.validate()
-        guard state.taskID == page.taskID, page.dirty == (state.annotation.map { !$0.marks.isEmpty || !$0.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false) else { throw PetError("浏览器恢复归属或标注状态不匹配") }
+        guard state.taskID == page.taskID, page.dirty == (state.annotation?.dirty ?? false) else { throw PetError("浏览器恢复归属或标注状态不匹配") }
         return state
     }
     func encodedPage() throws -> AgentWorkspaceRecovery.Page {
         try validate(); let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(self)
         guard data.count <= 12_000_000 else { throw PetError("浏览器恢复记录过大，请先添加标注或关闭部分网页；原记录已保留") }
-        return .init(taskID: taskID, kind: "browser", state: data, dirty: annotation.map { !$0.marks.isEmpty || !$0.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false)
+        return .init(taskID: taskID, kind: "browser", state: data, dirty: annotation?.dirty ?? false)
     }
 }
 
