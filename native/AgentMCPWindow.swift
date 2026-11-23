@@ -354,13 +354,53 @@ import UniformTypeIdentifiers
         }
         refreshState()
     }
-    private func reload(_ id: String? = nil) {
+    private func reload(_ id: String? = nil, afterSaving position: AgentSettingsDraftViewport.State? = nil) {
         items = service.availableServers(workspace: workspace); rebuildRows(); let next = items.first { $0.id == (id ?? selected?.id) } ?? items.first
-        select(next?.id); if let next { open(next) } else { selected = nil; creating = false; dirty = false; editor.string = ""; tools.string = ""; refreshState() }
+        select(next?.id)
+        if let next { open(next, afterSaving: next.id == id ? position : nil) }
+        else { selected = nil; creating = false; dirty = false; editor.string = ""; tools.string = ""; refreshState() }
     }
-    private func open(_ server: AgentMCPServer) {
-        do { editor.string = try service.document(server); selected = server; creating = false; dirty = false; draftViewport.reset(); prepareConfiguration(); tools.string = ""; editor.undoManager?.removeAllActions(); showTools(); refreshState() }
-        catch { state.stringValue = error.localizedDescription }
+    private func open(_ server: AgentMCPServer, afterSaving position: AgentSettingsDraftViewport.State? = nil) {
+        do {
+            let document = try service.document(server)
+            let keepsJSON = position != nil && configurationKind.selectedSegment == 1 && matchesSavedJSON(document)
+            if !keepsJSON {
+                editor.string = document
+                editor.undoManager?.removeAllActions()
+            }
+            selected = server; creating = false; dirty = false
+            draftViewport.reset(); prepareConfiguration(); tools.string = ""; showTools(); refreshState()
+            if let position {
+                if keepsJSON { try? draftViewport.restore(position) }
+                else if configurationKind.selectedSegment == 0 { resumeSavedForm(position) }
+            }
+        } catch { state.stringValue = error.localizedDescription }
+    }
+    private func matchesSavedJSON(_ document: String) -> Bool {
+        // The stored document has already replaced secrets with placeholders.
+        // Keep formatting and undo only when the working text is equally safe.
+        guard AgentMCPConfigForm.canPreserveDocument(editor.string),
+              let current = try? AgentConfigurationJSON.object(Data(editor.string.utf8)),
+              let saved = try? AgentConfigurationJSON.object(Data(document.utf8)) else { return false }
+        return NSDictionary(dictionary: current).isEqual(to: saved)
+    }
+    private func resumeSavedForm(_ position: AgentSettingsDraftViewport.State) {
+        guard let form, var current = try? draftViewport.capture() else { return }
+        let fields = form.recoveryFields.filter { $0.value.isEnabled && !$0.value.isHiddenOrHasHiddenAncestor }
+        let previous = position.fields[position.focus]
+        let group = position.focus.hasPrefix("env-") ? "env-" : position.focus.hasPrefix("header-") ? "header-" : nil
+        let originalField: String?
+        if let group, let previous {
+            originalField = fields.keys.first { $0.hasPrefix(group) && current.fields[$0]?.hash == previous.hash }
+        } else {
+            originalField = fields[position.focus] == nil ? nil : position.focus
+        }
+        guard let focus = originalField ?? fields.first(where: { $0.value === form.firstInput })?.key else { return }
+        if let previous, let originalField, current.fields[originalField]?.hash == previous.hash {
+            current.fields[originalField]?.selection = previous.selection
+        }
+        current.focus = focus; current.text.focused = false; current.formY = position.formY
+        try? draftViewport.restore(current)
     }
     private func showTools() {
         guard let selected, let token = service.token(selected.id, owner: sessionOwner) else { tools.string = ""; return }
@@ -415,9 +455,10 @@ import UniformTypeIdentifiers
             let activeForm = configurationKind.selectedSegment == 0 ? form : nil
             if let activeForm { editor.string = try activeForm.document() }
             if let object = try? JSONSerialization.jsonObject(with: Data(editor.string.utf8)) as? [String: Any], object["mcpServers"] != nil { try reviewImport(document: editor.string); return }
+            let position = try? draftViewport.capture()
             let server = try service.save(editor.string, id: selected?.id, expectedRevision: selected?.revision, workspace: workspace,
                                           enteredOAuthClientSecret: activeForm?.enteredClientSecret)
-            dirty = false; reload(server.id); state.stringValue = "已保存"; detailPage?.onSettingsRecoveryChange?()
+            dirty = false; reload(server.id, afterSaving: position); state.stringValue = "已保存"; detailPage?.onSettingsRecoveryChange?()
         }
         catch { state.showSaveFailure(error) }
     }

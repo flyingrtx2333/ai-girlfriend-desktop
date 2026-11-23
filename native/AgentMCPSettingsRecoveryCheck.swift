@@ -132,16 +132,32 @@ import AppKit
                         (timeout.currentEditor() as? NSTextView)?.selectedRange() == (invalidTimeout as NSString).range(of: "PUBLIC")
                     checks["credentialsAndExistingIdentityStillMatch"] = try view(NSTextField.self, "MCP 客户端 ID", in: form).stringValue == "public-registered" &&
                         store.mcp.server(fixture.http).timeoutSeconds == 60
-                    setField(timeout, "72000"); try click("保存", in: form)
+                    setField(timeout, "72000"); form.window?.makeFirstResponder(timeout)
+                    let timeoutRange = NSRange(location: 1, length: 3)
+                    (timeout.currentEditor() as? NSTextView)?.setSelectedRange(timeoutRange)
+                    try click("保存", in: form); await wait(0.10)
+                    let savedTimeout = try view(NSTextField.self, "MCP 超时毫秒", in: form)
+                    checks["formSaveKeepsFieldFocusAndSelection"] = form.window?.firstResponder === savedTimeout.currentEditor() &&
+                        (savedTimeout.currentEditor() as? NSTextView)?.selectedRange() == timeoutRange
                     checks["saveAfterContinuationUpdatesOnlyTheOriginalConnector"] = try store.mcp.server(fixture.http).timeoutSeconds == 72 && store.mcp.server(fixture.program).timeoutSeconds == 60
 
                     let json = try restoreWindow("json", of: fixture); resizeAndFocus(json, wide: false); await wait(0.10)
                     let text = try view(NSTextView.self, "MCP 配置 JSON", in: json)
                     checks["jsonKeepsExactDraftRangeFocusAndScroll"] = text.string == body && text.selectedRange() == marker && json.window?.firstResponder === text &&
                         (text.enclosingScrollView?.documentVisibleRect.minY ?? 0) > 300
-                    text.string = body.replacingOccurrences(of: "\"timeoutSeconds\": 0", with: "\"timeoutSeconds\": 85"); text.didChangeText(); try click("保存", in: json)
+                    let corrected = body.replacingOccurrences(of: "\"timeoutSeconds\": 0", with: "\"timeoutSeconds\": 85")
+                    text.string = corrected; text.didChangeText()
+                    let selection = (corrected as NSString).range(of: "PUBLIC_RECOVERY_LINE_75")
+                    text.setSelectedRange(selection); text.scrollRangeToVisible(selection)
+                    try click("保存", in: json); await wait(0.10)
+                    checks["safeJsonSaveKeepsExactFormattingAndSelection"] = text.string == corrected && text.selectedRange() == selection &&
+                        json.window?.firstResponder === text && (text.enclosingScrollView?.documentVisibleRect.minY ?? 0) > 300
                     checks["savedJsonReturnsCorrectServerAndLastArgument"] = try store.mcp.server(fixture.program).timeoutSeconds == 85 &&
                         store.mcp.server(fixture.program).args.last == "PUBLIC_RECOVERY_LINE_81 中文"
+                    text.string = corrected.replacingOccurrences(of: "\"env\": {}", with: "\"env\": {\"PUBLIC_TEST\": \"\(dummy)\"}")
+                    text.didChangeText(); try click("保存", in: json)
+                    checks["savingCredentialsReplacesRawTextWithTheMaskedDocument"] = try text.string == store.mcp.document(store.mcp.server(fixture.program)) &&
+                        text.string.contains(AgentMCP.placeholder) && !text.string.contains(dummy) && text.undoManager?.canUndo != true
 
                     let catalog = try restoreWindow("catalog", of: fixture); resizeAndFocus(catalog, wide: false); await wait(0.10)
                     let search = try view(NSSearchField.self, "搜索连接器", in: catalog)
