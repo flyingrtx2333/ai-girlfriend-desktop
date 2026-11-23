@@ -154,28 +154,31 @@ import UniformTypeIdentifiers
         open(next)
     }
     private func selectRow(_ id: String?) { loading = true; defer { loading = false }; if let index = values.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) } else { table.deselectAll(nil) } }
-    private func reload() {
+    private func reload(afterSaving savedID: String? = nil) {
         do {
             openedHash = try store.agents.document().1
             openedProjectHash = try workspace.flatMap { try store.agents.document(workspace: $0).1 }
             openedPluginModelHash = try store.agents.pluginModelVersion()
             values = try store.agents.list(workspace: workspace); storedIDs = Set(values.map(\.id))
             loading = true; table.reloadData(); loading = false
-            open(values.first(where: { $0.id == selectedID })?.id ?? values.first?.id)
+            let next = values.first(where: { $0.id == selectedID })?.id ?? values.first?.id
+            open(next, preservingInput: savedID != nil && next == savedID)
         }
         catch { state.stringValue = error.localizedDescription }
     }
-    private func open(_ id: String?) {
-        draftViewport.reset()
+    private func open(_ id: String?, preservingInput: Bool = false) {
         if draftOrigin?.profileID != id { draftOrigin = nil }
         loading = true; defer { loading = false }; selectedID = id
-        let value = values.first { $0.id == id }; name.stringValue = value?.name ?? ""; purpose.stringValue = value?.description ?? ""; model.stringValue = value?.model ?? ""; instructions.string = value?.instructions ?? ""
+        let value = values.first { $0.id == id }
+        draftViewport.loadEditor(text: value?.instructions ?? "", fields: ["name": value?.name ?? "", "purpose": value?.description ?? "", "model": value?.model ?? ""], preservingInput: preservingInput)
         permission.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: value?.permission ?? .review) ?? 0); readOnly.state = value?.readOnly == false ? .off : .on; network.state = value?.network == true ? .on : .off; enabled.state = value?.enabled == true ? .on : .off; selectedTools = Set(value?.tools ?? [])
         selectedSkills = Set(value?.skills ?? []); selectedMCP = Set(value?.mcpServers ?? []); toolPermissions = value?.toolPermissions ?? [:]; mcpPermissions = value?.mcpToolPermissions ?? []
         refreshMenus()
-        dirty = false; instructions.undoManager?.removeAllActions(); selectRow(id); updateControls()
-        state.stringValue = value?.pluginSource.map { "由插件管理 · " + ((try? AgentPlugins.scope($0.name).name) ?? "") }
-            ?? (detailPage == nil ? value?.sourceWorkspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } : nil) ?? ""
+        dirty = false; selectRow(id); updateControls()
+        if !preservingInput {
+            state.stringValue = value?.pluginSource.map { "由插件管理 · " + ((try? AgentPlugins.scope($0.name).name) ?? "") }
+                ?? (detailPage == nil ? value?.sourceWorkspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } : nil) ?? ""
+        }
     }
     private func editedValue() -> AgentProfile? {
         guard var value = values.first(where: { $0.id == selectedID }) else { return nil }
@@ -323,7 +326,7 @@ import UniformTypeIdentifiers
                 try AgentMCPDataImport.requireDestination(project, store: store)
                 try store.agents.save(store.agents.encode(updated, workspace: project), expectedHash: openedProjectHash, workspace: project)
             } else { try store.agents.save(store.agents.encode(updated), expectedHash: openedHash) }
-            dirty = false; reload(); state.stringValue = "已保存"
+            dirty = false; reload(afterSaving: value.id); state.stringValue = "已保存"
             do {
                 if let origin = draftOrigin, origin.profileID == value.id {
                     try AgentProfileDrafts.markSaved(origin.id, taskID: origin.taskID, profileID: value.id, store: store); draftOrigin = nil

@@ -248,6 +248,21 @@ enum AgentSettingsRecovery {
     @objc private func boundsChanged(_ note: Notification) { if !applying { onChange?() } }
     func changed() { if !applying { pending = nil; if deferredText?.matches(text) == false { deferredText = nil }; remember(); onChange?() } }
     func reset() { pending = nil; deferredText = nil; cached = [:]; focus = "body" }
+
+    func loadEditor(text content: String, fields values: [String: String], preservingInput: Bool) {
+        if !preservingInput { reset() }
+        for (key, value) in values {
+            guard let field = fields[key] else { continue }
+            if !preservingInput || !field.stringValue.utf8.elementsEqual(value.utf8) { field.stringValue = value }
+        }
+        // Setting NSTextView.string also resets the selection. Keep the existing
+        // text storage and undo history when the saved body is identical.
+        if !preservingInput || !text.string.utf8.elementsEqual(content.utf8) {
+            text.string = content
+            text.undoManager?.removeAllActions()
+        }
+    }
+
     func capture() throws -> State {
         if let pending { return pending }
         remember(); var viewport = try deferredText ?? AgentTextViewport(text); viewport.focused = focus == "body"

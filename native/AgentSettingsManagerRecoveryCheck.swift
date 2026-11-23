@@ -152,7 +152,11 @@ import AppKit
                         try previous.write(to: original); try button(hooks, "保存").performClick(nil)
                         checks["retryWritesOnlySecondaryHookSource"] = try tasks.hooks.document(project: true, workspace: fixture.alpha).0.contains("公开续写 Hook") &&
                             tasks.hooks.document(project: true, workspace: fixture.beta).0.contains("公开 Beta") && tasks.hooks.document(project: false, workspace: nil).1 == nil
-                        try field(agent, "Agent 名称", "PUBLIC_SAVED_AGENT"); try button(agent, "保存").performClick(nil)
+                        agent.window?.makeKeyAndOrderFront(nil)
+                        try field(agent, "Agent 名称", "PUBLIC_SAVED_AGENT")
+                        try text(agent, "Agent 指令", longBody)
+                        try button(agent, "保存").performClick(nil)
+                        checks["agentSaveKeepsBodySelectionAndScroll"] = try state(agent, "Agent 指令", longBody)
                         checks["savedAgentMarksOnlyOriginalTaskDraft"] = try AgentProfileDrafts.load(fixture.draft, taskID: fixture.general, store: tasks).savedAt != nil &&
                             tasks.agents.decode(tasks.agents.document().0).contains { $0.id == fixture.profile && $0.name == "PUBLIC_SAVED_AGENT" && $0.instructions == longBody } &&
                             (tasks.task(fixture.multi)?.agentDrafts ?? []).isEmpty

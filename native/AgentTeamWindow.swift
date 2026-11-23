@@ -169,14 +169,15 @@ import AppKit
         if let index = catalogValues.firstIndex(where: { $0.id == selectedID }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
         else { table.deselectAll(nil) }
     }
-    private func reload() {
+    private func reload(afterSaving savedID: String? = nil) {
         do {
             let document = try store.teams.document(), archived = try store.teams.archiveState()
             let teams = try store.teams.decode(document.0), available = try availableAgents()
             values = teams; agents = available; openedHash = document.1; archivedIDs = archived.ids; archiveHash = archived.hash
             loading = true; table.reloadData(); loading = false
             let current = catalogValues
-            open(current.first(where: { $0.id == selectedID })?.id ?? current.first?.id)
+            let next = current.first(where: { $0.id == selectedID })?.id ?? current.first?.id
+            open(next, preservingInput: savedID != nil && next == savedID)
         }
         catch { state.stringValue = error.localizedDescription }
     }
@@ -184,12 +185,13 @@ import AppKit
         guard !dirty else { sections.selectedSegment = selectedArchived ? 1 : 0; state.stringValue = "请先保存更改"; return }
         reload(); onSettingsRecoveryChange?()
     }
-    private func open(_ id: String?) {
-        draftViewport.reset()
+    private func open(_ id: String?, preservingInput: Bool = false) {
         loading = true; selectedID = id; let value = values.first { $0.id == id }
-        name.stringValue = value?.name ?? ""; purpose.stringValue = value?.description ?? ""; instructions.string = value?.instructions ?? ""; enabled.state = value?.enabled == true ? .on : .off
+        draftViewport.loadEditor(text: value?.instructions ?? "", fields: ["name": value?.name ?? "", "purpose": value?.description ?? ""], preservingInput: preservingInput)
+        enabled.state = value?.enabled == true ? .on : .off
         selectedMembers = Set(value?.memberIDs ?? []); refreshRoles(leaderID: value?.leaderID)
-        dirty = false; instructions.undoManager?.removeAllActions(); selectRow(); loading = false; updateControls(); state.stringValue = ""
+        dirty = false; selectRow(); loading = false; updateControls()
+        if !preservingInput { state.stringValue = "" }
     }
     private func roleTitle(_ value: AgentProfile) -> String {
         let scope = value.pluginSource.map { (try? AgentPlugins.scope($0.name).workspace) != nil ? " · 项目插件" : " · 用户插件" } ?? ""
@@ -350,7 +352,7 @@ import AppKit
                 do { try store.teams.save(text, expectedHash: openedHash, store: store, activating: selectedID, workspace: workspace, task: context) }
                 catch { try? store.agents.save(prior.0, expectedHash: AgentFiles.hash(Data(prepared.utf8))); throw error }
             }
-            pendingAgents = []; pendingAgentsHash = nil; dirty = false; reload(); state.stringValue = "已保存"
+            pendingAgents = []; pendingAgentsHash = nil; dirty = false; reload(afterSaving: value.id); state.stringValue = "已保存"
         } catch { state.showSaveFailure(error) }
     }
     @objc private func showTeamActions() {
