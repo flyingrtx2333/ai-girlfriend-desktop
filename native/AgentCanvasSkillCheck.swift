@@ -1,6 +1,170 @@
 import AppKit
 
 @MainActor extension AppDelegate {
+    private struct SkillFormFixture: Codable {
+        let taskID: String, other: String, id: String, tabID: String, windowID: String
+        let original: String, changed: String, input: String, phrase: String
+    }
+    func runCanvasSkillFormCheck(_ output: URL) async {
+        var checks: [String: Bool] = [:], report: [String: Any] = [:], modelRequests = 0
+        let stage = CommandLine.arguments.last ?? "seed"
+        let fixturePath = output.appendingPathComponent("skill-form-fixture.json")
+        do {
+            ensureAgent()
+            guard let tasks = agentStore, let runtime = agentRuntime, let host = control.window,
+                  tasks.hooks.sharedHome == output.appendingPathComponent("shared-home") else { throw PetError("画布打包验收未隔离") }
+            runtime.modelRequestCheck = { modelRequests += 1; throw PetError("画布打包验收禁止模型请求") }
+            let workspace = control.taskWorkspace, storage = AgentWorkspaceRecovery(profile: store.directory)
+            let destination = output.appendingPathComponent("packages", isDirectory: true)
+            func allViews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(allViews) }
+            func inForm<T: NSView>(_ type: T.Type, _ form: AgentCanvasSkillWindow, label: String) throws -> T {
+                guard let view = form.pageContentView, let result = allViews(view).compactMap({ $0 as? T }).first(where: { $0.accessibilityLabel() == label }) else {
+                    throw PetError("原表单缺少 " + label)
+                }
+                return result
+            }
+            func action(_ name: String, _ form: AgentCanvasSkillWindow) throws -> NSButton {
+                guard let view = form.pageContentView, let result = allViews(view).compactMap({ $0 as? NSButton }).first(where: { $0.title == name }) else { throw PetError("缺少打包操作 " + name) }
+                return result
+            }
+            func enter(_ text: String, in field: NSTextField, form: AgentCanvasSkillWindow) {
+                if let editor = field.currentEditor() as? NSTextView {
+                    editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+                } else {
+                    field.stringValue = text
+                    form.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
+                }
+            }
+            func showField(_ view: NSView, in scroll: NSScrollView) {
+                guard let document = scroll.documentView else { return }
+                let y = document.convert(view.bounds, from: view).minY - 14
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, min(y, document.bounds.height - scroll.contentSize.height))))
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+            func screenshot(_ name: String) throws {
+                guard let view = host.contentView, host.isVisible else { throw PetError("实际打包窗未显示") }
+                view.layoutSubtreeIfNeeded()
+                guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw PetError("打包窗截图尺寸不可用") }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                guard let png = bitmap.representation(using: .png, properties: [:]) else { throw PetError("打包窗截图无法输出") }
+                try png.write(to: output.appendingPathComponent(name + ".png"))
+            }
+            func checkpoint(_ fixture: SkillFormFixture) async throws -> AgentWorkspaceRecovery.Page {
+                guard await flushWorkspaceWindows(), let page = try storage.loadPage(windowID: fixture.windowID, pageID: fixture.tabID, taskID: fixture.taskID) else {
+                    throw PetError("画布打包表单未写入原标签")
+                }
+                return page.saved.value
+            }
+            func fullyVisible(_ view: NSView) -> Bool { !view.isHiddenOrHasHiddenAncestor && view.bounds.width > 0 && view.visibleRect.height + 1 >= view.bounds.height && view.visibleRect.width + 1 >= view.bounds.width }
+
+            host.appearance = NSAppearance(named: .darkAqua); host.setContentSize(NSSize(width: 780, height: 540))
+            let fixture: SkillFormFixture
+            if stage == "seed" {
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+                let duplicate = destination.appendingPathComponent("already-there", isDirectory: true)
+                try FileManager.default.createDirectory(at: duplicate, withIntermediateDirectories: false)
+                try Data("保留已存在目录\n".utf8).write(to: duplicate.appendingPathComponent("sentinel.txt"))
+                let task = tasks.create(title: "画布草稿恢复 · 无工作区问答", mode: .ask, workMode: .general), other = tasks.create(title: "独立任务", mode: .ask, workMode: .general)
+                tasks.update(task) { $0.draft = "原工作台输入" }; tasks.update(other) { $0.draft = "另一任务输入" }
+                let original = "export default function Canvas(){return <main><h1>公开画布 B 版本一</h1><button>公开控件</button></main>}"
+                let record = try tasks.canvases.create(title: "公开画布 B", source: original, taskID: task)
+                control.showAgentTask(task); control.show(tab: "chat")
+                let editor = try await tasks.canvases.show(record.id, taskID: task)
+                guard let windowID = control.workspaceSession?.id,
+                      let tabID = workspace.recoveryLayouts.first(where: { $0.taskID == task })?.tabs.first(where: { $0.root == "canvas:" + record.id })?.id else {
+                    throw PetError("无法读取原画布标签编号")
+                }
+                let phrase = "继续这里 😀", input = (1...38).map { $0 == 17 ? phrase : "第 \($0) 行使用实际数据与 Markdown 表格" }.joined(separator: "\n")
+                fixture = .init(taskID: task, other: other, id: record.id, tabID: tabID, windowID: windowID, original: original,
+                    changed: original.replacingOccurrences(of: "版本一", with: "版本二"), input: input, phrase: phrase)
+                await editor.checkWorkspaceSource(action: "skill")
+                guard let form = workspace.currentController as? AgentCanvasSkillWindow else { throw PetError("打包入口未打开工作区表单") }
+                await wait(0.12)
+                let export = try action("打包", form), name = try inForm(NSTextField.self, form, label: "画布 Skill 名称")
+                let formatting = try inForm(NSTextView.self, form, label: "画布 Skill 格式约定"), formScroll = try inForm(NSScrollView.self, form, label: "画布 Skill 配置")
+                let directory = try inForm(NSTextField.self, form, label: "画布 Skill 保存目录")
+                checks["rightPageUsesSharedFieldsAndNoFloatingModal"] = form.settingsHostWindow === host && form.window?.isVisible != true && host.attachedSheet == nil &&
+                    name is AgentDialogTextField && fullyVisible(export) && formScroll.documentView?.bounds.height ?? 0 > formScroll.contentSize.height
+                try screenshot("skill-form-narrow-top")
+                enter(destination.path, in: directory, form: form); enter("../invalid", in: name, form: form)
+                export.performClick(nil)
+                checks["invalidNameStaysInlineWithAllFieldsPreserved"] = try workspace.currentController === form && !form.captureDraft().status.isEmpty && form.captureDraft().destination == destination.path
+                let choose = try inForm(NSButton.self, form, label: "选择 Skill 保存目录")
+                showField(directory, in: formScroll); choose.performClick(nil); await wait(0.25)
+                let picker = host.attachedSheet as? NSOpenPanel
+                picker?.cancel(nil)
+                await wait(0.12)
+                checks["nativeFolderSheetBelongsToTaskAndCancelPreservesFields"] = try picker != nil && host.attachedSheet == nil &&
+                    workspace.currentController === form && form.captureDraft().destination == destination.path && form.captureDraft().specification.name == "../invalid"
+                host.makeFirstResponder(formatting)
+                formatting.insertText(input, replacementRange: NSRange(location: 0, length: formatting.string.utf16.count))
+                formatting.setSelectedRange((input as NSString).range(of: phrase)); formatting.scrollRangeToVisible(formatting.selectedRange())
+                host.contentView?.layoutSubtreeIfNeeded(); showField(formatting, in: formScroll)
+                checks["longEditorAndWholePageScrollWhilePrimaryActionStaysVisible"] = formatting.enclosingScrollView?.contentView.bounds.minY ?? 0 > 0 && formScroll.contentView.bounds.minY > 0 && fullyVisible(export)
+                try screenshot("skill-form-narrow-long")
+                do { try tasks.setArchived([task], archived: true); checks["archiveProtectsPendingForm"] = false }
+                catch { checks["archiveProtectsPendingForm"] = tasks.task(task)?.archived == false && workspace.currentController === form }
+                control.showAgentTask(other); control.showAgentTask(task)
+                await wait(0.12)
+                let page = try await checkpoint(fixture), recovered = try AgentCanvasWindow.recoveryState(page)
+                guard let draft = recovered.skill else { throw PetError("打包正文未保存") }
+                checks["windowCheckpointKeepsExactSourceAndAllInput"] = page.dirty && draft.sourceHash == record.hash && draft.specification.formatting == input &&
+                    draft.destination == destination.path && draft.specification.name == "../invalid" && draft.focus == .formatting && draft.scrollY > 0
+                checks["normalQuitCanPreserveParentAndChild"] = [ObjectIdentifier(editor), ObjectIdentifier(form)].allSatisfy { control.workspaceSession?.preservedEditors.contains($0) == true }
+                var foreign = recovered; foreign.skill?.canvasID = UUID().uuidString
+                var invalid = page; invalid.state = try JSONEncoder().encode(foreign)
+                do { _ = try AgentCanvasWindow.recoveryState(invalid); checks["wrongCanvasCannotUseDraft"] = false }
+                catch { checks["wrongCanvasCannotUseDraft"] = true }
+                try JSONEncoder().encode(fixture).write(to: fixturePath, options: .atomic)
+            } else {
+                fixture = try JSONDecoder().decode(SkillFormFixture.self, from: Data(contentsOf: fixturePath))
+                control.show(tab: "chat")
+                guard await flushWorkspaceWindows(), control.agentTaskID == fixture.taskID,
+                      let editor = workspace.rootController(.canvas(fixture.id)) as? AgentCanvasWindow else { throw PetError("原工作区标签未恢复") }
+                if stage == "completed" {
+                    let page = try await checkpoint(fixture)
+                    checks["finishedPackageDoesNotRestoreAConsumedDraft"] = try workspace.currentController === editor && !page.dirty && AgentCanvasWindow.recoveryState(page).skill == nil
+                } else {
+                    guard let form = workspace.currentController as? AgentCanvasSkillWindow else { throw PetError("跨启动没有读回打包页") }
+                    await wait(0.16)
+                    let formatting = try inForm(NSTextView.self, form, label: "画布 Skill 格式约定"), name = try inForm(NSTextField.self, form, label: "画布 Skill 名称")
+                    let outer = try inForm(NSScrollView.self, form, label: "画布 Skill 配置"), export = try action("打包", form)
+                    checks["reopenKeepsDraftUTF16SelectionAndFieldFocus"] = formatting.string == fixture.input &&
+                        formatting.selectedRange() == (fixture.input as NSString).range(of: fixture.phrase) && host.firstResponder === formatting &&
+                        formatting.enclosingScrollView?.contentView.bounds.minY ?? 0 > 0 && outer.contentView.bounds.minY > 0
+                    try screenshot("skill-form-reopened-narrow")
+                    formatting.insertText("已接着编辑 ✅", replacementRange: formatting.selectedRange())
+                    host.setContentSize(NSSize(width: 1320, height: 800)); host.appearance = NSAppearance(named: .aqua)
+                    let before = try tasks.canvases.source(fixture.id, taskID: fixture.taskID)
+                    let next = try tasks.canvases.update(fixture.id, source: fixture.changed, expected: before.record.hash, taskID: fixture.taskID)
+                    export.performClick(nil)
+                    let adopt = try action("使用当前版本", form)
+                    let existing = try FileManager.default.contentsOfDirectory(atPath: destination.path)
+                    checks["changedSourceBlocksExportAndShowsExplicitVersionChoice"] = !export.isEnabled && fullyVisible(adopt) &&
+                        existing == ["already-there"]
+                    try screenshot("skill-form-wide-version-conflict")
+                    adopt.performClick(nil); enter("already-there", in: name, form: form); export.performClick(nil)
+                    checks["existingDestinationStaysIntactAndFormCanRetry"] = try workspace.currentController === form &&
+                        Data(contentsOf: destination.appendingPathComponent("already-there/sentinel.txt")) == Data("保留已存在目录\n".utf8) && !form.captureDraft().status.isEmpty
+                    let reviewed = try form.captureDraft()
+                    checks["explicitVersionChangeKeepsTheDraft"] = reviewed.sourceHash == next.hash &&
+                        reviewed.specification.formatting == fixture.input.replacingOccurrences(of: fixture.phrase, with: "已接着编辑 ✅")
+                    enter("public-canvas-skill", in: name, form: form); export.performClick(nil)
+                    let page = try await checkpoint(fixture), source = destination.appendingPathComponent("public-canvas-skill/references/template.canvas.tsx")
+                    checks["actualExportReturnsToTheOriginalCanvasAndClearsDraft"] = try workspace.currentController === editor && !page.dirty &&
+                        AgentCanvasWindow.recoveryState(page).skill == nil && Data(contentsOf: source) == Data(fixture.changed.utf8)
+                    try screenshot("skill-form-returned-canvas")
+                }
+            }
+            checks["originalTaskInputsAndModelReceiptsStayExact"] = modelRequests == 0 && tasks.task(fixture.taskID)?.draft == "原工作台输入" &&
+                tasks.task(fixture.other)?.draft == "另一任务输入" && [fixture.taskID, fixture.other].allSatisfy { (tasks.task($0)?.modelReceipts ?? []).isEmpty }
+        } catch { report["error"] = error.localizedDescription }
+        report["appPID"] = getpid(); report["stage"] = stage; report["modelRequests"] = modelRequests; report["checks"] = checks
+        if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
+        report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 } && modelRequests == 0
+        try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("skill-form-report.json"), options: .atomic)
+    }
+
     func runAgentCanvasSkillCheck(_ output: URL) async {
         let fm = FileManager.default
         var checks: [String: Bool] = [:], report: [String: Any] = [:]

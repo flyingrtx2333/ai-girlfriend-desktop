@@ -34,15 +34,16 @@ import Darwin
     private var skillWindow: AgentCanvasSkillWindow?
     var onClose: (() -> Void)?
     var onWorkspaceChange: (() -> Void)?
-    var workspaceHasUnsavedChanges: Bool { dirty || recoveryAnnotation?.hasPendingChanges == true }
+    var workspaceHasUnsavedChanges: Bool { dirty || recoveryAnnotation?.hasPendingChanges == true || recoverySkillForm?.hasPendingChanges == true }
     var recoveryAnnotation: AgentBrowserAnnotationWindow? {
         guard let editor = annotation?.editor, !editor.workspaceIsClosed else { return nil }
         return editor
     }
+    var recoverySkillForm: AgentCanvasSkillWindow? { skillWindow }
     var workspaceIsClosed: Bool { closed }
     var canPreserveForQuit: Bool {
         !closed && !capturingAnnotation && selectedID != nil && canvas.canPreserveForQuit(taskID) &&
-            recoveryAnnotation?.canPreserveForQuit != false
+            recoveryAnnotation?.canPreserveForQuit != false && recoverySkillForm?.canPreserveForQuit != false
     }
     init(canvas: AgentCanvas, taskID: String) {
         self.canvas = canvas; self.taskID = taskID
@@ -83,17 +84,19 @@ import Darwin
         var mode: Int, selectionLocation: Int, selectionLength: Int
         var sourceScrollY: Double
         var annotation: Annotation?
+        var skill: AgentCanvasSkillWindow.Draft?
     }
     static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
         guard page.kind == "canvas", page.asset == nil,
               let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(object.keys).isSubset(of: ["version", "taskID", "canvasID", "mode", "selectionLocation", "selectionLength", "sourceScrollY", "annotation"]) else { throw PetError("画布恢复格式不受支持，原草稿已保留") }
+              Set(object.keys).isSubset(of: ["version", "taskID", "canvasID", "mode", "selectionLocation", "selectionLength", "sourceScrollY", "annotation", "skill"]) else { throw PetError("画布恢复格式不受支持，原草稿已保留") }
         if let raw = object["annotation"], !(raw is NSNull) {
             guard let fields = raw as? [String: Any], Set(fields.keys) == ["sourceHash", "draft"], let draft = fields["draft"] else {
                 throw PetError("画布批注恢复格式无效，原草稿已保留")
             }
             try AgentBrowserRecoveryState.Annotation.validateFields(draft)
         }
+        if let raw = object["skill"], !(raw is NSNull) { try AgentCanvasSkillWindow.Draft.validateFields(raw) }
         let value = try JSONDecoder().decode(RecoveryState.self, from: page.state)
         guard value.version == 1, value.taskID == page.taskID, UUID(uuidString: value.taskID) != nil, UUID(uuidString: value.canvasID) != nil,
               [0, 1].contains(value.mode), (0...256_000).contains(value.selectionLocation), (0...256_000).contains(value.selectionLength),
@@ -107,6 +110,10 @@ import Darwin
                 throw PetError("画布批注的来源或版本不匹配，原草稿已保留")
             }
         }
+        if let skill = value.skill {
+            try skill.validate(taskID: value.taskID, canvasID: value.canvasID)
+            guard value.annotation == nil, !skill.edited || page.dirty else { throw PetError("画布打包草稿的状态无效，原记录已保留") }
+        }
         return value
     }
     func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page {
@@ -119,14 +126,15 @@ import Darwin
         if let annotation, !annotation.editor.workspaceIsClosed, annotation.editor.settingsHostWindow != nil {
             savedAnnotation = .init(sourceHash: annotation.sourceHash, draft: try annotation.editor.captureWorkspaceRecovery())
         }
+        let savedSkill = try skillWindow.flatMap { $0.settingsHostWindow == nil ? nil : try $0.captureDraft() }
         let value = RecoveryState(taskID: taskID, canvasID: id, mode: mode.selectedSegment,
             selectionLocation: selection.location, selectionLength: selection.length, sourceScrollY: editorScroll.contentView.bounds.minY,
-            annotation: savedAnnotation)
+            annotation: savedAnnotation, skill: savedSkill)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let state = try encoder.encode(value)
         guard state.count <= 12_000_000 else { throw PetError("画布恢复记录过大，请先添加批注，原记录已保留") }
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "canvas", state: state,
-                                              dirty: dirty || savedAnnotation?.draft.dirty == true, asset: nil)
+                                              dirty: dirty || savedAnnotation?.draft.dirty == true || savedSkill?.edited == true, asset: nil)
         _ = try Self.recoveryState(page); return page
     }
     func restoreWorkspaceRecovery(_ page: AgentWorkspaceRecovery.Page) async throws {
@@ -148,6 +156,13 @@ import Darwin
             annotation.restoreWorkspaceRecovery(saved.draft)
             presentSettingsChild(annotation)
             guard annotation.settingsHostWindow != nil else { throw PetError("画布批注页尚未恢复，原草稿已保留") }
+        }
+        if let draft = value.skill {
+            guard settingsHostWindow != nil, onSettingsPush != nil else { throw PetError("请在任务工作区恢复打包草稿") }
+            let form = makeSkillForm(try canvas.record(value.canvasID, taskID: taskID))
+            try form.restoreDraft(draft)
+            presentSettingsChild(form)
+            guard form.settingsHostWindow != nil else { throw PetError("打包页尚未恢复，原草稿已保留") }
         }
         onWorkspaceChange?()
     }
@@ -247,10 +262,11 @@ import Darwin
                 guard let self, selectedID == id, !closed else { return }
                 do {
                     let value = try canvas.source(id, taskID: taskID)
+                    skillWindow?.checkSource()
                     guard value.record.hash != loadedHash, value.record.hash != requestedHash else { return }
                     if dirty { state.stringValue = "源码已被其他操作更新，请保留编辑内容后重新载入"; return }
                     try await open(id)
-                } catch { state.stringValue = error.localizedDescription }
+                } catch { skillWindow?.checkSource(); state.stringValue = error.localizedDescription }
             }
         }
         source.resume(); watcher = source
@@ -332,12 +348,24 @@ import Darwin
         annotation = (editor, shot.capture.sourceHash)
         return editor
     }
+    private func makeSkillForm(_ record: AgentCanvasRecord) -> AgentCanvasSkillWindow {
+        let form = AgentCanvasSkillWindow(canvas: canvas, taskID: taskID, record: record)
+        form.onExport = { [weak self] folder in self?.state.stringValue = "已打包 " + folder.lastPathComponent; self?.state.toolTip = folder.path }
+        form.onSettingsRecoveryChange = { [weak self] in self?.onWorkspaceChange?() }
+        form.onCloseForm = { [weak self, weak form] in
+            guard let self, skillWindow === form else { return }
+            skillWindow = nil; onWorkspaceChange?()
+        }
+        skillWindow = form
+        return form
+    }
     @objc private func exportDocument() {
         let kind = exports.indexOfSelectedItem; exports.selectItem(at: 0)
         guard kind > 0, let id = selectedID else { return }
         if kind == 4 {
             guard !dirty else { state.stringValue = "请先保存源码后打包"; return }
-            do { let record = try canvas.source(id, taskID: taskID).record; let manager = AgentCanvasSkillWindow(canvas: canvas, taskID: taskID, record: record); skillWindow = manager; presentSettingsChild(manager) } catch { state.stringValue = error.localizedDescription }
+            do { presentSettingsChild(makeSkillForm(try canvas.source(id, taskID: taskID).record)); onWorkspaceChange?() }
+            catch { state.stringValue = error.localizedDescription }
             return
         }
         run {
@@ -384,7 +412,8 @@ import Darwin
         return true
     }
     func prepareWorkspaceNavigation() -> Bool {
-        guard !closed, !capturingAnnotation, recoveryAnnotation?.prepareWorkspaceNavigation() != false, canMoveWindow() else { return false }
+        guard !closed, !capturingAnnotation, recoveryAnnotation?.prepareWorkspaceNavigation() != false,
+              recoverySkillForm?.prepareWorkspaceNavigation() != false, canMoveWindow() else { return false }
         guard !dirty || selectedID.map({ canvas.saveDraft(editor.string, hash: editorHash, id: $0, taskID: taskID) }) == true else { state.stringValue = "源码草稿未保存，请先保留编辑内容"; return false }
         draftTask?.cancel(); return true
     }
@@ -433,7 +462,10 @@ import Darwin
             if editor.settingsHostWindow != nil { editor.finishClose() }
             else { editor.close() }
         }
-        skillWindow?.close(); web.loadHTMLString("", baseURL: nil); onClose?(); onClose = nil
+        if let form = skillWindow {
+            if form.settingsHostWindow != nil { form.finishForm() } else { form.close() }
+        }
+        web.loadHTMLString("", baseURL: nil); onClose?(); onClose = nil
         if settingsHostWindow != nil { close() } else { window?.close() }
     }
 }

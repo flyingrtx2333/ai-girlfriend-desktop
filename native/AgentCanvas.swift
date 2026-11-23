@@ -145,6 +145,9 @@ struct AgentCanvasCapture: Codable, Sendable {
         catch { window.onSettingsClose = nil; window.finishClose(); throw error }
     }
     func canPreserveForQuit(_ taskID: String) -> Bool { store?.task(taskID).map { !$0.archived && $0.sideTask?.retained != false } == true }
+    func hasPendingSkillForm(_ taskID: String) -> Bool {
+        windows.values.contains { $0.taskID == taskID && $0.recoverySkillForm?.hasPendingChanges == true }
+    }
     func stop(_ taskID: String) { for window in windows.values where window.taskID == taskID { window.stop() } }
     func close(_ taskID: String) { for window in Array(windows.values) where window.taskID == taskID { window.finishClose() } }
     func closeAll() { for window in Array(windows.values) { window.finishClose() } }

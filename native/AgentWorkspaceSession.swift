@@ -543,6 +543,10 @@ private actor AgentWorkspaceJournal {
                        let annotation = canvas.recoveryAnnotation, annotation.settingsHostWindow != nil, annotation.canPreserveForQuit {
                         preservedEditors.insert(ObjectIdentifier(annotation))
                     }
+                    if let canvas = controller as? AgentCanvasWindow, preservedEditors.contains(ObjectIdentifier(canvas)),
+                       let form = canvas.recoverySkillForm, form.settingsHostWindow != nil, form.canPreserveForQuit {
+                        preservedEditors.insert(ObjectIdentifier(form))
+                    }
                     if let git = controller as? AgentGitWindow, preservedEditors.contains(ObjectIdentifier(git)) {
                         if let remote = git.recoveryRemoteForm, remote.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(remote)) }
                         if let creation = git.recoveryWorktreeForm, creation.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(creation)) }

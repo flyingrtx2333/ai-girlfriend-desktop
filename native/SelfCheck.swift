@@ -95,7 +95,11 @@ import WebKit
         if CommandLine.arguments.contains("--workspace-edit-recovery-ui") { await runEditResendRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--workspace-mcp-recovery-check") { await runMCPRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-mcp-recovery-ui") { await runMCPRecoveryCheck(output, interactive: true); return }
-        if CommandLine.arguments.contains("--workspace-canvas-recovery-check") { await runCanvasRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--workspace-canvas-recovery-check") {
+            if CommandLine.arguments.contains("--canvas-skill-form") { await runCanvasSkillFormCheck(output) }
+            else { await runCanvasRecoveryCheck(output) }
+            NSApp.terminate(nil); return
+        }
         if CommandLine.arguments.contains("--workspace-canvas-recovery-ui") { await runCanvasRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--knowledge-editor-recovery-check") { await runKnowledgeEditorRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-editor-recovery-ui") { await runKnowledgeEditorRecoveryCheck(output, interactive: true); return }

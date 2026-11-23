@@ -423,6 +423,7 @@ import AppKit
             if let editor = controller as? AgentEditResendWindow, editor.canPreserveForQuit, editors.contains(ObjectIdentifier(editor)) { continue }
             if let browser = controller as? AgentBrowserWindow, browser.canPreserveForQuit, editors.contains(ObjectIdentifier(browser)) { guard browser.prepareWorkspaceNavigation() else { return false }; continue }
             if let annotation = controller as? AgentBrowserAnnotationWindow, annotation.canPreserveForQuit, editors.contains(ObjectIdentifier(annotation)) { continue }
+            if let form = controller as? AgentCanvasSkillWindow, form.canPreserveForQuit, editors.contains(ObjectIdentifier(form)) { continue }
             if let git = controller as? AgentGitWindow, git.canPreserveForQuit, editors.contains(ObjectIdentifier(git)) { continue }
             if let remote = controller as? AgentGitRemotePage, remote.canPreserveForQuit, editors.contains(ObjectIdentifier(remote)) { continue }
             if let creation = controller as? AgentWorktreeCreationWindow, creation.canPreserveForQuit, editors.contains(ObjectIdentifier(creation)) { continue }
