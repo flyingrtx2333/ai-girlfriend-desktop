@@ -105,6 +105,9 @@ enum AgentSettingsRecovery {
                 return kinds == [root] || kinds == [root, "plugin-settings"] || kinds == [root, "plugin-history"]
                     || kinds == [root, "plugin-history", "plugin-history-review"] || kinds == [root, "plugin-review"]
                     || kinds == [root, "plugin-market"] || kinds == [root, "plugin-market", "plugin-market-review"]
+                    || kinds == [root, "mcp"] || kinds == [root, "mcp", "mcp-detail"] || kinds == [root, "mcp", "mcp-import"]
+                    || kinds == [root, "mcp", "mcp-detail", "mcp-import"] || kinds == [root, "hooks"] || kinds == [root, "hooks", "hook-config"]
+                    || kinds == [root, "agents"] || kinds == [root, "agents", "mcp-tool-rule"]
             case ("extensions", "mcp"):
                 return kinds == [root] || kinds == [root, "mcp-detail"] || kinds == [root, "mcp-import"] || kinds == [root, "mcp-detail", "mcp-import"]
             case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"] || kinds == [root, "agents", "mcp-tool-rule"]

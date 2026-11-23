@@ -1,11 +1,18 @@
 import AppKit
 import UniformTypeIdentifiers
 
-@MainActor final class AgentPluginWindow: AgentSettingsPageController, NSTableViewDelegate, NSTableViewDataSource, NSSearchFieldDelegate, NSWindowDelegate {
+@MainActor final class AgentPluginWindow: AgentSettingsPageController, NSTableViewDelegate, NSTableViewDataSource, NSSearchFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
+    private enum DetailTab: Int, Codable { case readme, components }
+    private struct DetailRecovery: Codable {
+        let instance: String, sourceHash: String, tab: DetailTab, component: String?
+        let selectedVisible: Bool
+        var listY: Double?, readme: AgentTextViewport?, rule: AgentTextViewport?
+    }
     private struct Recovery: Codable {
         var version = 1
         var workspace: String?, selectedID: String?
         var project: Bool, query: String, showsDetail: Bool
+        var detail: DetailRecovery?
     }
     private let store: AgentStore, workspace: String?
     var loadMarketReviewCopy: ((String) async throws -> Data)?
@@ -15,7 +22,11 @@ import UniformTypeIdentifiers
     private let title = NSTextField(labelWithString: ""), metadata = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("插件状态")
     private var catalogLayout: (toolbar: NSStackView, actions: NSStackView, components: NSScrollView, document: NSScrollView, footer: NSStackView)?
     private var detailPage: AgentSettingsDetailPage?
-    private var componentHeight: NSLayoutConstraint?
+    private let detailTabs = NSSegmentedControl(labels: ["说明", "组件"], trackingMode: .selectOne, target: nil, action: nil)
+    private let ruleText = NSTextView()
+    private lazy var ruleScroll = Self.documentScroll(ruleText, label: "插件规则正文")
+    private var pendingDetail: DetailRecovery?
+    private var applyingDetail = false
     private let catalogState = AgentSettingsStatusField("插件列表状态")
     private let enabled = NSButton(checkboxWithTitle: "启用插件", target: nil, action: nil), use = AgentDialogButton(title: "在任务中使用", target: nil, action: nil)
     private let upload = AgentDialogButton(title: "导入插件…", target: nil, action: nil)
@@ -38,6 +49,7 @@ import UniformTypeIdentifiers
     var onConfigureMCP: ((String, String?) -> Void)? { didSet { updateControls() } }
     var onConfigureAgent: ((String, String?) -> Void)? { didSet { updateControls() } }
     var onConfigureHook: ((String, String?) -> Void)? { didSet { updateControls() } }
+    var makeComponentSettingsPage: ((String, String?, String?) -> AgentSettingsPageController?)? { didSet { updateControls() } }
     var onInsertRule: ((AgentPluginRuleItem) throws -> Void)? { didSet { updateControls() } }
     var onChange: (() -> Void)?
     private var service: AgentPlugins { store.extensions.plugins }
@@ -67,8 +79,7 @@ import UniformTypeIdentifiers
         }
         title.font = .systemFont(ofSize: 18, weight: .semibold); title.lineBreakMode = .byTruncatingTail
         for label in [metadata, state] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
-        readme.isEditable = false; readme.isRichText = false; readme.isSelectable = true; readme.font = .systemFont(ofSize: 12); readme.textContainerInset = NSSize(width: 12, height: 12); readme.isVerticallyResizable = true; readme.autoresizingMask = [.width]; readme.textContainer?.widthTracksTextView = true; readme.setAccessibilityLabel("插件说明")
-        let document = NSScrollView(); document.documentView = readme; document.hasVerticalScroller = true; document.borderType = .bezelBorder
+        let document = Self.documentScroll(readme, label: "插件说明")
         let actions = NSStackView(views: [enabled, NSView(), moreFrame, use]); actions.spacing = 8; actions.alignment = .centerY
         let footer = NSStackView(views: [state, NSView(), disableAll]); footer.spacing = 8
         catalogLayout = (header, actions, scrolls[1], document, footer)
@@ -85,6 +96,23 @@ import UniformTypeIdentifiers
         ]); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    private static func documentScroll(_ text: NSTextView, label: String) -> NSScrollView {
+        text.isEditable = false
+        text.isRichText = false
+        text.isSelectable = true
+        text.font = .systemFont(ofSize: 13)
+        text.textContainerInset = NSSize(width: 12, height: 12)
+        text.isVerticallyResizable = true
+        text.autoresizingMask = [.width]
+        text.textContainer?.widthTracksTextView = true
+        text.setAccessibilityLabel(label)
+        let scroll = NSScrollView()
+        scroll.documentView = text
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        return scroll
+    }
+
     override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
         if detailPage == nil, let content = window?.contentView, let layout = catalogLayout {
             AgentSettingsCatalog.detach(content)
@@ -92,25 +120,39 @@ import UniformTypeIdentifiers
             search.setContentHuggingPriority(.defaultLow, for: .horizontal)
             layout.footer.removeArrangedSubview(state); state.removeFromSuperview()
             for view in [enabled, moreFrame, use] as [NSView] { layout.actions.removeArrangedSubview(view); view.removeFromSuperview() }
-            let subtitle = NSStackView(views: [enabled, metadata, NSView()]); subtitle.spacing = 12; subtitle.alignment = .centerY
+            detailTabs.selectedSegment = DetailTab.readme.rawValue
+            detailTabs.target = self; detailTabs.action = #selector(changeDetailTab)
+            detailTabs.setAccessibilityLabel("插件详情内容")
+            let subtitle = NSStackView(views: [detailTabs, NSView(), metadata, enabled]); subtitle.spacing = 12; subtitle.alignment = .centerY
             subtitle.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
             metadata.setContentHuggingPriority(.defaultLow, for: .horizontal)
             AgentSettingsStyle.primaryAction(use)
             let actions = AgentSettingsDetailActions([moreFrame, use])
-            let detail = NSStackView(views: [subtitle, actions, layout.components, layout.document, state]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 8
+            let detail = NSStackView(views: [subtitle, actions, layout.document, layout.components, ruleScroll, state])
+            detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 8
             for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
             NSLayoutConstraint.deactivate(layout.components.constraints.filter { $0.firstAttribute == .height && $0.secondItem == nil })
-            componentHeight = layout.components.heightAnchor.constraint(equalToConstant: 60); componentHeight?.priority = .defaultHigh; componentHeight?.isActive = true
-            NSLayoutConstraint.activate([layout.components.heightAnchor.constraint(greaterThanOrEqualToConstant: 44), layout.document.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
+            let ruleHeight = ruleScroll.heightAnchor.constraint(equalToConstant: 140)
+            ruleHeight.priority = .defaultHigh; ruleHeight.isActive = true
+            for scroll in [layout.document, layout.components, ruleScroll] {
+                scroll.contentView.postsBoundsChangedNotifications = true
+                NotificationCenter.default.addObserver(self, selector: #selector(detailViewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+            }
+            readme.delegate = self; ruleText.delegate = self
             let page = AgentSettingsDetailPage(title: "插件详情", content: AgentSettingsCatalog.detail(detail))
             page.detailActionRow = actions
-            page.onAppear = { [weak self] in guard let self else { return }; reload(select: selected?.id); presentingWindow?.makeFirstResponder(components) }
+            page.onAppear = { [weak self] in
+                guard let self else { return }
+                reload(select: selected?.id)
+                focusDetail()
+            }
             detailPage = page; catalogLayout = nil
             state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
             list.target = self; list.action = #selector(openSelectedPlugin); list.onOpen = { [weak self] in self?.showDetail() }
             list.groupName = { [weak self] _ in self?.scopeWorkspace == nil ? "用户插件" : "项目插件" }
             AgentSettingsStyle.primaryAction(upload)
             window?.contentView = AgentSettingsCatalog.content(table: list, toolbar: layout.toolbar, status: catalogState, actions: [marketplace, upload], symbol: "puzzlepiece.extension"); list.reloadData()
+            updateDetailVisibility()
         }
         return super.settingsContent(in: host, styled: styled)
     }
@@ -154,9 +196,14 @@ import UniformTypeIdentifiers
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         if notification.object as? NSTableView === list { open(list.selectedRow) }
-        else if let index = selectedRuleIndex { showRule(rules[index]) }
-        else if let selected { readme.string = (try? service.readme(selected)) ?? "" }
-        updateControls()
+        else {
+            pendingDetail?.rule = nil
+            if detailPage != nil { updateDetailVisibility() }
+            else if let index = selectedRuleIndex { readme.string = ruleBody(rules[index]) }
+            else if let selected { readme.string = (try? service.readme(selected)) ?? "" }
+            updateControls()
+            detailViewportChanged()
+        }
     }
     func controlTextDidChange(_ notification: Notification) { reload(); onSettingsRecoveryChange?() }
     @objc private func refreshList() { reload() }
@@ -171,28 +218,112 @@ import UniformTypeIdentifiers
             list.delegate = nil; list.reloadData(); let row = items.firstIndex(where: { $0.id == (id ?? selected?.id) }) ?? (items.isEmpty ? -1 : 0)
             if row >= 0 { list.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { list.deselectAll(nil) }; list.delegate = self; open(row)
             let needsReview = selected?.workspace != nil && selected?.requestedEnabled == true && selected?.locallyApproved == false
-            if !service.warnings.isEmpty { state.stringValue = service.warnings.joined(separator: "；") }
-            else if needsReview { state.stringValue = "需本机审阅后启用" }
-            else { state.stringValue = detailPage == nil ? "\(items.count) 项" : "" }
+            if state.stringValue.isEmpty {
+                if !service.warnings.isEmpty { state.stringValue = service.warnings.joined(separator: "；") }
+                else if needsReview { state.stringValue = "需本机审阅后启用" }
+                else if detailPage == nil { state.stringValue = "\(items.count) 项" }
+            }
         } catch { state.stringValue = error.localizedDescription }; updateControls()
     }
     private func open(_ row: Int) {
-        selected = items.indices.contains(row) ? items[row] : nil; entries = []; connectors = []; agents = []; hooks = []; rules = []; title.stringValue = ""; metadata.stringValue = ""; readme.string = ""; enabled.state = .off
+        let next = items.indices.contains(row) ? items[row] : nil
+        let sameSource = next != nil && selected?.instanceID == next?.instanceID && selected?.receipt.sourceHash == next?.receipt.sourceHash
+        let previousComponent = sameSource ? componentID : nil
+        let previousY = sameSource ? componentY : 0
+        if !sameSource {
+            pendingDetail = nil
+            detailTabs.selectedSegment = DetailTab.readme.rawValue
+            ruleText.string = ""
+        }
+        selected = next; entries = []; connectors = []; agents = []; hooks = []; rules = []
+        title.stringValue = ""; metadata.stringValue = ""; enabled.state = .off
+        state.stringValue = ""
+        var body = ""
         detailPage?.detailHeading = selected.map { item in
             let scope = item.workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户插件"
             return .init(title: item.metadata.title, scope: scope, location: item.root.path)
         }
         if let item = selected {
             title.stringValue = item.metadata.title; metadata.stringValue = [item.metadata.version, item.metadata.author, item.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · "); enabled.state = item.enabled ? .on : .off
-            do { readme.string = try service.readme(item); entries = try service.extensionItems(workspace: item.workspace, onlyScope: true).filter { $0.pluginName == item.id }; connectors = store.mcp.availableServers(workspace: item.workspace, onlyScope: true).filter { $0.plugin?.name == item.id }; agents = try store.agents.packagedProfiles(workspace: item.workspace, onlyScope: true).filter { $0.pluginSource?.name == item.id }; hooks = try store.hooks.catalog(workspace: item.workspace).filter { $0.plugin?.name == item.id && $0.plugin?.installationID == item.instanceID }; rules = try service.ruleItems(workspace: item.workspace, onlyScope: true).filter { $0.reference.name == item.id && $0.reference.installationID == item.instanceID } } catch { state.stringValue = error.localizedDescription }
+            do {
+                body = try service.readme(item)
+                entries = try service.extensionItems(workspace: item.workspace, onlyScope: true).filter { $0.pluginName == item.id }
+                connectors = store.mcp.availableServers(workspace: item.workspace, onlyScope: true).filter { $0.plugin?.name == item.id }
+                agents = try store.agents.packagedProfiles(workspace: item.workspace, onlyScope: true).filter { $0.pluginSource?.name == item.id }
+                hooks = try store.hooks.catalog(workspace: item.workspace).filter { $0.plugin?.name == item.id && $0.plugin?.installationID == item.instanceID }
+                rules = try service.ruleItems(workspace: item.workspace, onlyScope: true).filter { $0.reference.name == item.id && $0.reference.installationID == item.instanceID }
+            } catch { state.stringValue = error.localizedDescription }
         }
+        if detailPage != nil, body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { body = "暂无说明" }
+        setBody(body, in: readme)
+        components.delegate = nil
         components.reloadData()
-        componentHeight?.constant = components.numberOfRows == 0 ? 60 : min(120, max(44, components.rect(ofRow: components.numberOfRows - 1).maxY + 4))
-        if numberOfRows(in: components) > 0 { components.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }; updateControls()
+        let selectedRow = previousComponent.flatMap { componentIDs.firstIndex(of: $0) } ?? (sameSource && detailPage != nil ? -1 : 0)
+        selectComponent(selectedRow)
+        components.delegate = self
+        if let scroll = components.enclosingScrollView { AgentSettingsRecovery.restoreScroll(previousY, to: scroll) }
+        updateDetailVisibility()
+        updateControls()
     }
     private var selectedRuleIndex: Int? { let index = components.selectedRow - entries.count - connectors.count - agents.count - hooks.count; return rules.indices.contains(index) ? index : nil }
-    private func showRule(_ item: AgentPluginRuleItem) {
-        readme.string = item.definition.trigger.title + (item.definition.patterns.isEmpty ? "" : " · " + item.definition.patterns.joined(separator: ", ")) + "\n" + item.source.path + "\n\n" + item.definition.body
+    private func ruleBody(_ item: AgentPluginRuleItem) -> String {
+        item.definition.trigger.title + (item.definition.patterns.isEmpty ? "" : " · " + item.definition.patterns.joined(separator: ", ")) + "\n" + item.source.path + "\n\n" + item.definition.body
+    }
+    private var detailTab: DetailTab { DetailTab(rawValue: detailTabs.selectedSegment) ?? .readme }
+    private var componentIDs: [String] {
+        entries.map { "extension:" + $0.id } + connectors.map { "mcp:" + $0.id }
+            + agents.map { "agent:" + $0.id } + hooks.map { "hook:" + $0.id } + rules.map { "rule:" + $0.id }
+    }
+    private var componentID: String? {
+        let ids = componentIDs
+        return ids.indices.contains(components.selectedRow) ? ids[components.selectedRow] : nil
+    }
+    private var componentY: Double { max(0, components.enclosingScrollView?.contentView.bounds.minY ?? 0) }
+    private func selectComponent(_ row: Int) {
+        if row >= 0, row < components.numberOfRows { components.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+        else { components.deselectAll(nil) }
+    }
+    private func setBody(_ body: String, in text: NSTextView) {
+        guard text.string != body else { return }
+        text.string = body
+        text.setSelectedRange(NSRange(location: 0, length: 0))
+        if let scroll = text.enclosingScrollView { AgentSettingsRecovery.restoreScroll(0, to: scroll) }
+    }
+    private func updateDetailVisibility() {
+        guard detailPage != nil else { return }
+        let showsComponents = detailTab == .components
+        readme.enclosingScrollView?.isHidden = showsComponents
+        components.enclosingScrollView?.isHidden = !showsComponents
+        use.isHidden = !showsComponents
+        let rule = selectedRuleIndex.map { ruleBody(rules[$0]) }
+        ruleScroll.isHidden = !showsComponents || rule == nil
+        setBody(rule ?? "", in: ruleText)
+    }
+    @objc private func changeDetailTab() {
+        updateDetailVisibility()
+        focusDetail()
+        detailViewportChanged()
+    }
+    @objc private func detailViewportChanged(_ notification: Notification? = nil) {
+        if !applyingDetail, detailPage?.isPageVisible == true { onSettingsRecoveryChange?() }
+    }
+    func textViewDidChangeSelection(_ notification: Notification) { detailViewportChanged() }
+    private func focusDetail() {
+        guard let host = detailPage?.presentingWindow else { return }
+        applyingDetail = true; defer { applyingDetail = false }
+        host.contentView?.layoutSubtreeIfNeeded()
+        if detailTab == .readme {
+            host.makeFirstResponder(readme)
+            if let position = pendingDetail?.readme, position.apply(to: readme, focus: false) { pendingDetail?.readme = nil }
+        } else {
+            host.makeFirstResponder(components)
+            if let value = pendingDetail, let y = value.listY, let scroll = components.enclosingScrollView {
+                AgentSettingsRecovery.restoreScroll(y, to: scroll)
+                if value.selectedVisible, components.selectedRow >= 0 { components.scrollRowToVisible(components.selectedRow) }
+                pendingDetail?.listY = nil
+            }
+            if !ruleScroll.isHidden, let position = pendingDetail?.rule, position.apply(to: ruleText) { pendingDetail?.rule = nil }
+        }
     }
     private func updateControls() {
         AgentSettingsStyle.listState(list, text: search.stringValue.isEmpty ? "暂无插件" : "未找到匹配插件")
@@ -209,7 +340,12 @@ import UniformTypeIdentifiers
         use.title = connector ? "配置连接器" : agent ? "配置 Agent" : hook ? "配置 Hooks" : "在任务中使用"
         let available = selected.map { (try? service.requireScope($0.id, workspace: workspace)) != nil } ?? false
         let configurable = selected?.locallyReviewed != false
-        use.isEnabled = idle && (connector ? configurable && onConfigureMCP != nil : agent ? configurable && onConfigureAgent != nil : hook ? configurable && onConfigureHook != nil : selectedRuleIndex != nil ? available && onInsertRule != nil : available && entries.indices.contains(components.selectedRow) && onInsert != nil)
+        let hostedConfiguration = makeComponentSettingsPage != nil
+        use.isEnabled = idle && (connector ? configurable && (hostedConfiguration || onConfigureMCP != nil)
+            : agent ? configurable && (hostedConfiguration || onConfigureAgent != nil)
+            : hook ? configurable && (hostedConfiguration || onConfigureHook != nil)
+            : selectedRuleIndex != nil ? available && onInsertRule != nil
+            : available && entries.indices.contains(components.selectedRow) && onInsert != nil)
     }
     @objc private func openSettings() {
         if let window = settingsWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
@@ -223,13 +359,29 @@ import UniformTypeIdentifiers
         return editor
     }
     override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
-        try AgentSettingsRecovery.page("plugins", Recovery(workspace: workspace, selectedID: selected?.id,
-            project: scopes.selectedSegment == 1, query: search.stringValue, showsDetail: detailPage?.settingsHostWindow != nil))
+        let showsDetail = detailPage?.settingsHostWindow != nil
+        var detail: DetailRecovery?
+        if showsDetail, let item = selected {
+            let readmePosition = try pendingDetail?.readme ?? AgentTextViewport(readme)
+            let rulePosition = try pendingDetail?.rule ?? (selectedRuleIndex == nil ? nil : AgentTextViewport(ruleText))
+            detail = DetailRecovery(instance: item.instanceID, sourceHash: item.receipt.sourceHash,
+                tab: detailTab, component: componentID, selectedVisible: pendingDetail?.listY != nil
+                    ? pendingDetail?.selectedVisible == true : AgentSettingsRecovery.selectionIsVisible(in: components),
+                listY: pendingDetail?.listY ?? componentY, readme: readmePosition, rule: rulePosition)
+        }
+        return try AgentSettingsRecovery.page("plugins", Recovery(workspace: workspace, selectedID: selected?.id,
+            project: scopes.selectedSegment == 1, query: search.stringValue, showsDetail: showsDetail, detail: detail))
     }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
         guard page.kind == "plugins" else { throw PetError("设置草稿不属于插件") }
-        _ = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state),
-            keys: ["version", "workspace", "selectedID", "project", "query", "showsDetail"])
+        let fields = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state),
+            keys: ["version", "workspace", "selectedID", "project", "query", "showsDetail", "detail"])
+        if let raw = fields["detail"], !(raw is NSNull) {
+            let details = try AgentSettingsRecovery.object(raw, keys: ["instance", "sourceHash", "tab", "component", "selectedVisible", "listY", "readme", "rule"])
+            for key in ["readme", "rule"] {
+                if let value = details[key], !(value is NSNull) { try AgentTextViewport.validateObject(value) }
+            }
+        }
         let recovery = try JSONDecoder().decode(Recovery.self, from: page.state)
         guard recovery.version == 1, recovery.workspace == workspace, !recovery.project || workspace != nil else {
             throw PetError("原插件设置范围已变化，草稿已保留")
@@ -239,7 +391,21 @@ import UniformTypeIdentifiers
         selected = nil
         reload(select: recovery.selectedID)
         if recovery.showsDetail {
-            guard let id = recovery.selectedID, selected?.id == id, detailPage != nil else { throw PetError("原插件暂不可用，草稿已保留") }
+            guard let item = selected, recovery.selectedID == item.id, detailPage != nil else { throw PetError("原插件暂不可用，草稿已保留") }
+            if let detail = recovery.detail {
+                guard AgentSettingsRecovery.validHash(detail.sourceHash), (1...128).contains(detail.instance.utf8.count),
+                      detail.listY.map(AgentSettingsRecovery.validScroll) != false, (detail.component?.utf8.count ?? 0) <= 160,
+                      detail.readme?.valid != false, detail.rule?.valid != false else { throw PetError("插件阅读位置无效，原记录已保留") }
+                if detail.instance == item.instanceID, detail.sourceHash == item.receipt.sourceHash {
+                    components.delegate = nil
+                    selectComponent(detail.component.flatMap { componentIDs.firstIndex(of: $0) } ?? -1)
+                    components.delegate = self
+                    pendingDetail = detail
+                    detailTabs.selectedSegment = detail.tab.rawValue
+                    updateDetailVisibility()
+                    updateControls()
+                }
+            }
             showDetail()
         }
     }
@@ -255,8 +421,13 @@ import UniformTypeIdentifiers
             }
             return review
         }
-        guard ["plugin-settings", "plugin-history"].contains(page.kind) else { return nil }
+        let componentPage = ["mcp", "agents", "hooks"].contains(page.kind)
+        guard componentPage || ["plugin-settings", "plugin-history"].contains(page.kind) else { return nil }
         guard let selected, detailPage?.settingsHostWindow != nil else { throw PetError("原插件详情暂不可用，草稿已保留") }
+        if componentPage {
+            guard let child = makeComponentSettingsPage?(page.kind, selected.workspace, nil) else { throw PetError("原组件设置暂不可用，草稿已保留") }
+            return child
+        }
         if page.kind == "plugin-settings" { return makeSettingsEditor(selected) }
         return makeHistoryPage(try service.installation(selected.id))
     }
@@ -275,13 +446,17 @@ import UniformTypeIdentifiers
     @objc private func useComponent() {
         if let index = selectedRuleIndex { do { try onInsertRule?(rules[index]); close() } catch { state.stringValue = error.localizedDescription }; return }
         let index = components.selectedRow - entries.count
-        if connectors.indices.contains(index) { onConfigureMCP?(connectors[index].id, selected?.workspace); return }
+        if connectors.indices.contains(index) { configureComponent("mcp", id: connectors[index].id, standalone: onConfigureMCP); return }
         let agent = index - connectors.count
-        if agents.indices.contains(agent) { onConfigureAgent?(agents[agent].id, selected?.workspace); return }
+        if agents.indices.contains(agent) { configureComponent("agents", id: agents[agent].id, standalone: onConfigureAgent); return }
         let hook = agent - agents.count
-        if hooks.indices.contains(hook) { onConfigureHook?(hooks[hook].id, selected?.workspace); return }
+        if hooks.indices.contains(hook) { configureComponent("hooks", id: hooks[hook].id, standalone: onConfigureHook); return }
         guard entries.indices.contains(components.selectedRow), let onInsert else { return }
         do { let item = try store.extensions.item(entries[components.selectedRow].id, workspace: workspace); try onInsert(item); close() } catch { state.stringValue = error.localizedDescription }
+    }
+    private func configureComponent(_ kind: String, id: String, standalone: ((String, String?) -> Void)?) {
+        if let child = makeComponentSettingsPage?(kind, selected?.workspace, id) { presentSettingsChild(child) }
+        else { standalone?(id, selected?.workspace) }
     }
     @objc private func revealPackage() { if let item = selected { NSWorkspace.shared.activateFileViewerSelecting([item.root]) } }
     @objc private func openMarketplace() {
@@ -460,7 +635,8 @@ import UniformTypeIdentifiers
             search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + operation.title + (operation.comparesVersions ? "，已停用" : ""); onChange?()
             if let marketPage { marketPage.didApply(item, updating: operation == .update) }
             else if let historyPage { historyPage.didRestore(item) }
-            else { presentingWindow?.makeFirstResponder(detailPage?.isPageVisible == true ? components : list) }
+            else if detailPage?.isPageVisible == true { focusDetail() }
+            else { presentingWindow?.makeFirstResponder(list) }
         }
         return page
     }

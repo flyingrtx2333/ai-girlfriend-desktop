@@ -203,7 +203,26 @@ import AppKit
         let archived = try plugins.revision(revision, of: current)
         let context = AgentSettingsRecovery.Context(task: task, workspace: workspace)
         func make(_ kind: String) -> AgentSettingsPageController? {
-            kind == "plugins" ? AgentPluginWindow(store: tasks, workspace: workspace) : nil
+            guard kind == "plugins" else { return nil }
+            let manager = AgentPluginWindow(store: tasks, workspace: workspace)
+            manager.makeComponentSettingsPage = { kind, scope, selection in
+                switch kind {
+                case "mcp":
+                    let page = AgentMCPWindow(service: tasks.mcp, workspace: scope)
+                    if let selection { page.selectServer(selection) }
+                    return page
+                case "agents":
+                    let page = AgentProfileWindow(store: tasks, workspace: scope, workMode: task.organizationMode, taskID: taskID)
+                    if let selection { page.selectProfile(selection) }
+                    return page
+                case "hooks":
+                    let page = AgentHookWindow(service: tasks.hooks, workspace: scope)
+                    if let selection { page.selectHook(selection) }
+                    return page
+                default: return nil
+                }
+            }
+            return manager
         }
         func openReview() throws -> AgentPluginReviewPage {
             guard let history = pane.currentController else { throw PetError("缺少历史列表") }
@@ -223,10 +242,72 @@ import AppKit
         guard pane.show(category: "extensions", identity: context.identity, scope: "设置项目", recoveryContext: context, make: make),
               let manager = pane.currentController as? AgentPluginWindow else { throw PetError("缺少插件历史入口") }
         try manager.selectInstallation(current.id)
-        guard let detail = pane.currentController, let menu = try control(NSPopUpButton.self, "插件更多操作", page: detail).itemArray.first(where: { $0.title == "历史版本" }),
-              let action = menu.action, NSApp.sendAction(action, to: menu.target, from: menu), let history = pane.currentController else {
-            throw PetError("未进入插件历史版本")
+        func openHistoryFromDetail() throws -> AgentSettingsPageController {
+            guard let detail = pane.currentController,
+                  let menu = try control(NSPopUpButton.self, "插件更多操作", page: detail).itemArray.first(where: { $0.title == "历史版本" }),
+                  let action = menu.action, NSApp.sendAction(action, to: menu.target, from: menu),
+                  let history = pane.currentController, history !== detail else { throw PetError("未进入插件历史版本") }
+            return history
         }
+        guard let detail = pane.currentController else { throw PetError("缺少插件详情") }
+        let tabs = try control(NSSegmentedControl.self, "插件详情内容", page: detail)
+        let readme = try control(NSTextView.self, "插件说明", page: detail)
+        let components = try control(NSTableView.self, "插件组件", page: detail)
+        let selection = try reveal("HISTORY-LINE-109-v2", in: readme, host: host)
+        checks["pluginDetailOpensTheActualReadmeWithoutASecondScroller"] = tabs.selectedSegment == 0 && !readme.isHiddenOrHasHiddenAncestor
+            && components.isHiddenOrHasHiddenAncestor && readme.string.contains("HISTORY-LINE-140-v2")
+        select(tabs, 1)
+        components.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+        checks["pluginComponentsHaveTheirOwnFullHeightPage"] = readme.isHiddenOrHasHiddenAncestor && !components.isHiddenOrHasHiddenAncestor
+            && components.numberOfRows == 6 && (components.enclosingScrollView?.documentVisibleRect.height ?? 0) > components.rect(ofRow: 5).maxY
+        try openHistoryFromDetail().close()
+        checks["historyBackPreservesTheSelectedComponentAndItsAction"] = pane.currentController === detail && tabs.selectedSegment == 1
+            && components.selectedRow == 2 && (find(NSButton.self, in: detail.pageContentView, matching: { $0.title == "配置连接器" }) != nil)
+        let detailState = try capture()
+        host.setContentSize(NSSize(width: 780, height: 540))
+        try reopen(detailState)
+        guard let reopened = pane.currentController else { throw PetError("未恢复插件详情") }
+        let reopenedTabs = try control(NSSegmentedControl.self, "插件详情内容", page: reopened)
+        let reopenedComponents = try control(NSTableView.self, "插件组件", page: reopened)
+        checks["narrowReopenRestoresExactPluginComponent"] = reopened.detailHeading?.title == current.metadata.title && reopenedTabs.selectedSegment == 1
+            && reopenedComponents.selectedRow == 2 && host.firstResponder === reopenedComponents
+        reopenedComponents.selectRowIndexes(IndexSet(integer: 5), byExtendingSelection: false)
+        let rule = try control(NSTextView.self, "插件规则正文", page: reopened)
+        checks["selectedPluginRuleRemainsReadableInComponentPage"] = !rule.isHiddenOrHasHiddenAncestor && rule.string.contains("完整规则正文 version-2。")
+        select(reopenedTabs, 0)
+        let reopenedReadme = try control(NSTextView.self, "插件说明", page: reopened)
+        checks["restoredReadmeReturnsToItsOriginalReadingPosition"] = reopenedReadme.selectedRange() == selection && host.firstResponder === reopenedReadme
+            && (reopenedReadme.enclosingScrollView?.contentView.bounds.minY ?? 0) > 0
+            && (reopenedReadme.enclosingScrollView?.documentVisibleRect.height ?? 0) > 240
+            && reopenedReadme.string == currentFiles["README.md"].map { String(decoding: $0, as: UTF8.self) }
+        var oldDetailState = detailState
+        let prior = try AgentConfigurationJSON.object(oldDetailState.pages[0].state).filter { $0.key != "detail" }
+        oldDetailState.pages[0].state = try JSONSerialization.data(withJSONObject: prior)
+        try reopen(oldDetailState)
+        if let old = pane.currentController {
+            checks["oldPluginDetailRecordsStillOpenTheCorrectVersion"] = try old.detailHeading?.title == current.metadata.title
+                && control(NSSegmentedControl.self, "插件详情内容", page: old).selectedSegment == 0
+        }
+        for (row, action, kinds, expectedText) in [
+            (2, "配置连接器", ["plugins", "mcp", "mcp-detail"], "history-inline:local"),
+            (3, "配置 Agent", ["plugins", "agents"], "公开只读审阅角色"),
+            (4, "配置 Hooks", ["plugins", "hooks"], "history-inline:public"),
+        ] {
+            try reopen(detailState)
+            guard let detail = pane.currentController else { throw PetError("找不到组件设置入口") }
+            try control(NSTableView.self, "插件组件", page: detail).selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            try press(action, page: detail)
+            let settings = try capture()
+            checks["pluginComponentSettingsCanBeSavedAndRecovered-" + kinds[1]] = settings.pages.map(\.kind) == kinds
+            try reopen(settings)
+            guard let child = pane.currentController else { throw PetError("组件设置未恢复") }
+            let reopenedKinds = try capture().pages.map(\.kind)
+            checks["pluginComponentSettingsRecoveryKeepsSameSource-" + kinds[1]] = text(child.pageContentView).contains(expectedText)
+                && reopenedKinds == kinds
+        }
+        try reopen(detailState)
+        host.setContentSize(NSSize(width: 1200, height: 774))
+        let history = try openHistoryFromDetail()
         let historyRows = try control(AgentSettingsCatalogTable.self, "插件历史版本列表", page: history), oldest = historyRows.numberOfRows - 1
         guard oldest == 7 else { throw PetError("历史版本少于预期") }
         historyRows.selectRowIndexes(IndexSet(integer: oldest), byExtendingSelection: false); historyRows.scrollRowToVisible(oldest)

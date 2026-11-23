@@ -2385,14 +2385,8 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
                 manager.onInsert = { [weak self] in try self?.insertExtension($0, taskID: taskID) }
                 manager.onInsertRule = { [weak self] in try self?.insertRule($0, taskID: taskID) }
             }
-            manager.onConfigureMCP = { [weak self, weak manager] id, scope in
-                if let child = self?.makeSettingsManager("mcp", taskID: taskID, workspace: scope, selection: id) { manager?.presentSettingsChild(child) }
-            }
-            manager.onConfigureAgent = { [weak self, weak manager] id, scope in
-                if let child = self?.makeSettingsManager("agents", taskID: taskID, workspace: scope, selection: id) { manager?.presentSettingsChild(child) }
-            }
-            manager.onConfigureHook = { [weak self, weak manager] id, scope in
-                if let child = self?.makeSettingsManager("hooks", taskID: taskID, workspace: scope, selection: id) { manager?.presentSettingsChild(child) }
+            manager.makeComponentSettingsPage = { [weak self] kind, scope, id in
+                self?.makeSettingsManager(kind, taskID: taskID, workspace: scope, selection: id)
             }
             return manager
         case "skills", "commands":
