@@ -326,6 +326,9 @@ import Foundation
         cancelAnalysis(id)
         promptSuggestions.cancel(id); skillEvolution.cancel(id)
         guard active[id] == nil, let task = store.task(id), !task.archived, task.kind != "hook" else { return }
+        guard !task.requiresNewInputAfterRejection else {
+            submissionError = "输入已被 Hook 阻止，请修改后重新发送"; notifyChange(id); return
+        }
         guard task.worktreeSetup == nil else { submissionError = "多源工作树尚未创建完成，请先继续创建"; notifyChange(id); return }
         if task.skillEvolutionJob != nil {
             do { let job = try AgentSkillDrafts.job(task,store:store); guard task.mode == .plan || job.approvedPlan != nil else { throw PetError("请先在会话中确认 Skill 方案") } }
@@ -362,8 +365,11 @@ import Foundation
             if record.mode == .goal, !launch.continuingGoal || record.goalExecution == nil { record.goalExecution = AgentGoalExecution(maximumTurns: taskSettings().goalMaximumTurns) }
             if [.stopped, .failed].contains(launch.previousStatus), !task.hasConfirmedKnowledgeCompletion {
                 let latest = task.messages.last(where: \.isHumanInput)
-                if task.queuedCount == 0, task.unansweredQueuedMessageID == nil || task.unansweredQueuedMessageID != latest?.id {
-                    record.messages.append(AgentMessage(role: "user", content: "继续完成原任务，保留之前的约束。", mcpSelection: latest?.mcpSelection))
+                let continuation = "继续完成原任务，保留之前的约束。"
+                let last = record.messages.dropFirst(AgentContext.offset(record)).last { $0.responseState == nil && $0.hookRejected != true }
+                let hasContinuation = last?.role == "user" && last?.nativeContext == true && last?.content == continuation
+                if task.queuedCount == 0, task.unansweredQueuedMessageID == nil || task.unansweredQueuedMessageID != latest?.id, !hasContinuation {
+                    record.messages.append(AgentMessage(role: "user", content: continuation, nativeContext: true))
                 }
                 record.goalAccepted = nil
             }

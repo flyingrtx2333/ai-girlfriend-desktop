@@ -22,7 +22,7 @@ import AppKit
         import fs from 'node:fs';
         import http from 'node:http';
         import path from 'node:path';
-        let compactions = 0;
+        let compactions = 0, identityAttempts = 0;
         const count = {prompt_tokens: 45, completion_tokens: 7, total_tokens: 52, prompt_tokens_details:{cached_tokens:4}, completion_tokens_details:{reasoning_tokens:2}};
         const server = http.createServer(async (req, res) => {
           if (req.url !== '/v1/chat/completions' || req.method !== 'POST' || req.headers.authorization !== 'Bearer PUBLIC-FIXTURE-ONLY') {
@@ -33,13 +33,15 @@ import AppKit
           const body = JSON.parse(Buffer.concat(chunks));
           const contents = body.messages.map(message => message.content).filter(value => typeof value === 'string');
           const system = contents[0], text = contents.join('\n');
-          const lastUser = body.messages.findLast(message => message.role === 'user' && typeof message.content === 'string')?.content ?? '';
+          const users = body.messages.filter(message => message.role === 'user' && typeof message.content === 'string').map(message => message.content);
+          const lastUser = users.at(-1) ?? '';
           const tool = body.messages.findLast(message => message.role === 'tool');
           const kind = lastUser === 'PUBLIC_SSE_MULTILINE_READ' ? (tool ? 'sse-source-result' : 'sse-multiline-read') :
             lastUser === 'PUBLIC_SSE_UNFRAMED_FINISH' ? (tool ? 'sse-unframed-read-executed' : 'sse-unframed-finish') :
             lastUser === 'PUBLIC_SSE_COMPANION' ? 'sse-companion' : lastUser === 'PUBLIC_SSE_COMPANION_EOF' ? 'sse-companion-eof' :
             system.startsWith('根据提供的真实任务记录') ? 'recap' :
             contents.some(value => value.startsWith('用户要求原文（仅作为理解记录的依据，不必复述）：')) ? 'compact' :
+            users.includes('PUBLIC_CONTINUATION_ORIGINAL') ? 'retry-identity' :
             text.includes('PUBLIC_QUEUED_SECOND') ? 'queue-retry' : text.includes('PUBLIC_QUEUE_FAILURE_FIRST') ? 'queue-failure' :
             text.includes('PUBLIC_REPLACEMENT_AFTER_FAILURE') ? 'replacement' : text.includes('PUBLIC_LATE_FAILURE_FIRST') ? 'late-failure' :
             text.includes('PUBLIC_STREAM_RETRY') ? 'stream-retry' : text.includes('PUBLIC_STREAM_EOF') ? 'stream-eof' :
@@ -48,6 +50,8 @@ import AppKit
             containsInterruptedOutput:text.includes('PUBLIC_INTERRUPTED_ASSISTANT'),
             queuedInputIsLatest:lastUser.startsWith('PUBLIC_QUEUED_SECOND'), queuedAttachmentOnWire:lastUser.includes('[附件编号：'),
             syntheticContinuation:text.includes('继续完成原任务，保留之前的约束。'),
+            continuationCount:users.filter(value => value === '继续完成原任务，保留之前的约束。').length,
+            includesRejectedInput:users.includes('PUBLIC_CONTINUATION_REJECTED'),
             readExpectedSource:tool?.tool_call_id === 'public-framed-read' && tool.content.includes('公开预算 49 元')}) + '\n');
           if (kind.startsWith('sse-')) {
             res.writeHead(200, {'Content-Type':'text/event-stream; charset=utf-8'});
@@ -79,10 +83,11 @@ import AppKit
             const reply = kind === 'sse-source-result' ? '公开文件金额为 49 元。' : kind === 'sse-companion' ? '陪伴回复完整。' : '未封帧的工具不应执行。';
             res.end(frame(delta({content:reply},'stop'), '\n') + frame({usage:count}) + 'data: [DONE]\n\n'); return;
           }
-          if (kind === 'stream-eof' || kind === 'cancel') {
+          const identityAttempt = kind === 'retry-identity' ? ++identityAttempts : 0;
+          if (kind === 'stream-eof' || kind === 'cancel' || identityAttempt === 2) {
             res.writeHead(200, {'Content-Type':'text/event-stream'});
             res.write('data: '+JSON.stringify({choices:[{delta:{content:'PUBLIC_INTERRUPTED_ASSISTANT'}}]})+'\n\n');
-            if (kind === 'stream-eof') { res.end(); return; }
+            if (kind === 'stream-eof' || identityAttempt === 2) { res.end(); return; }
           }
           if (kind === 'cancel') {
             const timer = setTimeout(() => res.end(), 15_000);
@@ -99,13 +104,13 @@ import AppKit
             }, 20);
             res.on('close', () => clearInterval(timer)); return;
           }
-          if (kind === 'error' || kind === 'late-failure') {
+          if (kind === 'error' || kind === 'late-failure' || identityAttempt === 1) {
             res.writeHead(500, {'Content-Type':'application/json'});
             res.end(JSON.stringify({error:{message:'公开服务失败 PUBLIC-FIXTURE-ONLY'}})); return;
           }
           const finish = kind === 'compact' && ++compactions === 1 ? 'length' : 'stop';
           const content = kind === 'compact' ? 'PUBLIC_COMPACTION_RESULT' : kind === 'recap' ? 'PUBLIC_RECAP_RESULT' : 'PUBLIC_DIALOGUE_RESULT';
-          if (['turn', 'queue-retry', 'replacement'].includes(kind)) {
+          if (['turn', 'queue-retry', 'replacement', 'retry-identity'].includes(kind)) {
             res.writeHead(200, {'Content-Type':'text/event-stream'});
             res.write('data: '+JSON.stringify({model:'fixture-observer',choices:[{delta:{content},finish_reason:'stop'}]})+'\n\n');
             res.end('data: '+JSON.stringify({usage:count})+'\n\ndata: [DONE]\n\n'); return;
@@ -179,7 +184,7 @@ import AppKit
         executionSettings.promptSuggestions = false; executionSettings.skillEvolutionSuggestions = false
         runtime.taskSettings = { executionSettings }
         var requests = 0, permit = true
-        runtime.modelRequestCheck = { guard permit, requests < 16 else { throw PetError("本机样例拒绝传输") }; requests += 1 }
+        runtime.modelRequestCheck = { guard permit, requests < 19 else { throw PetError("本机样例拒绝传输") }; requests += 1 }
         func rows() throws -> [(String, [String: Any])] {
             guard fm.fileExists(atPath: trace.path) else { return [] }
             return try String(contentsOf: trace, encoding: .utf8).split(separator: "\n").map { line in
@@ -404,6 +409,55 @@ import AppKit
         } catch { checks["companionReportsAnUnfinishedStreamWithOnlyCompleteDeltas"] = deltas == ["陪伴已收到。"] && error.localizedDescription.contains("中断") }
         checks["sseReadLeavesOriginalFileUnchanged"] = try Data(contentsOf: sourceFile) == sourceBytes
 
+        let retryWorkspace = output.appendingPathComponent("Retry", isDirectory: true)
+        try fm.createDirectory(at: retryWorkspace, withIntermediateDirectories: true)
+        let promptGuard = #"""
+        IFS= read -r payload
+        case "$payload" in
+          *PUBLIC_CONTINUATION_REJECTED*) printf '%s\n' '公开样例拒绝该输入' >&2; exit 2 ;;
+        esac
+        """#
+        let promptSettings = try JSONSerialization.data(withJSONObject: ["hooks": ["UserPromptSubmit": [["hooks": [[
+            "name": "公开输入检查", "type": "command", "command": promptGuard, "timeout": 4
+        ]]]]]])
+        try store.hooks.save(String(decoding: promptSettings, as: UTF8.self), project: true, workspace: retryWorkspace.path, expectedHash: nil)
+        guard let promptHook = try store.hooks.catalog(workspace: retryWorkspace.path).first(where: { $0.name == "公开输入检查" }) else { throw PetError("缺少公开输入检查") }
+        try store.hooks.setEnabled(promptHook, true, workspace: retryWorkspace.path)
+
+        let retry = store.create(title: "继续沿用原始要求", workspace: retryWorkspace.path, mode: .ask)
+        _ = try await AgentGit(store: store, taskID: retry, directory: AgentGit.metadata(workspace: retryWorkspace.path, creating: true)).initialize()
+        guard runtime.submit("PUBLIC_CONTINUATION_ORIGINAL", taskID: retry) else { throw PetError("公开续跑样例未开始") }
+        let firstFailure = try await settled(retry)
+        runtime.start(retry)
+        let secondFailure = try await settled(retry)
+        runtime.start(retry)
+        let resumed = try await settled(retry)
+        guard let originalID = firstFailure.messages.first?.id else { throw PetError("公开续跑样例缺少原输入") }
+        let continuation = resumed.messages.filter { $0.role == "user" && $0.nativeContext == true }
+        checks["RepeatedContinueKeepsOriginalInputAndPromptHookIdentity"] = resumed.messages.filter(\.isHumanInput).map(\.id) == [originalID] &&
+            resumed.hookPromptIDs == [originalID] && resumed.events.filter { $0.hook?.event == .prompt }.count == 1
+        let retryRows = try rows().filter { $0.0 == "wire" && $0.1["kind"] as? String == "retry-identity" }
+        let retryFragment = secondFailure.messages.last
+        checks["RepeatedContinueReusesThePersistedInstructionAndCompletes"] = firstFailure.status == .failed && secondFailure.status == .failed && resumed.status == .completed &&
+            continuation.count == 1 && continuation.first?.id == secondFailure.messages.last(where: { $0.role == "user" })?.id &&
+            retryRows.compactMap { $0.1["continuationCount"] as? Int } == [0, 1, 1] && retryRows.allSatisfy { $0.1["containsInterruptedOutput"] as? Bool == false }
+        checks["RetryKeepsTheInterruptedFragmentInTheOriginalTask"] = retryFragment?.responseState == .interrupted && retryFragment?.content == "PUBLIC_INTERRUPTED_ASSISTANT" &&
+            resumed.messages.contains { $0.id == retryFragment?.id && $0.responseState == .interrupted && $0.content == retryFragment?.content }
+
+        let rejected = store.create(title: "拒绝后必须发送新输入", workspace: retryWorkspace.path, mode: .ask), beforeRejection = requests
+        guard runtime.submit("PUBLIC_CONTINUATION_REJECTED", taskID: rejected) else { throw PetError("拒绝样例未开始") }
+        let refused = try await settled(rejected)
+        runtime.start(rejected)
+        let stillRefused = try await settled(rejected)
+        checks["ContinueCannotSendARejectedInputOrAnAutomaticReplacement"] = requests == beforeRejection && refused.requiresNewInputAfterRejection &&
+            stillRefused.messages.map(\.id) == refused.messages.map(\.id) && stillRefused.status == .failed
+        guard runtime.submit("PUBLIC_CONTINUATION_CORRECTION", taskID: rejected) else { throw PetError("更正样例未开始") }
+        let corrected = try await settled(rejected)
+        let correctedWire = try rows().last(where: { $0.0 == "wire" })?.1
+        checks["ExplicitCorrectionResumesWithoutSendingRejectedText"] = corrected.status == .completed && requests == beforeRejection + 1 &&
+            corrected.messages.first?.hookRejected == true && corrected.messages.filter(\.isHumanInput).map(\.content) == ["PUBLIC_CONTINUATION_CORRECTION"] &&
+            correctedWire?["includesRejectedInput"] as? Bool == false
+
         let denied = store.create(title: "公开传输门禁", workspace: workspace.path), count = try rows().count
         permit = false
         guard runtime.submit("PUBLIC_BLOCKED_BEFORE_WIRE", taskID: denied) else { throw PetError("本机门禁样例未开始") }
@@ -416,7 +470,8 @@ import AppKit
             && !traceText.contains(key)
         store.selectedID = owner
         try JSONSerialization.data(withJSONObject: ["taskID": owner, "queuedFailureTaskID": queued, "replacementTaskID": racing, "framedReadTaskID": multiline,
-                                                    "unframedFinishTaskID": unframed, "sourceSHA256": AgentFiles.hash(sourceBytes), "loopbackRequests": transmitted.count], options: [.sortedKeys]).write(
+                                                    "unframedFinishTaskID": unframed, "retryIdentityTaskID": retry, "rejectedRetryTaskID": rejected,
+                                                    "sourceSHA256": AgentFiles.hash(sourceBytes), "loopbackRequests": transmitted.count], options: [.sortedKeys]).write(
             to: output.appendingPathComponent("model-request-fixture.json"), options: .atomic)
     }
 

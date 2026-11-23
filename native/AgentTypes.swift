@@ -291,6 +291,9 @@ struct AgentTaskRecord: Codable, Identifiable {
         return status.title
     }
     var queuedCount: Int { (queuedInputs?.count ?? 0) + (queuedMessages?.count ?? 0) }
+    var requiresNewInputAfterRejection: Bool {
+        queuedCount == 0 && messages.last(where: { $0.role == "user" && $0.nativeContext != true })?.hookRejected == true
+    }
     var isAwaitingExecutionSlot: Bool { status == .ready && (queuedRun != nil || queuedCount > 0) }
     var unfinishedResponseIDs: Set<String> {
         let receipts = (modelReceipts ?? []).filter { $0.purpose == "conversation" }

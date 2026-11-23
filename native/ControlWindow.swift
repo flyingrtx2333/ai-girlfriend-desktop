@@ -5985,7 +5985,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         projectButton.isEnabled = (!locked || task.workspace == nil) && !task.archived && !managed && !delegated
         gitButton.isEnabled = task.workspace != nil && !managed
         browserButton.isEnabled = !managed
-        resumeButton.isHidden = (managed && task.kind != AgentKnowledgeCards.kind) || running || rollbackBlocked || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived
+        resumeButton.isHidden = (managed && task.kind != AgentKnowledgeCards.kind) || running || rollbackBlocked || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived || task.requiresNewInputAfterRejection
         resultsButton.title = ""; resultsButton.imagePosition = .imageOnly; resultsButton.toolTip = task.plan.isEmpty ? "任务记录" : "计划 \(task.plan.filter { $0.status == "completed" }.count)/\(task.plan.count)"
         renderDraftAttachments(task); setBusy(running); clearButton.title = task.archived ? "恢复任务" : "归档任务"
         composer.isEditable = !managed; attachmentButton.isEnabled = !managed
