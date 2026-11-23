@@ -6,10 +6,11 @@ import AppKit
         let main: AgentTextViewport, second: AgentTextViewport, standalone: AgentTextViewport
     }
     func runComposerRecoveryCheck(_ output: URL) async {
-        var report: [String: Any] = [:], checks: [String: Bool] = [:], requests = 0
+        var report: [String: Any] = [:], checks: [String: Bool] = [:], heights: [String: CGFloat] = [:], requests = 0
         do {
             ensureAgent()
             guard usesAgent, let tasks = agentStore, let runtime = agentRuntime, let host = control.window else { throw PetError("任务输入区不可用") }
+            guard tasks.hooks.sharedHome == output.appendingPathComponent("shared-home") else { throw PetError("输入区验收缺少独立配置目录") }
             runtime.modelRequestCheck = { requests += 1; throw PetError("草稿续写验收禁止模型请求") }
             let storage = AgentWorkspaceRecovery(profile: store.directory), workspace = output.appendingPathComponent("workspace").path
             let fixtureFile = output.appendingPathComponent("composer-fixture.json")
@@ -26,6 +27,27 @@ import AppKit
                     throw PetError("原窗口输入区不可见")
                 }
                 return text
+            }
+            func button(_ label: String, in window: NSWindow) throws -> NSButton {
+                guard let content = window.contentView, let result = views(content).compactMap({ $0 as? NSButton })
+                    .first(where: { $0.accessibilityLabel() == label }) else { throw PetError("输入区验收缺少按钮 " + label) }
+                return result
+            }
+            func bodyHeight(_ window: NSWindow, _ key: String) throws -> CGFloat {
+                let result = try composer(window).enclosingScrollView?.contentSize.height ?? 0
+                heights[key] = result
+                return result
+            }
+            func visible(_ view: NSView, in window: NSWindow) -> Bool {
+                guard let content = window.contentView else { return false }
+                return !view.isHiddenOrHasHiddenAncestor && !view.bounds.isEmpty &&
+                    view.visibleRect.height + 1 >= view.bounds.height && view.visibleRect.width + 1 >= view.bounds.width &&
+                    content.bounds.insetBy(dx: -1, dy: -1).contains(view.convert(view.bounds, to: content))
+            }
+            func dimensions(_ view: NSView) -> [String: [CGFloat]] {
+                func values(_ rect: NSRect) -> [CGFloat] { [rect.minX, rect.minY, rect.width, rect.height] }
+                return ["bounds": values(view.bounds), "visible": values(view.visibleRect),
+                        "window": values(view.convert(view.bounds, to: nil))]
             }
             func select(_ phrase: String, in window: NSWindow) throws -> NSRange {
                 let text = try composer(window), range = (text.string as NSString).range(of: phrase)
@@ -59,7 +81,26 @@ import AppKit
                 tasks.update(other) { $0.draft = otherInput }
                 tasks.update(changed) { $0.draft = changedInput }
                 host.setContentSize(NSSize(width: 780, height: 540))
+                control.showAgentTask(changed)
+                let shortHeight = try bodyHeight(host, "narrowShort")
+                let short = try composer(host)
+                let wrapped = String(repeating: "请核对公开文档中的安装与许可。", count: 22)
+                short.insertText(wrapped, replacementRange: NSRange(location: 0, length: (short.string as NSString).length))
+                await wait(0.08)
+                let wrappedHeight = try bodyHeight(host, "narrowWrapped")
+                short.insertText(changedInput, replacementRange: NSRange(location: 0, length: (short.string as NSString).length))
+                await wait(0.08)
+                checks["typingWrappedTextGrowsAndShorteningTextShrinks"] = try wrappedHeight >= 72 &&
+                    bodyHeight(host, "narrowShortAgain") == shortHeight && short.string == changedInput && host.firstResponder === short
                 control.showAgentTask(first)
+                await wait(0.15)
+                let longHeight = try bodyHeight(host, "narrowLong")
+                let sizeButton = try button("调整输入区高度", in: host), send = try button("发送", in: host)
+                let home = control.homeGamesReadback()
+                report["narrowLayout"] = ["resize": dimensions(sizeButton), "send": dimensions(send), "activity": home["layout"] ?? [:]]
+                checks["longDraftExpandsInTheNarrowWindowWithActivityAndActionsVisible"] = shortHeight == 44 && longHeight >= 72 &&
+                    visible(sizeButton, in: host) && visible(send, in: host) &&
+                    (home["layout"] as? [String: Bool])?["noOverlap"] == true
                 guard await flushWorkspaceWindows(), let mainID = control.workspaceSession?.id else { throw PetError("主窗口尚未保存") }
                 let range = try select(firstPhrase, in: host)
                 var selectionAutosaved = false
@@ -88,6 +129,32 @@ import AppKit
                 guard let second = additionalTaskWindows.last, let secondWindow = second.window else { throw PetError("第二个任务窗口未打开") }
                 secondWindow.appearance = NSAppearance(named: .aqua)
                 secondWindow.setContentSize(NSSize(width: 1320, height: 800))
+                let automatic = try bodyHeight(secondWindow, "wideAutomatic")
+                let resize = try button("调整输入区高度", in: secondWindow)
+                let location = resize.convert(NSPoint(x: resize.bounds.midX, y: resize.bounds.midY), to: nil)
+                func dragEvent(_ type: NSEvent.EventType, distance: CGFloat) throws -> NSEvent {
+                    guard let event = NSEvent.mouseEvent(with: type, location: NSPoint(x: location.x, y: location.y + distance),
+                        modifierFlags: [], timestamp: 0, windowNumber: secondWindow.windowNumber, context: nil, eventNumber: 0,
+                        clickCount: 1, pressure: 1) else { throw PetError("无法验收输入区拖动事件") }
+                    return event
+                }
+                resize.mouseDown(with: try dragEvent(.leftMouseDown, distance: 0))
+                resize.mouseDragged(with: try dragEvent(.leftMouseDragged, distance: 40))
+                resize.mouseUp(with: try dragEvent(.leftMouseUp, distance: 40))
+                let dragged = try bodyHeight(secondWindow, "wideDragged")
+                checks["draggingChangesOnlyTheOriginalWindowHeight"] = try automatic >= 145 && abs(dragged - automatic - 40) < 2 &&
+                    bodyHeight(host, "narrowWhileSecondResized") == longHeight && visible(button("发送", in: secondWindow), in: secondWindow)
+                try screenshot(secondWindow, "composer-wide-dragged")
+                let decremented = resize.accessibilityPerformDecrement()
+                let afterDecrement = try bodyHeight(secondWindow, "wideAfterKeyboardStep")
+                resize.performClick(nil)
+                checks["accessibleStepAndResetReturnToAutomaticHeight"] = try decremented && abs(afterDecrement - dragged + 24) < 2 &&
+                    bodyHeight(secondWindow, "wideAfterReset") == automatic
+                resize.performClick(nil)
+                let clicked = try bodyHeight(secondWindow, "wideFromClick")
+                resize.performClick(nil)
+                checks["singleClickCanExpandAndResetWithoutDragging"] = try clicked > dragged &&
+                    bodyHeight(secondWindow, "wideAfterClickReset") == automatic
                 let otherRange = try select(secondPhrase, in: secondWindow)
                 guard await flushWorkspaceWindows(), let secondID = second.workspaceSession?.id,
                       let mainPositions = try storage.loadDraftViewports(windowID: mainID)?.value.tasks,
@@ -113,6 +180,30 @@ import AppKit
                 control.showAgentTask(fixture.other)
                 checks["askWithoutWorkspaceRestoresTheOriginalSelection"] = try matches(fixture.standalone, in: host) &&
                     tasks.task(fixture.other)?.workspace == nil && tasks.task(fixture.other)?.mode == .ask
+                let ask = try composer(host), originalAskSelection = ask.selectedRange()
+                let expandedAsk = try bodyHeight(host, "askBeforeTerminal")
+                control.performShortcut(.findInTask)
+                let searchHeight = try bodyHeight(host, "askWithFind")
+                let closeSearch = try button("关闭查找", in: host), sendWithSearch = try button("发送", in: host)
+                checks["taskFindCompactsLongDraftBeforeSearchInput"] = (36...44).contains(searchHeight) &&
+                    visible(closeSearch, in: host) && visible(sendWithSearch, in: host)
+                closeSearch.performClick(nil)
+                checks["closingFindRestoresExpandedDraftAndFocus"] = try bodyHeight(host, "askAfterFind") == expandedAsk &&
+                    host.firstResponder === ask && ask.selectedRange() == originalAskSelection
+                try button("打开终端", in: host).performClick(nil)
+                await wait(0.2)
+                let compactAsk = try bodyHeight(host, "askWithTerminal")
+                let compactResize = try button("调整输入区高度", in: host), compactSend = try button("发送", in: host)
+                let dock = host.contentView.flatMap { views($0).compactMap { $0 as? AgentTerminalPanel }.first }
+                report["terminalLayout"] = ["send": dimensions(compactSend), "dock": dock.map(dimensions) ?? [:]]
+                checks["terminalAndSendRemainVisibleWithALongAskDraft"] = expandedAsk > compactAsk && compactAsk <= 40 && compactAsk >= 28 &&
+                    !visible(compactResize, in: host) && visible(compactSend, in: host) &&
+                    (dock.map { visible($0, in: host) } == true) && (control.homeGamesReadback()["visible"] as? Bool) == false
+                try screenshot(host, "composer-narrow-terminal")
+                try button("收起终端", in: host).performClick(nil)
+                checks["closingTerminalRestoresEditorHeightAndSelection"] = try bodyHeight(host, "askAfterTerminal") == expandedAsk &&
+                    ask.selectedRange() == originalAskSelection && ask.string == input("other")
+                control.checkTaskMonitor("stop-terminals")
                 let updated = try input("afterChange")
                 tasks.update(fixture.changed) { $0.draft = updated }
                 control.showAgentTask(fixture.changed)
@@ -132,6 +223,12 @@ import AppKit
                 checks["immediateOverlayReturnKeepsTheNewEditAndItsPosition"] = try matches(edited, in: host) && tasks.task(fixture.first)?.draft == expected
                 checks["actualEditReplacesOnlyTheRestoredSelectionAndSharesTheNewText"] = try composer(secondWindow).string == expected
                 try screenshot(host, "composer-narrow-continued")
+                host.appearance = NSAppearance(named: .aqua)
+                secondWindow.appearance = NSAppearance(named: .darkAqua)
+                try screenshot(host, "composer-narrow-light")
+                try screenshot(secondWindow, "composer-wide-dark")
+                host.appearance = NSAppearance(named: .darkAqua)
+                secondWindow.appearance = NSAppearance(named: .aqua)
             }
             checks["draftRecoverySendsNothing"] = [fixture.first, fixture.other, fixture.changed].allSatisfy {
                 tasks.task($0)?.messages.isEmpty == true && (tasks.task($0)?.modelReceipts ?? []).isEmpty
@@ -141,7 +238,7 @@ import AppKit
         } catch { report["error"] = error.localizedDescription }
         report["appPID"] = getpid()
         if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
-        report["modelRequests"] = requests; report["checks"] = checks
+        report["modelRequests"] = requests; report["checks"] = checks; report["bodyHeights"] = heights
         report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 } && requests == 0
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("composer-report.json"))
     }

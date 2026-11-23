@@ -74,7 +74,7 @@ import AppKit
             task.status = .waiting; task.pendingCalls = [longCall]
             task.approvals = [AgentApproval(call: longCall, reason: "核对多行终端命令\n所有命令只读取公开 README。", workspace: workspace)]
             task.messages = [AgentMessage(role: "user", content: "请先完整展示命令和超时设置。")]
-            task.draft = "这段补充还未发送。"
+            task.draft = (1...18).map { "补充 \($0) 暂留在草稿中" }.joined(separator: "\n")
         }
         tasks.update(question) { task in
             task.status = .waiting; task.pendingCalls = [questionCall]

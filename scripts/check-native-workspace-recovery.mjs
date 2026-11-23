@@ -28,6 +28,7 @@ if (monitor) {
 if (composer) {
   if (verifyNativeCandidate(app).kind !== 'isolated-local') throw Error('输入区恢复使用独立本地签名包。');
   await mkdir(path.join(output, 'workspace'), { mode: 0o700 });
+  await mkdir(path.join(output, 'shared-home'), { mode: 0o700 });
   const readme = await readFile(path.join(root, 'README.md'));
   await writeFile(path.join(output, 'workspace/README.md'), readme, { mode: 0o600 });
   const lines = readme.toString('utf8').split(/\r?\n/).filter(line => line && !line.startsWith('<'));

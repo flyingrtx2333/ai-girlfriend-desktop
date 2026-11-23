@@ -76,6 +76,45 @@ final class FormDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
+private final class ComposerResizeButton: AgentWorkbenchButton {
+    var inputHeight: (() -> CGFloat)?
+    var resize: ((CGFloat) -> Bool)?
+    private var dragStart: (y: CGFloat, height: CGFloat)?
+    private var dragged = false
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled, let height = inputHeight?() else { return }
+        dragStart = (event.locationInWindow.y, height)
+        dragged = false
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragStart else { return }
+        let distance = event.locationInWindow.y - dragStart.y
+        guard dragged || abs(distance) >= 3 else { return }
+        dragged = true
+        _ = resize?(dragStart.height + distance)
+    }
+    override func mouseUp(with event: NSEvent) {
+        guard dragStart != nil else { return }
+        dragStart = nil
+        if !dragged, bounds.contains(convert(event.locationInWindow, from: nil)) { performClick(nil) }
+    }
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .resizeUpDown)
+    }
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 126: _ = accessibilityPerformIncrement()
+        case 125: _ = accessibilityPerformDecrement()
+        default: super.keyDown(with: event)
+        }
+    }
+    override func accessibilityValue() -> Any? { inputHeight?().rounded() }
+    override func accessibilityPerformIncrement() -> Bool { resize?((inputHeight?() ?? 0) + 24) == true }
+    override func accessibilityPerformDecrement() -> Bool { resize?((inputHeight?() ?? 0) - 24) == true }
+}
+
 @MainActor final class ControlWindow: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSSearchFieldDelegate, NSComboBoxDelegate {
     weak var companion: AppDelegate?
     private var selectedTab = "chat"
@@ -147,6 +186,11 @@ final class FormDocumentView: NSView {
     private var draftViewports: [String: AgentTextViewport] = [:]
     private var pendingDraftViewport: String?
     private var applyingDraftViewport = false
+    private let composerResizeButton = ComposerResizeButton()
+    private var manualComposerHeight: CGFloat?
+    private var composerWrapWidth: CGFloat = 0
+    private var composerMeasurementPending = false
+    private var composerContentTrailing: NSLayoutConstraint?
     private let latestMessageButton = AgentDialogButton(title: "回到最新", target: nil, action: nil)
     private struct MessageSearch {
         var taskID: String, messageID: String, query: String
@@ -318,7 +362,9 @@ final class FormDocumentView: NSView {
             return self.beginAttachmentImport(urls, store: tasks, taskID: owner) != nil
         }
         taskSidebar.onOpenSearch = { [weak self] id, query, message in self?.selectAgentTask(id, searchQuery: query, messageID: message) }
-        taskSidebar.onSearchQueryChanged = { [weak self] in self?.taskFind.reset(); self?.clearMessageSearchHighlight() }
+        taskSidebar.onSearchQueryChanged = { [weak self] in
+            self?.taskFind.reset(); self?.clearMessageSearchHighlight(); self?.updateComposerHeight()
+        }
         taskSidebar.onSearchVisibilityChanged = { [weak self] in self?.refreshSidebarMoreSelection() }
         taskFind.onMatch = { [weak self] query, match in
             guard let self, let id = agentTaskID, taskFind.taskID == id else { return }
@@ -1143,6 +1189,9 @@ final class FormDocumentView: NSView {
         input.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(composerViewportChanged(_:)),
                                                name: NSView.boundsDidChangeNotification, object: input.contentView)
+        input.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(composerFrameChanged(_:)),
+                                               name: NSView.frameDidChangeNotification, object: input.contentView)
         for mode in AgentMode.allCases { modePopup.addItem(withTitle: mode.title) }; for mode in AgentPermissionMode.allCases { permissionPopup.addItem(withTitle: mode.title) }
         for popup in [modePopup, permissionPopup] { popup.controlSize = .small; popup.font = .systemFont(ofSize: 13); popup.isBordered = false; popup.target = self; popup.action = #selector(agentOptionsChanged) }
         modePopup.setAccessibilityLabel("任务模式"); permissionPopup.setAccessibilityLabel("审批方式")
@@ -1173,17 +1222,32 @@ final class FormDocumentView: NSView {
         ])
         let entry = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); entry.layer?.cornerRadius = 12; entry.layer?.borderWidth = 1
         for view in [draftAttachments, input, entryToolbar] { entry.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        let resize = composerResizeButton
+        resize.image = NSImage(systemSymbolName: "arrow.up.and.down", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
+        resize.imagePosition = .imageOnly; resize.isBordered = false; resize.contentTintColor = AgentWorkbenchTheme.secondaryText
+        resize.setAccessibilityRole(.slider); resize.setAccessibilityLabel("调整输入区高度")
+        resize.toolTip = "拖动调整输入区高度，单击展开或恢复自动高度"
+        resize.setAccessibilityHelp("上下方向键调整高度，空格展开或恢复自动高度")
+        resize.target = self; resize.action = #selector(toggleComposerHeight)
+        resize.inputHeight = { [weak input] in input?.contentSize.height ?? 0 }
+        resize.resize = { [weak self] height in self?.resizeComposer(to: height) == true }
+        entry.addSubview(resize); resize.translatesAutoresizingMaskIntoConstraints = false
         entryInputHeight = input.heightAnchor.constraint(equalToConstant: 60)
         entryInputHeight.priority = .init(NSLayoutConstraint.Priority.defaultHigh.rawValue - 1)
         entryInputMinimumHeight = input.heightAnchor.constraint(greaterThanOrEqualToConstant: 28)
+        let contentTrailing = input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14)
+        composerContentTrailing = contentTrailing
         entryTopInset = draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8)
         entryToolbarGapAbove = entryToolbar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 8)
         entryBottomInset = entryToolbar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)
         NSLayoutConstraint.activate([
             draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14),
-            draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14),
+            draftAttachments.trailingAnchor.constraint(equalTo: input.trailingAnchor),
+            resize.widthAnchor.constraint(equalToConstant: 24), resize.heightAnchor.constraint(equalToConstant: 17),
+            resize.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -12),
+            resize.topAnchor.constraint(equalTo: entry.topAnchor, constant: resize.alignmentRectInsets.top + 1),
             entryTopInset, input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14),
-            input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14),
+            contentTrailing,
             input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor), entryInputHeight, entryInputMinimumHeight,
             entryToolbar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 12),
             entryToolbar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10),
@@ -1287,6 +1351,10 @@ final class FormDocumentView: NSView {
         let hideComposer = fullWorkspace || fullMonitor
         if hideComposer, !terminalSplit.isHidden { preserveDraftViewportWhileHidden() }
         terminalSplit.isHidden = hideComposer
+        let terminalDocked = terminalPanel?.isShown == true
+        workbenchEmpty.isHidden = hasMessages || terminalDocked
+        emptyBefore.isHidden = hasMessages || compactHeight || terminalDocked
+        emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
         updateTerminalDock()
         if !showWorkspace { taskWorkspace.setVisible(false) }
         taskWorkspace.updateHeader(full: fullWorkspace, canSplit: remaining >= 920)
@@ -1309,9 +1377,6 @@ final class FormDocumentView: NSView {
         inspectorRule.isHidden = fullMonitor || fullWorkspace || !(showInspector || showWorkspace)
         headerInspectorRule.isHidden = !showInspector || fullMonitor
         pageTitle.isHidden = !chatting; workbenchBadge.isHidden = !chatting
-        let terminalDocked = terminalPanel?.isShown == true
-        workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages || compactHeight || terminalDocked; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
-        emptyBeforeHeight.constant = max(0, min(160, ((window?.contentView?.bounds.height ?? 800) - 560) * 0.6))
         let gamesVisible = chatting && !hasMessages && !fullWorkspace && !fullMonitor && !terminalDocked && !task.archived && task.kind != "hook" && !task.isProjectDocumentation
         homeGamesView?.show(gamesVisible, context: task.id + ":" + task.organizationMode.rawValue)
         if gamesVisible, let store = companion?.agentStore { companion?.homeGames.refreshActivity(store) }
@@ -1656,7 +1721,7 @@ final class FormDocumentView: NSView {
             default: checks["CompletedWorkbenchKeepsConversationAndFollowup"] = visible(history) && composer.isEditable && sendButton.isEnabled
             }
         }
-        if let long = ids["longApproval"], let question = ids["question"] {
+        if let long = ids["longApproval"], let longDraft = tasks.task(long)?.draft, let question = ids["question"] {
             showAgentTask(long); root.layoutSubtreeIfNeeded()
             capture("long-approval")
             let viewport = approvalScroll.contentView.bounds
@@ -1665,17 +1730,19 @@ final class FormDocumentView: NSView {
                 && viewport.height <= 72 && !approvalScroll.hasHorizontalScroller && visible(approveButton) && visible(denyButton)
                 && approvalText.string.contains("所有命令只读取公开 README。") && approvalText.string.contains("第 14 行")
                 && approvalOptions.stringValue == "网络 开启 · 超时 17 秒" && visible(approvalOptions) && approvalText.string.contains("\\u{202E}")
-                && !approvalText.string.contains("\u{202E}") && composer.string == "这段补充还未发送。"
+                && !approvalText.string.contains("\u{202E}") && composer.string == longDraft
             approvalText.scrollRangeToVisible(NSRange(location: (approvalText.string as NSString).length, length: 0))
             checks["ApprovalEndCanBeReachedWhileActionsStayPut"] = approvalScroll.contentView.bounds.minY > 0
                 && frames["long-approval"]?["allow"] == [rect(approveButton).minX, rect(approveButton).minY, rect(approveButton).width, rect(approveButton).height]
+            checks["LongDraftDoesNotPushApprovalOrSendOffscreen"] = longDraft.components(separatedBy: "\n").count >= 18 && composerResizeButton.isHidden &&
+                (composer.enclosingScrollView?.contentSize.height ?? 0) <= 44 && visible(approveButton) && visible(denyButton) && visible(sendButton)
             showAgentTask(question); root.layoutSubtreeIfNeeded()
             capture("question")
             checks["QuestionShowsReadableTextAndNoPermitAction"] = visible(approvalScroll) && approveButton.isHidden && visible(denyButton) && denyButton.title == "不回答"
                 && composer.isEditable && approvalText.string == "请确认要核对 README 的安装、运行还是许可章节。"
                 && approvalText.font?.fontName == NSFont.systemFont(ofSize: 13).fontName && approvalScroll.contentView.bounds.minY == 0 && approvalOptions.isHidden
             checks["PreviewSwitchingKeepsApprovalUndecidedAndDraftIntact"] = tasks.task(long)?.pendingCalls.count == 1
-                && tasks.task(long)?.approvals.last?.decision == nil && tasks.task(long)?.draft == "这段补充还未发送。"
+                && tasks.task(long)?.approvals.last?.decision == nil && tasks.task(long)?.draft == longDraft
         }
         if let browser = ids["browserApproval"], let reason = tasks.task(browser)?.approvals.first?.reason {
             showAgentTask(browser); root.layoutSubtreeIfNeeded()
@@ -1790,6 +1857,7 @@ final class FormDocumentView: NSView {
         if taskFind.isHidden { taskSidebar.dismissSearch(); clearMessageSearchHighlight(); renderAgentMessages() }
         taskFind.open(taskID: task.id, sources: taskFindSources(task))
         reserveApprovalSpaceInTerminalSplit()
+        updateComposerHeight()
         window?.contentView?.layoutSubtreeIfNeeded()
     }
     func refreshShortcutControls() {
@@ -4320,9 +4388,93 @@ final class FormDocumentView: NSView {
         guard let value = companion?.windowDraft(task.id, attributes: composer.typingAttributes) else { return }
         if let manager = composer.layoutManager, manager.textStorage !== value.storage {
             pendingDraftViewport = task.id
+            if entryInputHeight != nil, let previous = manager.textStorage {
+                NotificationCenter.default.removeObserver(self, name: NSTextStorage.didProcessEditingNotification, object: previous)
+            }
             manager.textStorage?.removeLayoutManager(manager); value.storage.addLayoutManager(manager)
+            if entryInputHeight != nil {
+                NotificationCenter.default.addObserver(self, selector: #selector(composerStorageChanged(_:)),
+                                                       name: NSTextStorage.didProcessEditingNotification, object: value.storage)
+                scheduleComposerMeasurement()
+            }
         }
         windowDraft = value; composer.delegate = self; composer.needsDisplay = true
+    }
+    @objc private func composerFrameChanged(_ notification: Notification) {
+        guard let width = composer.enclosingScrollView?.contentSize.width, width != composerWrapWidth else { return }
+        composerWrapWidth = width
+        scheduleComposerMeasurement()
+    }
+    @objc private func composerStorageChanged(_ notification: Notification) { scheduleComposerMeasurement() }
+    private func scheduleComposerMeasurement() {
+        guard !composerMeasurementPending else { return }
+        composerMeasurementPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            composerMeasurementPending = false
+            refreshComposerHeightKeepingHistory()
+        }
+    }
+    private var composerCanExpand: Bool {
+        selectedTab == "chat" && !terminalSplit.isHidden && terminalPanel?.isShown != true && composer.isEditable &&
+            approvalPanel.isHidden && mcpInputRow.isHidden && taskFind.isHidden
+    }
+    private var composerHeights: (base: CGFloat, maximum: CGFloat) {
+        let windowHeight = window?.contentView?.bounds.height ?? 800
+        let base: CGFloat = selectedTab == "chat" && terminalPanel?.isShown == true ? 40 : windowHeight < 650 ? 44 : 60
+        return (base, floor(min(240, base + max(36, (windowHeight - 420) / 2))))
+    }
+    @objc private func toggleComposerHeight() {
+        guard composerCanExpand else { return }
+        manualComposerHeight = manualComposerHeight == nil ? composerHeights.maximum : nil
+        refreshComposerHeightKeepingHistory()
+    }
+    private func resizeComposer(to preferred: CGFloat) -> Bool {
+        guard composerCanExpand, let height = composer.enclosingScrollView?.contentSize.height else { return false }
+        let range = composerHeights
+        let adjusted = min(range.maximum, max(range.base, preferred.rounded()))
+        guard abs(adjusted - height) >= 1 else { return false }
+        manualComposerHeight = adjusted
+        refreshComposerHeightKeepingHistory()
+        return true
+    }
+    private func refreshComposerHeightKeepingHistory() {
+        let follow = conversationVisible && history.nearLatest && messageSearch == nil && readingAnchorID == nil && taskFind.isHidden
+        if updateComposerHeight(), follow {
+            window?.contentView?.layoutSubtreeIfNeeded()
+            history.restoreReadingPosition(nil, rows: [:])
+        }
+    }
+    @discardableResult private func updateComposerHeight() -> Bool {
+        guard let entryInputHeight, let workbenchColumn, let scroll = composer.enclosingScrollView else { return false }
+        let range = composerHeights, canExpand = composerCanExpand
+        composerResizeButton.isHidden = !canExpand
+        composerContentTrailing?.constant = canExpand ? -39 : -14
+        var height = range.base
+        if canExpand, let manualComposerHeight {
+            height = min(range.maximum, max(range.base, manualComposerHeight))
+        } else if canExpand, (composer.textStorage?.length ?? 0) > 0, let layout = composer.layoutManager,
+                  let container = composer.textContainer, scroll.contentSize.width > 0 {
+            let cap = min(range.maximum, range.base + 96)
+            let inset = composer.textContainerInset.height * 2
+            // Only lay out enough of the draft to determine whether it fills the editor.
+            let region = NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: cap - inset)
+            layout.ensureLayout(forBoundingRect: region, in: container)
+            let lines = max(layout.usedRect(for: container).maxY, layout.extraLineFragmentUsedRect.maxY)
+            height = min(cap, max(range.base, ceil(lines + inset)))
+        }
+        let windowHeight = window?.contentView?.bounds.height ?? 800
+        let docked = selectedTab == "chat" && terminalPanel?.isShown == true
+        let compactHome = !workbenchEmpty.isHidden && windowHeight < 650 && height > range.base
+        let spacing: CGFloat = docked ? 8 : compactHome ? 10 : 14
+        if workbenchColumn.spacing != spacing { workbenchColumn.spacing = spacing }
+        workbenchColumnTop.constant = docked ? 12 : compactHome ? 16 : 28
+        workbenchColumnBottom.constant = docked ? -10 : compactHome ? -22 : -30
+        workbenchEmpty.spacing = compactHome ? 10 : 18
+        emptyBeforeHeight.constant = max(0, min(160, (windowHeight - 560) * 0.6) - (height - range.base))
+        guard height != entryInputHeight.constant else { return false }
+        entryInputHeight.constant = height
+        return true
     }
     private var composerPositionAvailable: Bool {
         selectedTab == "chat" && window?.isVisible == true && !composer.isHiddenOrHasHiddenAncestor &&
@@ -4899,7 +5051,7 @@ final class FormDocumentView: NSView {
         panel.onLayoutChange = { [weak self] in self?.workspaceSession?.changed() }
         panel.onHide = { [weak self] in
             guard let self else { return }
-            updateTerminalDock()
+            updateWorkbenchLayout()
             window?.makeFirstResponder(composer)
         }
         return panel
@@ -4907,7 +5059,7 @@ final class FormDocumentView: NSView {
     private func showTerminalDock() {
         if terminalSplit.isHidden, taskWorkspace.requested { taskWorkspace.hideForNavigation() }
         if terminalSplit.isHidden, !workbenchInspector.isHidden { closeTaskMonitor() }
-        updateTerminalDock(); window?.contentView?.layoutSubtreeIfNeeded(); terminalPanel?.focus()
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded(); terminalPanel?.focus()
     }
     internal func captureTerminalLayout(windowID: String) -> AgentTerminalLayout? {
         terminalPanel?.layoutToRestore(windowID: windowID, height: terminalSplit.recoveryHeight)
@@ -4924,11 +5076,7 @@ final class FormDocumentView: NSView {
         let shown = selectedTab == "chat" && terminalPanel?.isShown == true
         terminalSplit.showTerminal(shown ? terminalPanel : nil)
         reserveApprovalSpaceInTerminalSplit()
-        if let workbenchColumn {
-            let spacing: CGFloat = shown ? 8 : 14
-            if workbenchColumn.spacing != spacing { workbenchColumn.spacing = spacing }
-            workbenchColumnTop.constant = shown ? 12 : 28
-            workbenchColumnBottom.constant = shown ? -10 : -30
+        if workbenchColumn != nil {
             workbenchHistoryHeight.constant = shown ? 30 : 60
             entryTopInset.constant = shown ? 5 : 8
             entryToolbarGapAbove.constant = shown ? 4 : 8
@@ -4941,8 +5089,7 @@ final class FormDocumentView: NSView {
             if let font = composer.font, let layout = composer.layoutManager {
                 entryInputMinimumHeight.constant = max(28, ceil(layout.defaultLineHeight(for: font)) + textInset * 2)
             }
-            let windowHeight = window?.contentView?.bounds.height ?? 800
-            entryInputHeight.constant = shown ? 40 : windowHeight < 650 ? 44 : 60
+            updateComposerHeight()
         }
         let title = shown && !terminalSplit.isHidden ? "收起终端" : "打开终端"
         terminalButton.setAccessibilityLabel(title)
@@ -5911,6 +6058,7 @@ final class FormDocumentView: NSView {
         if let panel = mcpInputPanel, panel.request.id != mcpRequest?.id { panel.dismiss(); mcpInputPanel = nil }
         composer.isEditable = !task.archived && !managed
         taskFind.update(taskID: task.id, sources: taskFindSources(task))
+        updateComposerHeight()
         window?.contentView?.layoutSubtreeIfNeeded()
         if let anchorID = readingAnchorID, let row = messageRows[anchorID], let document = history.documentView, history.contentView.bounds.height > 0 {
             let y = row.convert(row.bounds, to: document).minY
