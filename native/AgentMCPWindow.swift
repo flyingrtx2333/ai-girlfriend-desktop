@@ -172,7 +172,7 @@ import UniformTypeIdentifiers
         applyConfigurationKind()
     }
     private func focusDetail() {
-        if tabs.selectedTabViewItem?.identifier as? String == "工具" { editorWindow?.makeFirstResponder(tools); return }
+        if tabs.selectedTabViewItem?.identifier as? String == "工具" { editorWindow?.makeFirstResponder(tools.firstInput); return }
         draftViewport.appear(default: configurationKind.selectedSegment == 0 ? form?.firstInput ?? editor : editor)
     }
     @objc private func changeConfiguration() {

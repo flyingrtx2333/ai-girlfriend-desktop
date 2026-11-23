@@ -132,11 +132,36 @@ import Darwin
         disclosure.performClick(nil)
         checks["mcpActualToolCatalogCollapsesWithoutExecutingTheTool"] = disclosure.state == .off && schema?.isHiddenOrHasHiddenAncestor == true
         guard let long = find(NSButton.self, in: tools, matching: { $0.accessibilityLabel() == "展开 MCP 工具 public_details" }) else { throw PetError("实际完整说明工具未显示") }; long.performClick(nil)
-        checks["mcpActualToolDescriptionIsNotCutByModelCatalogLimits"] = find(NSTextField.self, in: tools, matching: { $0.stringValue == String(repeating: "完整公开说明。", count: 400) && !$0.isHiddenOrHasHiddenAncestor }) != nil
+        checks["mcpActualToolDescriptionIsNotCutByModelCatalogLimits"] = find(NSTextField.self, in: tools, matching: { $0.stringValue == String(repeating: "完整公开说明。", count: 400) && $0.isSelectable && !$0.isHiddenOrHasHiddenAncestor }) != nil
+        let toolSearch = try control(NSSearchField.self, "搜索 MCP 工具", page: detail)
+        let toolCount = try control(NSTextField.self, "MCP 工具数量", page: detail)
+        let toolList = try control(NSScrollView.self, "MCP 工具列表", page: detail)
+        let toolFeedback = try control(NSTextField.self, "MCP 工具目录状态", page: detail)
+        func filter(_ query: String) {
+            toolSearch.stringValue = query
+            NSApp.sendAction(toolSearch.action!, to: toolSearch.target, from: toolSearch)
+            pane.layoutSubtreeIfNeeded()
+        }
+        filter("  PUBLIC VALUE ")
+        checks["mcpCatalogFiltersDescriptionsWithoutLosingExpandedTools"] = toolCount.stringValue == "1 / 2" && !disclosure.isHiddenOrHasHiddenAncestor && long.isHiddenOrHasHiddenAncestor && long.state == .on
+        filter("public_details")
+        checks["mcpCatalogFiltersActualToolNamesAndKeepsTheirDetails"] = toolCount.stringValue == "1 / 2" && disclosure.isHiddenOrHasHiddenAncestor && !long.isHiddenOrHasHiddenAncestor && long.state == .on
+        filter("nothing-matches")
+        checks["mcpCatalogShowsNoMatchesWithSearchStillVisible"] = toolCount.stringValue == "0 / 2" && toolFeedback.stringValue == "没有匹配的工具" && !toolFeedback.isHiddenOrHasHiddenAncestor && !toolSearch.isHiddenOrHasHiddenAncestor
+        filter("")
+        checks["mcpCatalogClearsFilterWithoutRefetchingOrCollapsing"] = toolCount.stringValue == "2 个工具" && !disclosure.isHiddenOrHasHiddenAncestor && !long.isHiddenOrHasHiddenAncestor && long.state == .on && childPID.map { kill($0, 0) == 0 } == true
+        let toolLayout = [
+            "searchHosted": toolSearch.window === host,
+            "listHosted": toolList.window === host,
+            "searchOutsideList": !toolSearch.isDescendant(of: toolList),
+            "searchWidthResolved": toolSearch.bounds.width >= 190 && !toolSearch.hasAmbiguousLayout,
+            "listLayoutResolved": !toolList.hasAmbiguousLayout
+        ]
+        checks["mcpCatalogSearchStaysOutsideTheScrollableList"] = toolLayout.values.allSatisfy { $0 }
         checks["mcpFormCheckLeavesTheManagerNormally"] = pane.leave()
         if let childPID { for _ in 0..<30 { if kill(childPID, 0) != 0 { break }; try await Task.sleep(for: .milliseconds(50)) } }
         checks["mcpToolCatalogCheckReleasesItsActualOwnedProcess"] = childPID.map { kill($0, 0) != 0 } == true
-        try JSONSerialization.data(withJSONObject: ["modelRequests": 0, "actualProcess": childPID.map { Int($0) } ?? -1, "checks": checks, "keyboard": keyboard], options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("mcp-form-check.json"))
+        try JSONSerialization.data(withJSONObject: ["modelRequests": 0, "actualProcess": childPID.map { Int($0) } ?? -1, "checks": checks, "keyboard": keyboard, "toolLayout": toolLayout], options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("mcp-form-check.json"))
         return checks
     }
 }
