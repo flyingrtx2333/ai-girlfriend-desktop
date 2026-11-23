@@ -23,9 +23,9 @@ struct AgentWorktreeRetentionPolicy: Codable, Equatable {
     }
     var summary: String {
         let scope = archivedOnly ? "仅已归档任务" : "全部闲置任务"
-        let condition = maximumCount.map { "每个项目最多保留 \($0) 个。超过时优先回收最久未使用的工作树。" }
-            ?? Self.duration(idleSeconds) + "后回收。"
-        return scope + " · " + condition + "\n先完整备份文件与暂存状态，长期保留备份和分支。"
+        let condition = maximumCount.map { "每个项目最多保留 \($0) 个\n超过时优先回收最久未使用且符合条件的工作树。" }
+            ?? "闲置 " + Self.duration(idleSeconds) + "后回收"
+        return "回收范围  " + scope + "\n保留条件  " + condition
     }
     static func duration(_ seconds: Double) -> String {
         if seconds.truncatingRemainder(dividingBy: 86400) == 0 { return "\(Int(seconds / 86400)) 天" }
@@ -75,15 +75,22 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
         if previous != revision { cancelWork() }
         changed()
     }
+    func requirePolicyRevision(_ expected: String?) throws {
+        guard try rawPolicy().map(AgentFiles.hash) == expected else { throw PetError("回收设置已变化，请重新载入后保存") }
+    }
     func save(_ value: AgentWorktreeRetentionPolicy, expectedRevision: String?, consent: Bool = false) throws {
         try value.validate()
         guard !value.enabled || value == policy || consent else { throw PetError("请先确认自动回收的范围与条件") }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let lease = try AgentWorktreeLease(in: directory, label: "回收设置", name: "policy.lock")
         defer { withExtendedLifetime(lease) {} }
-        guard try rawPolicy().map(AgentFiles.hash) == expectedRevision else { throw PetError("回收设置已变化，请重新载入后保存") }
+        try requirePolicyRevision(expectedRevision)
         let data = try encoder.encode(value)
-        try AgentFiles(workspace: directory.path).writeData(data, to: directory.appendingPathComponent("policy.json"), permissions: 0o600)
+        let files = try AgentFiles(workspace: directory.path)
+        let write = try AgentKnowledgeFileWrite(files: files, path: "policy.json", data: data, expectedHash: expectedRevision,
+            missing: expectedRevision == nil, permissions: 0o600, label: "回收设置")
+        try write.requireCurrent()
+        try files.writeData(data, to: write.url, permissions: write.permissions, expectedTarget: write.signature)
         policy = value; revision = AgentFiles.hash(data); error = nil; retryAfter = [:]
         cancelWork(); changed()
         DistributedNotificationCenter.default().postNotificationName(Self.policyChanged, object: AgentFiles.hash(Data(directory.path.utf8)), userInfo: nil, deliverImmediately: true)

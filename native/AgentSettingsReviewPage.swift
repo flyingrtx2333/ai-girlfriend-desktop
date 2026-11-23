@@ -20,11 +20,13 @@ import AppKit
     private let chooser = NSPopUpButton()
     private lazy var compactChooser = AgentSettingsPopupFrame(chooser, outlined: true, maximumWidth: nil)
     private let header = NSStackView(), status = AgentSettingsStatusField("审阅操作错误")
+    private let cancel = AgentDialogButton(title: "", target: nil, action: nil)
     private let apply = AgentDialogButton(title: "", target: nil, action: nil)
     private var working = false, finished = false, contentReady = true, reloading = false
     private var displayedTitle: String?, positions: [String: AgentTextViewport] = [:]
     private var pendingReading: ReadingLocation?, readingScheduled = false
     var selectedSection: String? { displayedTitle }
+    var prefersCancelFocus = false
     var onApply: (() throws -> Void)? { didSet { updateApply() } }
     var onApplied: (() -> Void)?
     override var minimumSettingsContentHeight: CGFloat { 228 }
@@ -71,7 +73,8 @@ import AppKit
         detail.setContentHuggingPriority(.defaultLow, for: .horizontal)
         split.setContentHuggingPriority(.defaultLow, for: .vertical)
 
-        let cancel = AgentDialogButton(title: applyTitle == nil ? "返回" : "取消", target: self, action: #selector(cancelReview))
+        cancel.title = applyTitle == nil ? "返回" : "取消"
+        cancel.target = self; cancel.action = #selector(cancelReview)
         cancel.keyEquivalent = "\u{1b}"; cancel.keyEquivalentModifierMask = []
         AgentDialogStyle.action(cancel)
         apply.title = applyTitle ?? ""; apply.target = self; apply.action = #selector(applyReview); apply.isHidden = applyTitle == nil
@@ -101,10 +104,13 @@ import AppKit
         super.settingsDidAppear()
         updateReaderLayout()
         if pendingReading != nil { scheduleReading(); return }
-        let reader: NSView = sections.count < 2 ? preview : (compactChooser.isHidden ? list : chooser)
-        presentingWindow?.makeFirstResponder(reader)
+        presentingWindow?.makeFirstResponder(initialFocus)
     }
     override func pageDidLayout() { scheduleReading() }
+    private var initialFocus: NSView {
+        if prefersCancelFocus { return cancel }
+        return sections.count < 2 ? preview : (compactChooser.isHidden ? list : chooser)
+    }
     private func updateReaderLayout() {
         let multiple = sections.count > 1, compact = (pageContentView?.bounds.width ?? 0) < 590
         let focus = presentingWindow?.firstResponder
@@ -187,8 +193,7 @@ import AppKit
             defer { readingScheduled = false }
             guard isPageVisible, !sections.isEmpty, detail.contentSize.height > 0, let saved = pendingReading else { return }
             AgentSettingsRecovery.restoreScroll(saved.listY, to: index)
-            let reader: NSView = sections.count < 2 ? preview : (compactChooser.isHidden ? list : chooser)
-            if saved.selected != displayedTitle || saved.preview?.focused != true { presentingWindow?.makeFirstResponder(reader) }
+            if saved.selected != displayedTitle || saved.preview?.focused != true { presentingWindow?.makeFirstResponder(initialFocus) }
             if saved.selected == displayedTitle, let reading = saved.preview, reading.apply(to: preview), reading.focused,
                let selection = reading.selections.first { preview.scrollRangeToVisible(selection.range) }
             pendingReading = nil; readingChanged()

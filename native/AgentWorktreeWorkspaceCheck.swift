@@ -458,6 +458,7 @@ import AppKit
         checks["globalPolicySavesActualDisabledSevenDayPolicy"] = !saved.enabled && saved.archivedOnly && saved.idleSeconds == 7 * 86400 && !policy.hasPendingChanges
         policy.refreshState()
         checks["globalPolicySaveFeedbackSurvivesServiceRefresh"] = (policy.workspaceReadback()["state"] as? String)?.hasPrefix("已保存 · ") == true
+        checks.merge(try checkPolicyReview(settings, window: window, service: tasks.worktreeRetention)) { _, latest in latest }
         control.show(tab: "chat")
         guard let reopened = control.checkWorktreeSettingsPage() as? AgentWorktreeSettingsWindow else { throw PetError("工作树设置无法重新进入") }
         checks["globalPolicyReentryReadsSavedPolicy"] = reopened !== settings && reopened.policy.workspaceReadback()["idleSeconds"] as? Double == 7 * 86400 && !reopened.policy.hasPendingChanges
@@ -509,6 +510,65 @@ import AppKit
         report["actualHistoryReceipt"] = ["id": receipt.id, "workspace": historyChild.workspace, "backupID": backupID, "restoredExactIndexSHA256": AgentFiles.hash(historyRestoredIndex), "automaticPolicyFinallyDisabled": !service.policy.enabled]
         window.appearance = nil; window.setContentSize(NSSize(width: 1200, height: 774))
         return (checks, report)
+    }
+
+    private func checkPolicyReview(_ settings: AgentWorktreeSettingsWindow, window: NSWindow, service: AgentWorktreeRetention) throws -> [String: Bool] {
+        let policy = settings.policy, original = service.policy
+        let file = service.directory.appendingPathComponent("policy.json"), before = try Data(contentsOf: file)
+        let fm = FileManager.default
+        var checks: [String: Bool] = [:]
+        func find<T: NSView>(_ type: T.Type, in root: NSView?, matching match: (T) -> Bool) -> T? {
+            guard let root, !root.isHiddenOrHasHiddenAncestor else { return nil }
+            if let value = root as? T, match(value) { return value }
+            for child in root.subviews {
+                if let result = find(type, in: child, matching: match) { return result }
+            }
+            return nil
+        }
+        func open() throws -> (AgentSettingsReviewPage, NSButton) {
+            policy.checkWorkspace(enable: true, action: "save")
+            guard let review = control.checkWorktreeSettingsPage(open: false) as? AgentSettingsReviewPage,
+                  let button = find(NSButton.self, in: window.contentView, matching: { $0.title == "应用" }) else {
+                throw PetError("缺少回收策略的页内审阅")
+            }
+            return (review, button)
+        }
+        let (review, apply) = try open()
+        let history = try control.captureSettingsRecovery()
+        checks["policyReviewInSameWindowWithNoWrites"] = try review.presentingWindow === window && window.attachedSheet == nil &&
+            apply.isEnabled && Data(contentsOf: file) == before && history?.pages.map(\.kind) == ["worktrees", "worktree-policy-review"]
+        checks["policyReviewInitiallyFocusesCancel"] = (window.firstResponder as? NSButton)?.title == "取消"
+        review.close()
+        checks["policyReviewBackKeepsDraftAndReturnsFocus"] = control.checkWorktreeSettingsPage(open: false) === settings &&
+            policy.hasPendingChanges && (window.firstResponder as? NSButton)?.title == "应用回收设置"
+
+        let (stale, applyStale) = try open()
+        var external = original; external.idleSeconds = 14 * 86400
+        try service.save(external, expectedRevision: service.revision)
+        let externalBytes = try Data(contentsOf: file)
+        applyStale.performClick(nil)
+        checks["policyReviewBlocksChangedRevision"] = try !applyStale.isEnabled && control.checkWorktreeSettingsPage(open: false) === stale &&
+            Data(contentsOf: file) == externalBytes && service.policy == external
+        stale.close()
+        try service.save(original, expectedRevision: service.revision)
+        policy.checkWorkspace(action: "reload")
+
+        let (current, applyCurrent) = try open()
+        try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: file.path)
+        defer { try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path) }
+        applyCurrent.performClick(nil)
+        let issue = find(NSTextField.self, in: current.pageContentView, matching: { $0.accessibilityLabel() == "审阅操作错误" })
+        checks["policyReviewReadOnlyRetryKeepsOriginalBytesAndMode"] = try issue?.stringValue.contains("只读") == true &&
+            applyCurrent.isEnabled && Data(contentsOf: file) == before && fm.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int == 0o400
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        applyCurrent.performClick(nil)
+        var accepted = original; accepted.enabled = true
+        checks["policyReviewOnlyExplicitApplyWritesReviewedValue"] = try service.policy == accepted &&
+            AgentWorktreeRetentionPolicy.read(Data(contentsOf: file)) == accepted && !policy.hasPendingChanges &&
+            control.checkWorktreeSettingsPage(open: false) === settings
+        try service.save(original, expectedRevision: service.revision)
+        policy.checkWorkspace(action: "reload")
+        return checks
     }
 
     private func renderWorktreeReview(_ output: URL) -> Bool {

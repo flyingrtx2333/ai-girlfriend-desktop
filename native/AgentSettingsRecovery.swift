@@ -142,7 +142,9 @@ enum AgentSettingsRecovery {
                 return kinds == [root] || kinds == [root, "mcp-detail"] || kinds == [root, "mcp-import"] || kinds == [root, "mcp-detail", "mcp-import"]
             case ("teams", "teams"): return kinds == [root] || kinds == [root, "team-template-review"] || agentRoute([root, "agents"])
             case ("agents", "agents"), ("extensions", "agents"): return agentRoute([root])
-            case ("git", "git"), ("worktrees", "worktrees"): return kinds == [root] && context.taskID == nil && context.workspace == nil
+            case ("git", "git"): return kinds == [root] && context.taskID == nil && context.workspace == nil
+            case ("worktrees", "worktrees"):
+                return (kinds == [root] || kinds == [root, "worktree-policy-review"]) && context.taskID == nil && context.workspace == nil
             default: return false
             }
         }

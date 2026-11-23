@@ -1,6 +1,13 @@
 import AppKit
 
 @MainActor final class AgentWorktreeSettingsWindow: AgentSettingsPageController, NSWindowDelegate {
+    private struct ReviewSource: Codable, Equatable {
+        let policy: AgentWorktreeRetentionPolicy
+        let revision: String?
+        let parentY: Double
+    }
+    private typealias PolicyReview = AgentSettingsResumableReview<ReviewSource>
+    private var reviewPage: PolicyReview?
     let policy: AgentWorktreePolicyView
     init(store: AgentStore, onOpenTask: @escaping (String) -> Void) {
         policy = AgentWorktreePolicyView(store: store, onOpenTask: onOpenTask)
@@ -11,6 +18,11 @@ import AppKit
         content.addSubview(policy); policy.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([policy.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), policy.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), policy.topAnchor.constraint(equalTo: content.topAnchor, constant: 16), policy.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -16)])
         policy.onOpenManager = { [weak self] in self?.presentSettingsChild($0) }
+        policy.onReview = { [weak self] value, revision in
+            guard let self else { return }
+            let source = ReviewSource(policy: value, revision: revision, parentY: max(0, policy.enclosingScrollView?.contentView.bounds.minY ?? 0))
+            presentSettingsChild(makeReview(source))
+        }
         policy.onDraftChange = { [weak self] in self?.onSettingsRecoveryChange?() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -21,14 +33,46 @@ import AppKit
         }
         return content
     }
-    override func settingsDidAppear() { super.settingsDidAppear(); policy.reloadUpstreamPreference(); policy.refreshState() }
+    override func settingsDidAppear() {
+        super.settingsDidAppear(); policy.reloadUpstreamPreference(); policy.refreshState()
+        if reviewPage != nil { reviewPage = nil; policy.focusApply() }
+    }
     override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? { try policy.captureRecovery() }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws { try policy.restoreRecovery(page) }
+    override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        guard page.kind == "worktree-policy-review" else { return nil }
+        let source = try PolicyReview.savedSource(page, kind: page.kind)
+        try source.policy.validate()
+        guard source.policy.enabled, AgentSettingsRecovery.validHash(source.revision),
+              AgentSettingsRecovery.validScroll(source.parentY) else { throw PetError("原回收审阅记录无效") }
+        if let scroll = policy.enclosingScrollView {
+            presentingWindow?.contentView?.layoutSubtreeIfNeeded()
+            AgentSettingsRecovery.restoreScroll(source.parentY, to: scroll)
+        }
+        return makeReview(source)
+    }
+    private func makeReview(_ source: ReviewSource) -> PolicyReview {
+        let page = PolicyReview(kind: "worktree-policy-review", source: source, title: "审阅自动回收", metadata: "所有项目",
+            notice: "符合条件的工作树会在备份文件与暂存区后移除。备份与分支长期保留。",
+            sections: [("回收设置", source.policy.summary)], applyTitle: "应用")
+        page.prefersCancelFocus = true
+        page.onApply = { [weak self, weak page] in
+            guard let self else { throw PetError("工作树设置已关闭，请重新打开") }
+            do { try policy.requireReview(source.policy, revision: source.revision) }
+            catch { page?.showPreviewFailure(error); throw error }
+            try policy.savePolicy(source.policy, consent: true)
+        }
+        do { try policy.requireReview(source.policy, revision: source.revision) }
+        catch { page.showPreviewFailure(error) }
+        reviewPage = page
+        return page
+    }
     func windowShouldClose(_ sender: NSWindow) -> Bool { policy.prepareToLeave() }
 }
 
 @MainActor final class AgentWorktreePolicyView: NSView {
     var onOpenManager: ((AgentWorktreeWindow) -> Void)?
+    var onReview: ((AgentWorktreeRetentionPolicy, String?) -> Void)?
     var onDraftChange: (() -> Void)?
     private let store: AgentStore, onOpenTask: (String) -> Void
     private let fetchUpstream = NSSwitch()
@@ -171,18 +215,28 @@ import AppKit
         state.isHidden = roots.isEmpty && state.stringValue == "自动回收未开启"
     }
     private func showFailure(_ error: Error) { state.isHidden = false; state.showSaveFailure(error) }
+    func focusApply() { window?.makeFirstResponder(apply) }
     @objc private func policyEdited() { hasEdits = true; savedRevision = nil; showCondition(); updateStatus(); onDraftChange?() }
     @objc private func save() {
         guard periods.indices.contains(period.indexOfSelectedItem) else { return }
         let value = draftPolicy
-        var consent = false
         if value.enabled, value != store.worktreeRetention.policy {
-            let alert = AgentConfirmation(); alert.messageText = "应用自动回收设置？"; alert.informativeText = value.summary
-            alert.addButton(withTitle: "应用"); alert.addButton(withTitle: "取消"); alert.defaultButtonIndex = 1
-            guard alert.runModal(for: window) == .alertFirstButtonReturn else { return }; consent = true
+            onReview?(value, revision)
+        } else {
+            do { try savePolicy(value) } catch { showFailure(error) }
         }
-        do { try store.worktreeRetention.save(value, expectedRevision: revision, consent: consent); savedRevision = store.worktreeRetention.revision; loadControls(); onDraftChange?() }
-        catch { showFailure(error) }
+    }
+    func requireReview(_ value: AgentWorktreeRetentionPolicy, revision expected: String?) throws {
+        guard value.enabled, hasPendingChanges, draftPolicy == value, expected == revision, expected == store.worktreeRetention.revision else {
+            throw PetError("回收设置已变化。请返回核对后重新审阅。")
+        }
+        try store.worktreeRetention.requirePolicyRevision(expected)
+    }
+    func savePolicy(_ value: AgentWorktreeRetentionPolicy, consent: Bool = false) throws {
+        try store.worktreeRetention.save(value, expectedRevision: revision, consent: consent)
+        savedRevision = store.worktreeRetention.revision
+        loadControls()
+        onDraftChange?()
     }
     @objc private func reloadPolicy() { savedRevision = nil; store.worktreeRetention.reload(); loadControls(); onDraftChange?() }
     @objc private func checkNow() { store.worktreeRetention.checkNow(); refreshState() }
@@ -235,10 +289,11 @@ import AppKit
                 "checks": ["policyControlsFit": controls.filter { !$0.isHiddenOrHasHiddenAncestor }.allSatisfy { bounds.insetBy(dx: -1, dy: -1).contains(convert($0.bounds, from: $0)) },
                            "policyHistoryHasUsableSpace": historyFits]]
     }
-    func checkWorkspace(project: String? = nil, idleSeconds: Double? = nil, action: String = "") {
+    func checkWorkspace(project: String? = nil, idleSeconds: Double? = nil, enable: Bool? = nil, action: String = "") {
         guard AgentTaskWorkspace.readbackEnabled else { return }
         if let project, let index = roots.firstIndex(where: { $0.path == project }) { projects.selectItem(at: index); projectChanged() }
         if let idleSeconds, let index = periods.firstIndex(of: idleSeconds) { period.selectItem(at: index); policyEdited() }
+        if let enable { enabled.state = enable ? .on : .off; policyEdited() }
         switch action { case "manage": openManager(); case "save": save(); case "reload": reloadPolicy(); default: break }
     }
 }
