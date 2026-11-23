@@ -1,6 +1,19 @@
 import AppKit
 
 @MainActor class AgentSettingsReviewPage: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
+    struct ReadingLocation: Codable {
+        var selected: String?
+        var listY: Double
+        var preview: AgentTextViewport?
+
+        static func validateObject(_ value: Any) throws {
+            let raw = try AgentSettingsRecovery.object(value, keys: ["selected", "listY", "preview"])
+            if let preview = raw["preview"] { try AgentTextViewport.validateObject(preview) }
+        }
+        var valid: Bool {
+            (selected?.count ?? 0) <= 60 && AgentSettingsRecovery.validScroll(listY) && preview?.valid != false
+        }
+    }
     private var sections: [(title: String, body: String)]
     private let list = NSTableView(), preview = NSTextView()
     private let index = NSScrollView(), detail = NSScrollView()
@@ -10,12 +23,14 @@ import AppKit
     private let apply = AgentDialogButton(title: "", target: nil, action: nil)
     private var working = false, finished = false, contentReady = true, reloading = false
     private var displayedTitle: String?, positions: [String: AgentTextViewport] = [:]
+    private var pendingReading: ReadingLocation?, readingScheduled = false
+    var selectedSection: String? { displayedTitle }
     var onApply: (() throws -> Void)? { didSet { updateApply() } }
     var onApplied: (() -> Void)?
     override var minimumSettingsContentHeight: CGFloat { 228 }
     override var usesInternalScrolling: Bool { true }
 
-    init(title: String, metadata: String, notice: String, sections: [(String, String)], applyTitle: String?, controls: [NSView] = []) {
+    init(title: String, metadata: String, notice: String, sections: [(String, String)], applyTitle: String?, controls: [NSView] = [], secondaryActions: [NSView] = []) {
         self.sections = sections
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false; window.center()
@@ -61,7 +76,7 @@ import AppKit
         AgentDialogStyle.action(cancel)
         apply.title = applyTitle ?? ""; apply.target = self; apply.action = #selector(applyReview); apply.isHidden = applyTitle == nil
         AgentSettingsStyle.primaryAction(apply)
-        let actions = AgentSettingsDetailActions(applyTitle == nil ? [cancel] : [cancel, apply])
+        let actions = AgentSettingsDetailActions([cancel] + secondaryActions + (applyTitle == nil ? [] : [apply]))
         detailActionRow = actions
         let layout = NSStackView(views: [header, consequence] + controls + [status, compactChooser, split, actions])
         layout.orientation = .vertical; layout.alignment = .leading; layout.spacing = 10; layout.distribution = .fill
@@ -85,9 +100,11 @@ import AppKit
     override func settingsDidAppear() {
         super.settingsDidAppear()
         updateReaderLayout()
+        if pendingReading != nil { scheduleReading(); return }
         let reader: NSView = sections.count < 2 ? preview : (compactChooser.isHidden ? list : chooser)
         presentingWindow?.makeFirstResponder(reader)
     }
+    override func pageDidLayout() { scheduleReading() }
     private func updateReaderLayout() {
         let multiple = sections.count > 1, compact = (pageContentView?.bounds.width ?? 0) < 590
         let focus = presentingWindow?.firstResponder
@@ -129,6 +146,7 @@ import AppKit
         sections = values; contentReady = true; status.stringValue = ""
         reload(selectedTitle: selected)
     }
+    func setApplyTitle(_ title: String) { apply.title = title }
     func showPreviewFailure(_ error: Error) {
         status.showSaveFailure(error); contentReady = false; updateApply()
     }
@@ -143,7 +161,40 @@ import AppKit
         preview.setSelectedRange(NSRange(location: 0, length: 0))
         AgentSettingsRecovery.restoreScroll(0, to: detail)
         if let displayedTitle { positions[displayedTitle]?.apply(to: preview, focus: false) }
+        readingChanged()
     }
+    func trackReviewReading() {
+        for clip in [index.contentView, detail.contentView] {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(readingChanged), name: NSView.boundsDidChangeNotification, object: clip)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(readingChanged), name: NSTextView.didChangeSelectionNotification, object: preview)
+    }
+    func captureReviewReading() throws -> ReadingLocation {
+        if let pendingReading { return pendingReading }
+        let reading = displayedTitle == nil ? nil : try AgentTextViewport(preview)
+        return .init(selected: displayedTitle, listY: max(0, index.contentView.bounds.minY), preview: reading)
+    }
+    func restoreReviewReading(_ value: ReadingLocation) {
+        reload(selectedTitle: value.selected)
+        pendingReading = value; scheduleReading()
+    }
+    private func scheduleReading() {
+        guard pendingReading != nil, !readingScheduled else { return }
+        readingScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            defer { readingScheduled = false }
+            guard isPageVisible, detail.contentSize.height > 0, let saved = pendingReading else { return }
+            AgentSettingsRecovery.restoreScroll(saved.listY, to: index)
+            let reader: NSView = sections.count < 2 ? preview : (compactChooser.isHidden ? list : chooser)
+            if saved.selected != displayedTitle || saved.preview?.focused != true { presentingWindow?.makeFirstResponder(reader) }
+            if saved.selected == displayedTitle, let reading = saved.preview, reading.apply(to: preview), reading.focused,
+               let selection = reading.selections.first { preview.scrollRangeToVisible(selection.range) }
+            pendingReading = nil; readingChanged()
+        }
+    }
+    @objc private func readingChanged() { if pendingReading == nil, isPageVisible { onSettingsRecoveryChange?() } }
     private func updateApply() {
         apply.isEnabled = onApply != nil && !sections.isEmpty && contentReady && !working && !finished
     }

@@ -37,7 +37,7 @@ import UniformTypeIdentifiers
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("agents")); table.addTableColumn(column); table.headerView = nil; table.rowHeight = 42
         table.dataSource = self; table.delegate = self; table.setAccessibilityLabel("自定义 Agent 列表")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
-        let add = AgentDialogButton(title: "新建", target: self, action: #selector(create)), importButton = AgentDialogButton(title: "导入", target: self, action: #selector(importProfiles))
+        let add = AgentDialogButton(title: "新建", target: self, action: #selector(create)), importButton = AgentDialogButton(title: "导入", target: self, action: #selector(importProfiles(_:)))
         let template = AgentDialogButton(title: "模板", target: self, action: #selector(chooseTemplate(_:)))
         for button in [add, template, importButton] { AgentDialogStyle.action(button, prominent: button === add) }
         let listActions = NSStackView(views: [add, template, importButton]); listActions.spacing = 6
@@ -129,7 +129,7 @@ import UniformTypeIdentifiers
         guard selectedID != nil, let detailPage else { return }
         if detailPage.settingsHostWindow == nil { presentSettingsChild(detailPage) } else { detailPage.settingsDidAppear() }
     }
-    private static func toolTitle(_ name: String) -> String {
+    static func toolTitle(_ name: String) -> String {
         let names = ["list_directory": "浏览文件", "read_file": "读取文件", "search_files": "搜索文件", "write_file": "写入文件", "edit_file": "编辑文件", "run_command": "终端命令", "web_search": "联网搜索", "fetch_url": "读取网页", "list_agents": "查找 Agent", "delegate_task": "委派子任务", "draft_agent": "生成 Agent 草稿", "update_plan": "执行计划", "ask_user": "向用户提问", "read_task_history": "读取本任务历史", "read_memory": "读取记忆", "write_memory": "保存记忆", "search_project": "项目检索", "index_project": "更新项目索引", "project_wiki": "读取项目 Wiki", "git_status": "Git 状态", "git_diff": "Git 差异", "git_commit": "Git 提交", "git_init": "初始化 Git", "git_create_worktree": "创建工作树", "list_attachments": "列出附件", "read_attachment": "读取附件", "search_attachment": "搜索附件", "browser_open": "打开网页", "browser_tabs": "浏览器标签页", "browser_read": "读取页面", "browser_screenshot": "网页截图", "browser_action": "网页操作", "browser_close": "关闭浏览器", "load_tools": "按需载入工具", "list_skills": "查找 Skills", "read_skill": "载入 Skill", "read_skill_resource": "读取 Skill 资源", "unload_skill": "移出 Skill", "list_mcp_servers": "列出 MCP", "connect_mcp": "连接 MCP", "list_mcp_tools": "MCP 工具目录", "call_mcp_tool": "调用 MCP 工具", "disconnect_mcp": "断开 MCP"]
         let desktopNames = ["desktop_status": "电脑操作状态", "desktop_windows": "查找应用窗口", "desktop_connect": "连接指定窗口", "desktop_read": "读取指定窗口", "desktop_screenshot": "截取指定窗口", "desktop_action": "操作指定窗口", "desktop_disconnect": "断开窗口连接"]
         let canvasNames = ["canvas_create": "生成画布", "canvas_read": "读取画布", "canvas_update": "更新画布", "canvas_edit": "编辑画布", "canvas_restore": "恢复画布版本", "canvas_inspect": "核对画布", "canvas_screenshot": "截取画布", "canvas_list": "任务画布"]
@@ -287,6 +287,13 @@ import UniformTypeIdentifiers
         return page
     }
     override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        if page.kind == "agent-import-editor" { try requireImportContext(); return makeImportEditor() }
+        if page.kind == "agent-import-review" {
+            try requireImportContext()
+            let review = try AgentProfileImportReview(service: store.agents, recovery: page)
+            bindImportReview(review)
+            return review
+        }
         guard page.kind == "mcp-tool-rule", detailPage?.settingsHostWindow != nil,
               let profile = editedValue(), profile.pluginSource == nil else { return nil }
         return makeMCPRulePage(profile: profile, servers: try availableServers().filter { selectedMCP.contains($0.id) })
@@ -326,12 +333,74 @@ import UniformTypeIdentifiers
         } catch { state.showSaveFailure(error) }
     }
     @objc private func useProfile() { do { guard !dirty, let selectedID else { throw PetError("请先保存 Agent") }; let context = try sourceTask(); let id = try store.agents.createTask(selectedID, store: store, workspace: context == nil ? workspace : context?.workspace, workMode: workMode, context: context); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
-    @objc private func importProfiles() {
+    @objc private func importProfiles(_ sender: NSButton) {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { let data = try Data(contentsOf: url, options: .mappedIfSafe); guard data.count <= 512_000, let text = String(data: data, encoding: .utf8) else { throw PetError("请选择不超过512KB的 UTF-8 JSON") }; let imported = try store.agents.decode(text, importing: true); guard !imported.isEmpty else { throw PetError("没有可导入的 Agent") }; values += imported; table.reloadData(); open(imported.first?.id); changed(); state.stringValue = "导入待保存，默认停用"; showDetail() }
-        catch { state.stringValue = error.localizedDescription }
+        let menu = NSMenu()
+        for (title, action) in [("粘贴 JSON…", #selector(pasteProfiles)), ("从文件导入…", #selector(chooseProfileImportFile))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self; menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
+    }
+    @objc private func pasteProfiles() { presentSettingsChild(makeImportEditor()) }
+    @objc private func chooseProfileImportFile() {
+        guard !dirty, let host = presentingWindow, !host.hasBlockingDialog else { return }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        panel.beginSheetModal(for: host) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            do { try reviewImportFile(url) } catch { state.showSaveFailure(error) }
+        }
+    }
+    func reviewImportFile(_ url: URL) throws {
+        let review = try makeImportReview(source: .read(url))
+        review.load(); presentSettingsChild(review)
+    }
+    private func requireImportContext() throws {
+        guard !dirty else { throw PetError("请先处理当前智能体的更改") }
+        _ = try sourceTask()
+    }
+    private func makeImportEditor(document: String = "") -> AgentProfileImportEditor {
+        let editor = AgentProfileImportEditor(document: document)
+        editor.onReview = { [weak self, weak editor] text in
+            guard let self, let editor else { throw PetError("智能体设置已关闭") }
+            let source = AgentProfileImportSource.pasted(document: text), roles = try source.roles(in: store.agents)
+            let review = try makeImportReview(source: source)
+            review.load(roles)
+            editor.close(); presentSettingsChild(review)
+        }
+        return editor
+    }
+    private func makeImportReview(source: AgentProfileImportSource) throws -> AgentProfileImportReview {
+        try requireImportContext()
+        let review = AgentProfileImportReview(service: store.agents, source: source, targetHash: try store.agents.document().1)
+        bindImportReview(review)
+        return review
+    }
+    private func bindImportReview(_ review: AgentProfileImportReview) {
+        review.requireDestination = { [weak self] in
+            guard let self else { throw PetError("智能体设置已关闭") }
+            try requireImportContext()
+        }
+        review.onEdit = { [weak self] text in
+            guard let self else { return }
+            presentSettingsChild(makeImportEditor(document: text))
+        }
+        review.onDraft = { [weak self] role, target, targetHash in
+            guard let self else { throw PetError("智能体设置已关闭") }
+            try requireImportContext()
+            let otherScopes = values.filter { $0.sourceWorkspace != nil || $0.pluginSource != nil }
+            values = target + otherScopes
+            storedIDs = Set(values.map(\.id)); openedHash = targetHash
+            values.append(role); table.reloadData(); open(role.id); changed()
+            state.stringValue = "草稿待保存"
+        }
+        review.onDraftOpened = { [weak self] in self?.showDetail() }
+        review.onApplied = { [weak self, weak review] in
+            guard let self, let count = review?.count else { return }
+            reload(); state.stringValue = "已导入 \(count) 项"
+        }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if dirty { guard AgentUnsavedChanges.discard("放弃未保存的 Agent 更改？") else { return false } }

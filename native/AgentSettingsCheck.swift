@@ -255,3 +255,91 @@ import Darwin
         try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("settings-pages-report.json"))
     }
 }
+@MainActor extension AppDelegate {
+    func runAgentImportReviewCheck(_ output: URL) {
+        var checks: [String: Bool] = [:], report: [String: Any] = [:], requests = 0
+        do {
+            let binary = Bundle.main.executableURL!
+            report["appPID"] = getpid()
+            report["binaryHash"] = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
+            ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("缺少智能体验收工作台") }
+            runtime.modelRequestCheck = { requests += 1; throw PetError("智能体导入检查禁止模型请求") }
+            let service = tasks.agents
+            let existing = AgentProfile(name: "现有角色", description: "", instructions: "保留原有配置")
+            try service.save(service.encode([existing]), expectedHash: service.document().1)
+            let before = try service.document()
+            let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
+            host.isReleasedWhenClosed = false
+            let pane = AgentSettingsPageHost(); host.contentView = pane; host.makeKeyAndOrderFront(nil)
+            defer { host.close() }
+            let manager = AgentProfileWindow(store: tasks, workspace: nil)
+            let context = AgentSettingsRecovery.Context(task: nil, workspace: nil)
+            guard pane.show(category: "agents", identity: "agent-import-check", scope: "用户", recoveryContext: context, make: { _ in manager }) else {
+                throw PetError("无法打开智能体设置")
+            }
+            let file = output.appendingPathComponent("角色样例.json")
+            func fixture(_ names: [String]) throws -> Data {
+                try JSONSerialization.data(withJSONObject: ["agents": names.map {
+                    ["name": $0, "description": "公开角色", "instructions": "工作内容 · " + $0, "enabled": true, "tools": ["read_file"]] as [String: Any]
+                }], options: [.sortedKeys])
+            }
+            func button(_ title: String) throws -> NSButton {
+                func find(_ view: NSView) -> NSButton? {
+                    if let item = view as? NSButton, item.title == title, !item.isHiddenOrHasHiddenAncestor { return item }
+                    return view.subviews.lazy.compactMap(find).first
+                }
+                guard let item = find(pane) else { throw PetError("缺少导入操作 " + title) }
+                return item
+            }
+            func review(_ data: Data) throws -> AgentProfileImportReview {
+                try data.write(to: file); try manager.reviewImportFile(file)
+                guard let page = pane.currentController as? AgentProfileImportReview else { throw PetError("缺少页内智能体导入审阅") }
+                return page
+            }
+            let original = try fixture(["甲", "乙", "丙"])
+            let first = try review(original)
+            checks["reviewUsesSettingsHostWithoutWriting"] = try first.presentingWindow === host && first.count == 3 && service.document().1 == before.1
+            guard let windowState = try pane.captureRecovery(active: true), let saved = windowState.pages.last else {
+                throw PetError("导入审阅未写入窗口恢复记录")
+            }
+            checks["reviewUsesValidWindowRecoveryRoute"] = windowState.active && windowState.context == context && windowState.pages.map(\.kind) == ["agents", "agent-import-review"]
+            let replacement = try fixture(["替换文件", "另一角色"])
+            try replacement.write(to: file)
+            try button("导入 3 项").performClick(nil)
+            checks["changedFileCannotBeImportedFromAnOldReview"] = try pane.currentController === first && service.document().1 == before.1
+            first.close()
+            guard let restored = try manager.makeSettingsRecoveryChild(saved) as? AgentProfileImportReview else { throw PetError("无法恢复导入审阅") }
+            try restored.restoreSettingsRecovery(saved); manager.presentSettingsChild(restored)
+            checks["changedSourceRecoveryDisablesWriting"] = try !button("导入").isEnabled && !button("载入草稿").isEnabled && service.document().1 == before.1
+            try original.write(to: file)
+            let other = AgentProfile(name: "审阅期间新增", description: "", instructions: "另一窗口保存")
+            try service.save(service.encode([existing, other]), expectedHash: before.1)
+            let beforeSingle = try service.document().1
+            try button("重新读取").performClick(nil)
+            checks["reloadReadsExactOriginalSource"] = try restored.count == 3 && button("导入 3 项").isEnabled
+            try button("载入草稿").performClick(nil)
+            checks["loadingOneRoleStillDoesNotWrite"] = try pane.currentController is AgentSettingsDetailPage && service.document().1 == beforeSingle
+            try button("保存").performClick(nil)
+            let afterSingle = try service.list()
+            checks["savingOneDraftKeepsConcurrentRoleAndLeavesOtherImportsUnwritten"] = afterSingle.map(\.name) == ["现有角色", "审阅期间新增", "甲"] && afterSingle.last?.enabled == false
+            pane.currentController?.close()
+            let duplicate = try review(fixture(["甲", "合法但同批"]))
+            checks["duplicateBlocksWholeBatch"] = try !button("导入 2 项").isEnabled && service.list().map(\.name) == afterSingle.map(\.name)
+            duplicate.close()
+            let batch = try review(fixture(["乙", "丙"]))
+            let current = try service.document().1
+            try service.save(service.encode(afterSingle + [AgentProfile(name: "外部更新", description: "", instructions: "保留另一处写入")]), expectedHash: current)
+            let changed = try service.document().1
+            try button("导入 2 项").performClick(nil)
+            checks["changedDestinationIsNotOverwritten"] = try pane.currentController === batch && service.document().1 == changed
+            try button("重新读取").performClick(nil)
+            try button("导入 2 项").performClick(nil)
+            let imported = try service.list()
+            checks["batchWritesOnlyReviewedRolesDisabled"] = imported.map(\.name) == ["现有角色", "审阅期间新增", "甲", "外部更新", "乙", "丙"]
+                && imported.allSatisfy { !$0.enabled } && pane.currentController === manager
+        } catch { report["error"] = error.localizedDescription }
+        report["checks"] = checks; report["modelRequests"] = requests
+        report["success"] = report["error"] == nil && requests == 0 && !checks.isEmpty && checks.values.allSatisfy { $0 }
+        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("settings-pages-report.json"))
+    }
+}

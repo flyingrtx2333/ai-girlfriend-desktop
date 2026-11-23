@@ -151,7 +151,11 @@ import WebKit
         if CommandLine.arguments.contains("--content-appearance-check") { await runContentAppearanceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-monitor-check") { await runTaskMonitorCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--file-icons-check") { await runFileIconsCheck(output); NSApp.terminate(nil); return }
-        if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--settings-pages-check") {
+            if CommandLine.arguments.contains("--agent-import-review-only") { runAgentImportReviewCheck(output) }
+            else { await runSettingsPagesCheck(output) }
+            NSApp.terminate(nil); return
+        }
         if CommandLine.arguments.contains("--plugin-review-check") { await runPluginReviewCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--mcp-sse-check") { await runMCPSSECheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--mcp-oauth-check") { await runMCPOAuthCheck(output); NSApp.terminate(nil); return }

@@ -120,6 +120,10 @@ enum AgentSettingsRecovery {
             guard version == 1, context.valid, (1...16).contains(pages.count), pages.first?.kind == root,
                   pages.allSatisfy({ $0.state.count <= 20_000_000 }), AgentSettingsRecovery.validScroll(y) else { return false }
             let kinds = pages.map(\.kind)
+            func agentRoute(_ prefix: [String]) -> Bool {
+                kinds == prefix || (kinds.count == prefix.count + 1 && kinds.starts(with: prefix) &&
+                    ["mcp-tool-rule", "agent-import-editor", "agent-import-review"].contains(kinds[prefix.count]))
+            }
             switch (category, root) {
             case ("memory", "memory"):
                 return kinds == [root] || kinds == [root, "memory-editor"] || kinds == [root, "memory-editor", "memory-topic"] || kinds == [root, "memory-cleanup"]
@@ -132,11 +136,11 @@ enum AgentSettingsRecovery {
                     || kinds == [root, "plugin-market"] || kinds == [root, "plugin-market", "plugin-market-review"]
                     || kinds == [root, "mcp"] || kinds == [root, "mcp", "mcp-detail"] || kinds == [root, "mcp", "mcp-import"]
                     || kinds == [root, "mcp", "mcp-detail", "mcp-import"] || kinds == [root, "hooks"] || kinds == [root, "hooks", "hook-config"]
-                    || kinds == [root, "agents"] || kinds == [root, "agents", "mcp-tool-rule"]
+                    || agentRoute([root, "agents"])
             case ("extensions", "mcp"):
                 return kinds == [root] || kinds == [root, "mcp-detail"] || kinds == [root, "mcp-import"] || kinds == [root, "mcp-detail", "mcp-import"]
-            case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"] || kinds == [root, "agents", "mcp-tool-rule"]
-            case ("agents", "agents"), ("extensions", "agents"): return kinds == [root] || kinds == [root, "mcp-tool-rule"]
+            case ("teams", "teams"): return kinds == [root] || agentRoute([root, "agents"])
+            case ("agents", "agents"), ("extensions", "agents"): return agentRoute([root])
             case ("git", "git"), ("worktrees", "worktrees"): return kinds == [root] && context.taskID == nil && context.workspace == nil
             default: return false
             }
