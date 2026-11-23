@@ -173,16 +173,25 @@ import AppKit
                             checks["earlierRuleDraftKeepsEditorAndSelectionWithoutDuplicatingDetail"] = rules.settingsRecoveryControllers.map(ObjectIdentifier.init) == stackBefore && ruleBody.string == long && ruleBody.selectedRange() == (long as NSString).range(of: "MARKER")
                             let sourceRule = try tasks.rules.current(fixture.rule, task: AgentWorkspaceScope.settingsTask(tasks.task(fixture.multi)!, workspace: fixture.alpha), enabledOnly: false)
                             let sourceSkill = try tasks.extensions.item(fixture.skill, workspace: fixture.beta, enabled: false)
+                            let sourceCommand = try tasks.extensions.item(fixture.command, workspace: nil, enabled: false)
+                            checks["extensionHeadingsIdentifyTheActualFileAndScope"] = [
+                                (skills, sourceSkill), (commands, sourceCommand)
+                            ].allSatisfy { window, item in
+                                let detail = window.settingsRecoveryControllers.last?.detailHeading
+                                return detail?.title == item.name && detail?.scope == item.scope && detail?.location == item.file.path
+                            }
                             let oldRule = try Data(contentsOf: sourceRule.source), oldSkill = try Data(contentsOf: sourceSkill.file)
                             try click("保存", rules); checks["invalidRuleSaveKeepsSourceAndDraft"] = try Data(contentsOf: sourceRule.source) == oldRule && ruleBody.string == long
                             try click("保存", skills); checks["invalidSkillSaveKeepsSourceAndDraft"] = try Data(contentsOf: sourceSkill.file) == oldSkill && skillBody.string == invalidSkill
                             let savedSkill = "---\nname: public-beta-skill\ndescription: saved public recovery\n---\n\nPUBLIC_SAVED_SKILL_784 中文😀\n"
                             try body(skills, savedSkill, marker: "PUBLIC_SAVED")
+                            let skillSelection = skillBody.selectedRange()
                             let attributes = try FileManager.default.attributesOfItem(atPath: sourceSkill.file.path), permissions = attributes[.posixPermissions]!
                             try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: sourceSkill.file.path)
                             try click("保存", skills); checks["readOnlySkillSavePreservesPreviousBytesAndNewInput"] = try Data(contentsOf: sourceSkill.file) == oldSkill && skillBody.string == savedSkill
                             try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: sourceSkill.file.path); try click("保存", skills)
                             checks["sameSkillDraftSavesAfterPermissionRestores"] = try String(contentsOf: sourceSkill.file, encoding: .utf8) == savedSkill
+                            checks["skillSaveKeepsOriginalSelectionAndFocus"] = skillBody.selectedRange() == skillSelection && skills.window?.firstResponder === skillBody
                             let external = "---\nname: public-alpha-rule\ntrigger: manual\n---\n\nPUBLIC_EXTERNAL_RULE_UPDATE_814\n"
                             try Data(external.utf8).write(to: sourceRule.source)
                             try field("规则名称", "public-alpha-rule", rules); try choosePopup("规则触发方式", 1, rules); try field("规则匹配模式", "", rules); try click("保存", rules)
@@ -193,6 +202,20 @@ import AppKit
                             checks["noWorkspaceCreationSavesOnlyIntoOriginalUserScope"] = try tasks.extensions.catalog(workspace: nil).contains { $0.name == "public-created-skill" && $0.scope == "全局" } && !tasks.extensions.catalog(workspace: fixture.beta).contains { $0.name == "public-created-skill" && $0.scope != "全局" }
                             try field("规则名称", "public-created-rule", newRule); try choosePopup("规则触发方式", 1, newRule); try body(newRule, "PUBLIC_CREATED_USER_RULE_747\n", marker: "PUBLIC_CREATED"); try click("保存", newRule)
                             checks["newRuleSavesOnlyIntoOriginalUserScope"] = try tasks.rules.catalog(workspace: nil, directories: []).contains { $0.name == "public-created-rule" && !$0.project }
+                            let editedRule = "PUBLIC_CREATED_USER_RULE_747\n" + long
+                            try body(newRule, editedRule)
+                            let ruleEditor = try input(NSTextView.self, "规则正文", newRule)
+                            let beforeSave = try AgentTextViewport(ruleEditor)
+                            try click("保存", newRule)
+                            let afterSave = try AgentTextViewport(ruleEditor)
+                            checks["existingRuleSaveKeepsExactBodyAndSelectedLine"] = ruleEditor.string == editedRule && beforeSave.selections == afterSave.selections
+                                && beforeSave.focused && afterSave.focused && beforeSave.y > 0 && abs(beforeSave.y - afterSave.y) < 1
+                            ruleEditor.insertText("PUBLIC_CONTINUE_RULE_642", replacementRange: ruleEditor.selectedRange())
+                            try click("保存", newRule)
+                            let expectedRule = editedRule.replacingOccurrences(of: "MARKER", with: "PUBLIC_CONTINUE_RULE_642")
+                            let savedRule = try tasks.rules.catalog(workspace: nil).first { $0.name == "public-created-rule" }
+                            checks["continuingAfterRuleSaveReplacesOnlyOriginalSelection"] = ruleEditor.string == expectedRule
+                                && savedRule?.definition?.body == expectedRule.trimmingCharacters(in: .whitespacesAndNewlines)
                             guard await flushWorkspaceWindows(), let windowID = commands.workspaceSession?.id else { throw PetError("命令窗口未保存") }
                             let layout = store.directory.appendingPathComponent("workspace-recovery/" + windowID + "/layout.json"), previous = try Data(contentsOf: layout)
                             try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: layout.path); try body(commands, invalidCommand + "LAST_EDIT_PUBLIC_842\n")

@@ -199,7 +199,7 @@ import UniformTypeIdentifiers
         if let index = items.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
         else { table.deselectAll(nil) }; table.delegate = self
     }
-    private func reload(select id: String? = nil) {
+    private func reload(select id: String? = nil, keepingEditor: Bool = false) {
         guard !dirty else { state.stringValue = "请先保存或放弃更改"; return }
         do {
             let all = try store.extensions.catalog(workspace: workspace), query = search.stringValue
@@ -209,9 +209,12 @@ import UniformTypeIdentifiers
             let groups = Dictionary(grouping: matches, by: \.scope)
             items = sources.flatMap { groups[$0] ?? [] }
             table.delegate = nil; table.reloadData(); table.delegate = self
-            let next = items.first(where: { $0.id == (id ?? selected?.id) }) ?? items.first
-            selectRow(next?.id); if let next { open(next) }
-            else { selected = nil; availableInTask = false; openedHash = nil; editor.string = ""; editor.isEditable = false; location.stringValue = ""; updateControls() }
+            let next = keepingEditor ? selected : items.first(where: { $0.id == (id ?? selected?.id) }) ?? items.first
+            selectRow(next?.id)
+            if !keepingEditor {
+                if let next { open(next) }
+                else { selected = nil; availableInTask = false; openedHash = nil; editor.string = ""; editor.isEditable = false; updateControls() }
+            }
             if !store.extensions.warnings.isEmpty { state.stringValue = store.extensions.warnings.joined(separator: "\n"); state.toolTip = state.stringValue }
             else { state.stringValue = items.isEmpty ? "暂无扩展" : "\(items.count) 项"; state.toolTip = nil }
         } catch { state.stringValue = error.localizedDescription }
@@ -220,17 +223,23 @@ import UniformTypeIdentifiers
         draftViewport.reset()
         do {
             let (text, _) = try store.extensions.document(item)
-            selected = item; openedHash = AgentFiles.hash(Data(text.utf8)); editor.string = text; editor.isEditable = item.managed
-            availableInTask = store.task(taskID).map { task in
-                guard (try? store.extensions.item(item.id, task: task, enabled: false).file) == item.file else { return false }
-                return item.kind != .skill || (try? store.agents.checkSkill(item.id, task: task)) != nil
-            } ?? false
-            editor.undoManager?.removeAllActions(); dirty = false
-            location.stringValue = item.scope + " · /" + item.invocation; location.toolTip = item.file.path
-            enabled.state = item.enabled ? .on : .off; updateControls()
+            editor.string = text
+            editor.undoManager?.removeAllActions()
+            adopt(item, hash: AgentFiles.hash(Data(text.utf8)))
         } catch { state.stringValue = error.localizedDescription }
     }
+    private func adopt(_ item: AgentExtensionItem, hash: String) {
+        selected = item; openedHash = hash; dirty = false
+        availableInTask = store.task(taskID).map { task in
+            guard (try? store.extensions.item(item.id, task: task, enabled: false).file) == item.file else { return false }
+            return item.kind != .skill || (try? store.agents.checkSkill(item.id, task: task)) != nil
+        } ?? false
+        enabled.state = item.enabled ? .on : .off; updateControls()
+    }
     private func updateControls() {
+        detailPage?.detailHeading = selected.map { .init(title: $0.name, scope: $0.scope, location: $0.file.path) }
+        location.stringValue = selected.map { (detailPage == nil ? $0.scope + " · " : "") + "/" + $0.invocation } ?? ""
+        location.toolTip = selected?.file.path
         if detailPage != nil { AgentSettingsStyle.listState(table, text: search.stringValue.isEmpty ? (kind == .skill ? "暂无技能" : "暂无指令") : "未找到匹配项") }
         let idle = job == nil, managed = selected?.managed == true
         kinds.isEnabled = idle; search.isEnabled = idle; table.isEnabled = idle; add.isEnabled = idle; importButton.isEnabled = idle
@@ -260,7 +269,16 @@ import UniformTypeIdentifiers
     }
     @objc private func saveItem() {
         guard let item = selected, let hash = openedHash else { return }
-        do { let saved = try store.extensions.save(item, text: editor.string, expectedHash: hash, workspace: workspace); dirty = false; reload(select: saved.id); state.stringValue = "已保存" }
+        do {
+            let text = editor.string, submittedHash = AgentFiles.hash(Data(text.utf8))
+            let saved = try store.extensions.save(item, text: text, expectedHash: hash, workspace: workspace)
+            guard saved.sha256 == submittedHash else {
+                throw AgentSaveFailure(reason: .changed, diagnostic: "扩展保存后发生外部修改：" + saved.file.path)
+            }
+            adopt(saved, hash: submittedHash)
+            reload(keepingEditor: true)
+            state.stringValue = "已保存"
+        }
         catch { state.showSaveFailure(error); onSettingsRecoveryChange?() }
     }
     @objc private func revealItem() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([selected.file]) } }
@@ -376,7 +394,6 @@ import UniformTypeIdentifiers
         availableInTask = selected.map { item in store.task(taskID).map { task in
             (try? store.extensions.item(item.id, task: task, enabled: false).file) == item.file && (item.kind != .skill || (try? store.agents.checkSkill(item.id, task: task)) != nil)
         } ?? false } ?? false
-        location.stringValue = selected.map { $0.scope + " · /" + $0.invocation } ?? ""; location.toolTip = selected?.file.path
         enabled.state = selected?.enabled == true ? .on : .off; table.delegate = nil; table.reloadData(); table.delegate = self; selectRow(selected?.id)
         state.stringValue = changed ? "原扩展已变化，恢复草稿已保留；刷新可重新读取" : value.status; updateControls(); editor.undoManager?.removeAllActions()
         try draftViewport.restore(value.viewport)

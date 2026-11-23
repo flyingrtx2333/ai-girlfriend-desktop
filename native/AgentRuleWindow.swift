@@ -159,13 +159,17 @@ import AppKit
         guard items.indices.contains(table.selectedRow) else { return }; let next = items[table.selectedRow]
         guard confirmClosing() else { selectRow(selected?.id); return }; open(next)
     }
-    private func reload(select id: String? = nil) {
+    private func reload(select id: String? = nil, keepingEditor: Bool = false) {
         do {
             let task = try editingTask()
             let query = search.stringValue, all = try store.rules.catalog(workspace: task.workspace, directories: task.ruleDirectories ?? [])
             items = all.filter { (scopes.selectedSegment == 0 || $0.project == (scopes.selectedSegment == 2)) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.invocation.localizedCaseInsensitiveContains(query)) }
-            table.delegate = nil; table.reloadData(); table.delegate = self; let next = items.first(where: { $0.id == (id ?? selected?.id) }) ?? items.first
-            selectRow(next?.id); if let next { open(next) } else { clear() }
+            table.delegate = nil; table.reloadData(); table.delegate = self
+            let next = keepingEditor ? selected : items.first(where: { $0.id == (id ?? selected?.id) }) ?? items.first
+            selectRow(next?.id)
+            if !keepingEditor {
+                if let next { open(next) } else { clear() }
+            }
             if next?.error == nil { setState(detailPage == nil ? (items.isEmpty ? "暂无规则" : "\(items.count) 项") : "") }
             catalogState.stringValue = ""; updateCatalogEmptyState()
         } catch { catalogState.stringValue = error.localizedDescription; setState(error.localizedDescription); updateControls() }
@@ -177,12 +181,19 @@ import AppKit
         draftViewport.reset()
         loading = true; selected = nil; creating = false; readOnlySaveFailed = false; name.stringValue = ""; descriptionField.stringValue = ""; patterns.stringValue = ""; editor.string = ""; location.stringValue = ""; dirty = false; loading = false; updateControls()
     }
-    private func open(_ item: AgentLocalRuleItem) {
-        draftViewport.reset()
+    private func open(_ item: AgentLocalRuleItem, keepingBody: Bool = false) {
+        if !keepingBody { draftViewport.reset() }
         loading = true; selected = item; creating = false; readOnlySaveFailed = false
-        name.stringValue = item.name; descriptionField.stringValue = item.definition?.description ?? ""; patterns.stringValue = item.definition?.patterns.joined(separator: "\n") ?? ""
+        for (field, value) in [(name as NSTextField, item.name), (descriptionField, item.definition?.description ?? ""),
+                               (patterns, item.definition?.patterns.joined(separator: "\n") ?? "")] where field.stringValue != value {
+            field.stringValue = value
+        }
         trigger.selectItem(at: triggers.firstIndex(of: item.definition?.trigger ?? .always) ?? 0)
-        editor.string = item.definition?.body ?? item.text ?? ""; editor.setAccessibilityLabel(item.definition == nil ? "规则源文件" : "规则正文"); editor.undoManager?.removeAllActions()
+        if !keepingBody {
+            editor.string = item.definition?.body ?? item.text ?? ""
+            editor.undoManager?.removeAllActions()
+        }
+        editor.setAccessibilityLabel(item.definition == nil ? "规则源文件" : "规则正文")
         enabled.state = item.enabled ? .on : .off; location.stringValue = item.scope + " · @rule:" + item.invocation; location.toolTip = item.source.path
         dirty = false; loading = false; setState(item.error ?? ""); updateControls()
     }
@@ -228,16 +239,19 @@ import AppKit
                 guard current.owner == opened.owner, current.source == opened.source, current.sha256 == opened.sha256 else { throw PetError("规则已被其他编辑器修改，请刷新后再编辑；未覆盖外部改动") }
                 selected = current
             }
+            let keepingBody = creating || selected?.definition != nil
             let text: String
-            if !creating, selected?.definition == nil { text = editor.string }
+            if !keepingBody { text = editor.string }
             else { text = try AgentRuleDocument.text(name: name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), trigger: triggers[trigger.indexOfSelectedItem], description: descriptionField.stringValue, patterns: patterns.stringValue.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }, body: editor.string) }
             let value: AgentLocalRuleItem
             if creating { value = try store.rules.create(name: name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), text: text, project: createScope.indexOfSelectedItem == 1, task: task) }
             else if let selected { value = try store.rules.save(selected, text: text, task: task) } else { return false }
-            dirty = false
+            guard value.sha256 == AgentFiles.hash(Data(text.utf8)) else {
+                throw AgentSaveFailure(reason: .changed, diagnostic: "规则保存后发生外部修改：" + value.source.path)
+            }
             if detailPage == nil { search.stringValue = ""; scopes.selectedSegment = 0; selectedScope = 0 }
-            reload(select: value.id)
-            if selected?.id != value.id { open(value) }
+            open(value, keepingBody: keepingBody)
+            reload(keepingEditor: true)
             setState("已保存"); return true
         } catch { readOnlySaveFailed = (error as? AgentSaveFailure)?.reason == .readOnly; state.showSaveFailure(error); onSettingsRecoveryChange?(); return false }
     }
