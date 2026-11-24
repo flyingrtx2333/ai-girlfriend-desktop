@@ -200,14 +200,18 @@ import UniformTypeIdentifiers
         if editingPage?.isPageVisible == true { focusDetail(); detailPage?.onSettingsRecoveryChange?() }
     }
     override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
-        let input = search.currentEditor() as? NSTextView
+        try AgentSettingsRecovery.page("mcp", pendingCatalog ?? catalogRecovery())
+    }
+    private func catalogRecovery(opening id: String? = nil) -> CatalogRecovery {
+        let input = id == nil ? search.currentEditor() as? NSTextView : nil
         let range = input?.selectedRange()
-        let selectedID = catalogRows.indices.contains(table.selectedRow) ? catalogRows[table.selectedRow].server?.id : selected?.id
-        let current = CatalogRecovery(workspace: workspace, selected: selectedID, query: search.stringValue,
+        let row = id.map { id in catalogRows.firstIndex(where: { $0.server?.id == id }) ?? -1 } ?? table.selectedRow
+        let selectedID = id ?? (catalogRows.indices.contains(row) ? catalogRows[row].server?.id : selected?.id)
+        return CatalogRecovery(workspace: workspace, selected: selectedID, query: search.stringValue,
             y: max(0, table.enclosingScrollView?.contentView.bounds.minY ?? 0),
             searchSelection: range.map { .init(location: $0.location, length: $0.length) },
-            searchFocused: input != nil && presentingWindow?.firstResponder === input, selectedVisible: AgentSettingsRecovery.selectionIsVisible(in: table))
-        return try AgentSettingsRecovery.page("mcp", pendingCatalog ?? current)
+            searchFocused: input != nil && presentingWindow?.firstResponder === input,
+            selectedVisible: AgentSettingsRecovery.selectionIsVisible(in: table, row: row))
     }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
         guard page.kind == "mcp" else { throw PetError("设置草稿不属于连接器") }
@@ -236,7 +240,8 @@ import UniformTypeIdentifiers
             guard let saved = pendingCatalog, isPageVisible, let scroll = table.enclosingScrollView else { return }
             pageContentView?.layoutSubtreeIfNeeded()
             AgentSettingsRecovery.restoreScroll(saved.y, to: scroll)
-            if saved.selectedVisible, table.selectedRow >= 0, !AgentSettingsRecovery.selectionIsVisible(in: table) {
+            if saved.selectedVisible, catalogRows.indices.contains(table.selectedRow),
+               catalogRows[table.selectedRow].server?.id == saved.selected, !AgentSettingsRecovery.selectionIsVisible(in: table) {
                 table.scrollRowToVisible(table.selectedRow)
             }
             if saved.searchFocused, presentingWindow?.makeFirstResponder(search) == true, let selection = saved.searchSelection {
@@ -334,7 +339,9 @@ import UniformTypeIdentifiers
         catch { listState.stringValue = error.localizedDescription; rebuildRows() }
     }
     func selectServer(_ id: String) {
-        guard canLeave() else { return }; reload(id); requestedDetail = true
+        guard canLeave() else { return }
+        if isPageVisible, editingPage == nil { pendingCatalog = catalogRecovery(opening: id) }
+        reload(id); requestedDetail = true
         if settingsHostWindow != nil || window?.isVisible == true { requestedDetail = false; showDetail() }
     }
     private func select(_ id: String?) { table.delegate = nil; if let id, let row = catalogRows.firstIndex(where: { $0.server?.id == id }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { table.deselectAll(nil) }; table.delegate = self }

@@ -177,9 +177,9 @@ enum AgentSettingsRecovery {
         let bounds = clip.constrainBoundsRect(NSRect(origin: NSPoint(x: clip.bounds.minX, y: y), size: clip.bounds.size))
         clip.scroll(to: bounds.origin); scroll.reflectScrolledClipView(clip)
     }
-    @MainActor static func selectionIsVisible(in table: NSTableView) -> Bool {
-        let row = table.selectedRow
-        guard row >= 0, let visible = table.enclosingScrollView?.documentVisibleRect, !visible.isEmpty else { return false }
+    @MainActor static func selectionIsVisible(in table: NSTableView, row: Int? = nil) -> Bool {
+        let row = row ?? table.selectedRow
+        guard (0..<table.numberOfRows).contains(row), let visible = table.enclosingScrollView?.documentVisibleRect, !visible.isEmpty else { return false }
         let rect = table.rect(ofRow: row)
         return rect.minY < visible.maxY && rect.maxY > visible.minY
     }

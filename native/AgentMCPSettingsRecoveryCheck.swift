@@ -122,7 +122,17 @@ import AppKit
                 checks["pluginScopesAreSearchable"] = try catalog.numberOfRows == 2 && find(NSTextField.self, in: catalog, where: { $0.stringValue == "用户插件 · 本机程序 · public-user-scope-fixture" }).visibleRect.width > 70
                 filter("public-scope-fixture")
                 checks["projectPluginStillOverridesSameInstalledUserPlugin"] = try catalog.numberOfRows == 2 && entry(projectPlugin.id).isEnabled
+                let otherProjects = (1...18).map { index in
+                    var server = project
+                    server.id = UUID().uuidString; server.revision = UUID().uuidString
+                    server.name = "Public Archive \(index)"
+                    return server
+                }
+                try service.addImportedBatch(otherProjects, checking: directory.path)
                 filter("项目 · 华东库存项目")
+                guard let scroll = catalog.enclosingScrollView else { throw PetError("缺少连接器列表滚动区域") }
+                AgentSettingsRecovery.restoreScroll(10_000, to: scroll)
+                let originalY = scroll.documentVisibleRect.minY
                 try entry(project.id).performClick(nil)
                 guard let detail = control.settingsRecoveryControllers.last, detail !== manager else { throw PetError("项目连接器未打开") }
                 let timeout = try view(NSTextField.self, "MCP 超时毫秒", in: control)
@@ -133,8 +143,9 @@ import AppKit
                 try click("保存", in: control); await wait(0.10)
                 let edited = try JSONDecoder().decode([AgentMCPServer].self, from: Data(contentsOf: projectFile))
                 guard let original = edited.first(where: { $0.id == project.id }) else { throw PetError("找不到保存后的项目连接器") }
-                checks["sameNameProjectSavesOnlyItsOriginalRecord"] = try edited.count == 1 && original.workspace == directory.path && original.name == name &&
-                    original.revision != project.revision && original.timeoutSeconds == 72.5 && Data(contentsOf: userFile) == originalUser
+                checks["sameNameProjectSavesOnlyItsOriginalRecord"] = try edited.count == 19 && original.workspace == directory.path && original.name == name &&
+                    original.revision != project.revision && original.timeoutSeconds == 72.5 && Data(contentsOf: userFile) == originalUser &&
+                    edited.filter { $0.id != project.id }.map(\.id).sorted() == otherProjects.map(\.id).sorted()
                 let savedProject = try Data(contentsOf: projectFile)
                 do { _ = try service.save(document(name)); checks["duplicateCreationRemainsBlocked"] = false }
                 catch { checks["duplicateCreationRemainsBlocked"] = error.localizedDescription.contains("同名") }
@@ -145,7 +156,9 @@ import AppKit
                 checks["rejectedChangesPreserveBothSources"] = try Data(contentsOf: projectFile) == savedProject && Data(contentsOf: userFile) == originalUser
                 detail.close(); await wait(0.10)
                 checks["catalogReturnsToExactProjectRowAndFilter"] = try control.settingsRecoveryControllers.last === manager && search.stringValue == "项目 · 华东库存项目" &&
-                    catalog.selectedRow == 1 && catalog.row(for: entry(project.id)) == catalog.selectedRow && control.window?.firstResponder === catalog
+                    catalog.selectedRow == 19 && catalog.row(for: entry(project.id)) == catalog.selectedRow && control.window?.firstResponder === catalog
+                checks["catalogReturnsToItsPreviousScrollOffset"] = originalY > 600 && abs(scroll.documentVisibleRect.minY - originalY) < 1 &&
+                    AgentSettingsRecovery.selectionIsVisible(in: catalog)
                 checks["originalTaskDraftRemains"] = store.task(task)?.draft == "连接器范围核对的原任务草稿。"
                 return
             }
