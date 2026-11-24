@@ -14,6 +14,7 @@ import AppKit
     var value: AgentKnowledgeCardBook?, revision = AgentFiles.hash(Data()), rows: [AgentKnowledgeCard] = [], selected: AgentKnowledgeCard?
     var dirty = false { didSet { if dirty != oldValue { onWorkspaceChange?() } } }
     var loading = false, busy = false, job: Task<Void, Never>?, sourceWindow: AgentKnowledgeSourcePage?
+    var needsConnection = false
     var sourceOwner: AgentKnowledgeCard?, openedScope: RecoveryScope?, hasRestoredSnapshot = false
     var savedViews: [String: AgentTextViewport] = [:], pendingCardViewport: AgentTextViewport?
     var fieldSelections: [String: AgentTextViewport.Selection] = [:], lastContentFocus = "query"
@@ -101,6 +102,7 @@ import AppKit
         rememberCardViewport()
         do {
             let scope = try cards.scope(task)
+            needsConnection = false
             if let openedScope, openedScope.root != scope.root || openedScope.branch != scope.branch, sourceWindow != nil { state.stringValue = "工作区或分支已变化，原来源阅读记录已保留；请刷新核对"; return }
             let options = try cards.options(workspace: workspace), previous = selected?.id
             if openedScope == nil { openedScope = .init(root: scope.root, branch: scope.branch) }
@@ -124,7 +126,10 @@ import AppKit
                 if latest.status == .failed { state.stringValue = store.task(latest.id)?.events.last(where: { $0.status == "failed" })?.detail ?? "生成未完成，请查看任务" }
                 if latest.status == .stopped { state.stringValue = "生成已停止" }
             }
-        } catch { state.stringValue = error.localizedDescription; generate.isEnabled = !busy }
+        } catch is AgentKnowledgeConnectionNeeded {
+            needsConnection = true; generate.title = "连接项目知识"; generate.isEnabled = !busy
+            state.stringValue = ""
+        } catch { needsConnection = false; state.stringValue = error.localizedDescription; generate.isEnabled = !busy }
         onWorkspaceChange?()
     }
     var activeTask: AgentTaskRecord? {

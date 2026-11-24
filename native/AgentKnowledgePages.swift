@@ -76,11 +76,14 @@ import AppKit
             NSLayoutConstraint.activate([entry.content.leadingAnchor.constraint(equalTo: body.leadingAnchor), entry.content.trailingAnchor.constraint(equalTo: body.trailingAnchor), entry.content.topAnchor.constraint(equalTo: body.topAnchor), entry.content.bottomAnchor.constraint(equalTo: body.bottomAnchor)])
             entry.controller.settingsDidAppear()
         }
-        updateHeader(); layoutSubtreeIfNeeded(); currentController?.pageDidLayout(); window?.recalculateKeyViewLoop(); focusCurrentPage(); onRootChange?(root)
+        updateHeader(); layoutSubtreeIfNeeded(); currentController?.pageDidLayout(); window?.recalculateKeyViewLoop()
+        focusCurrentPage(onPresentation: true); onRootChange?(root)
     }
-    func focusCurrentPage() {
+    func focusCurrentPage(onPresentation: Bool = false) {
         guard !isHiddenOrHasHiddenAncestor, let window, window.isVisible, let content = currentController?.pageContentView else { return }
-        if let focused = window.firstResponder as? NSView, focused.isDescendant(of: content), focused.canBecomeKeyView { return }
+        let safe = (currentController as? AgentSettingsReviewPage)?.safeConfirmationFocus
+        if onPresentation, let safe, window.makeFirstResponder(safe) { return }
+        if let focused = window.firstResponder as? NSView, focused.isDescendant(of: content), focused.canBecomeKeyView || focused === safe { return }
         if let editor = window.firstResponder as? NSTextView, editor.isFieldEditor {
             func ownsEditor(_ view: NSView) -> Bool {
                 guard !view.isHidden else { return false }
@@ -149,7 +152,7 @@ import AppKit
                 libraryVideo = catalog.captureLocalVideo(position)
             }
             guard revision == recoveryRevision else { continue }
-            let visibleReader = currentController is AgentRecordWindow || currentController is AgentFileConflictWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow || currentController is AgentKnowledgeCardWindow || currentController is AgentKnowledgeWindow || currentController is AgentKnowledgeSourcePage || currentController is AgentWikiPlanWindow ||
+            let visibleReader = currentController is AgentRecordWindow || currentController is AgentFileConflictWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow || currentController is AgentKnowledgeCardWindow || currentController is AgentKnowledgeWindow || currentController is AgentKnowledgeSourcePage || currentController is AgentWikiPlanWindow || currentController is AgentProjectKnowledgeApproval ||
                 (currentController as? AgentKnowledgeReviewWindow)?.hasRecoverablePosition == true
             let visibleCatalog = currentController is AgentRepoWikiWindow && catalog != nil || currentController is AgentKnowledgeLibraryWindow && library != nil
             let value = AgentWorkspaceRecovery.Knowledge(identity: identity, root: root, active: active && (visibleReader || visibleCatalog), readers: pages, library: library, wikiCatalog: catalog, libraryVideo: libraryVideo)

@@ -15,6 +15,7 @@ import AppKit
     var settingsContext: (title: String, location: String)?
     var detailHeading: DetailHeading? { didSet { if detailHeading != oldValue { onDetailHeadingChange?() } } }
     var onDetailHeadingChange: (() -> Void)?
+    weak var knowledgeApproval: AgentProjectKnowledgeApproval?
     var detailActionRow: AgentSettingsDetailActions?
     var onSettingsRecoveryChange: (() -> Void)?
     func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? { nil }

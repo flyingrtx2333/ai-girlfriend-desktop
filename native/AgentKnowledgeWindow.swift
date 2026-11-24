@@ -141,6 +141,7 @@ import AppKit
         let query = query?.trimmingCharacters(in: .whitespacesAndNewlines)
         if query != nil && query?.isEmpty != false { return }
         do { try requireOriginalIndexScope() } catch { showIndexFailure(error); return }
+        rememberQuerySelection()
         busy = true
         for button in [find, update, more, open] { button.isEnabled = false }
         state.stringValue = refreshing ? (rebuild ? "正在重建索引…" : "正在更新索引…") : "检索中…"
@@ -164,15 +165,8 @@ import AppKit
                 let tools = AgentTools(store: store, taskID: taskID), directory = try tools.gitDirectory(for: primary)
                 let reason = try tools.approvalReason(for: primary, gitDirectory: directory)
                 if let reason {
-                    let alert = AgentConfirmation(); alert.messageText = "连接项目知识"; alert.informativeText = reason; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
-                    guard alert.runModal(for: presentingWindow) == .alertFirstButtonReturn else { throw PetError("已取消") }
-                    try Task.checkCancellation()
-                    try requireOriginalIndexScope()
-                    guard try tools.gitDirectory(for: primary) == directory else { throw PetError("Git 元数据的位置已变化，请重新检索") }
-                    if let currentReason = try tools.approvalReason(for: primary, gitDirectory: directory), currentReason != reason {
-                        throw PetError("项目权限已变化，请重试")
-                    }
-                    if let directory { store.update(taskID) { $0.gitDirectory = directory } }
+                    let action = refreshing ? (rebuild ? "重建索引" : "更新索引") : "检索项目"
+                    try await AgentProjectKnowledgeApproval.request(from: self, operation: action, tools: tools, call: primary, directory: directory, reason: reason)
                 }
                 try requireOriginalIndexScope()
                 var call = primary

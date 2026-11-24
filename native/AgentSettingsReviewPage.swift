@@ -27,6 +27,7 @@ import AppKit
     private var pendingReading: ReadingLocation?, readingScheduled = false
     var selectedSection: String? { displayedTitle }
     var prefersCancelFocus = false
+    var safeConfirmationFocus: NSView? { prefersCancelFocus ? cancel : nil }
     var onApply: (() throws -> Void)? { didSet { updateApply() } }
     var onApplied: (() -> Void)?
     override var minimumSettingsContentHeight: CGFloat { 228 }

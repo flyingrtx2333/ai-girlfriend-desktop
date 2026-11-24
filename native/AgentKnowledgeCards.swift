@@ -1,6 +1,10 @@
 import Foundation
 import Darwin
 
+struct AgentKnowledgeConnectionNeeded: LocalizedError {
+    var errorDescription: String? { "请先连接当前工作区的 Git 元数据" }
+}
+
 enum AgentKnowledgeCardKind: String, Codable, CaseIterable, Sendable {
     case architecture, spec, tech_stack
     var title: String { switch self { case .architecture: return "架构"; case .spec: return "代码规范"; case .tech_stack: return "技术栈" } }
@@ -110,7 +114,7 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
         let entry = try index.files.resolve(".git")
         guard FileManager.default.fileExists(atPath: entry.path) else { return (root, "folder", index.directory.appendingPathComponent("knowledge-cards")) }
         let metadata = try AgentGit.metadata(workspace: root)
-        guard metadata.path == root || metadata.path.hasPrefix(root + "/") || gitDirectory == metadata.path else { throw PetError("请先连接当前工作区的 Git 元数据") }
+        guard metadata.path == root || metadata.path.hasPrefix(root + "/") || gitDirectory == metadata.path else { throw AgentKnowledgeConnectionNeeded() }
         let values = try entry.resourceValues(forKeys: [.isDirectoryKey])
         let headDirectory: URL
         if values.isDirectory == true { headDirectory = entry }

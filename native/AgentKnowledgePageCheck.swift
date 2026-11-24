@@ -120,6 +120,7 @@ import AppKit
             other.window?.performClose(nil)
             for _ in 0..<100 { if other.window?.isVisible != true { break }; await wait(0.02) }
             checks["closingOtherWindowKeepsMainKnowledgePage"] = library.isPageVisible && other.window?.isVisible != true
+            try await checkProjectKnowledgeApproval(tasks: tasks, output: output, checks: &checks)
             checks["allOriginalConversationDraftsRetained"] = tasks.task(fixture.taskID)?.draft == "项目任务未发送的草稿。" && tasks.task(fixture.standaloneID)?.draft == "无工作区任务未发送的草稿。"
             checks["manualDocumentsDoNotInventModelGeneration"] = tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { $0.kind != "wiki" && $0.kind != AgentKnowledgeCards.kind && !$0.messages.contains { $0.role == "assistant" } && ($0.modelReceipts ?? []).isEmpty }
             report["geometry"] = geometry; report["success"] = !checks.isEmpty && checks.values.allSatisfy { $0 }
@@ -127,6 +128,125 @@ import AppKit
         report["checks"] = checks; report["blockedModelAttempts"] = attempts; report["modelTransmissions"] = 0; report["appPID"] = getpid()
         if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("knowledge-page-report.json"))
+    }
+
+    private func checkProjectKnowledgeApproval(tasks: AgentStore, output: URL, checks: inout [String: Bool]) async throws {
+        let fm = FileManager.default, host = control.knowledgePageHost
+        let project = output.appendingPathComponent("public-approval-project", isDirectory: true)
+        let metadata = output.appendingPathComponent("公开知识项目独立仓库元数据", isDirectory: true)
+        let replacement = output.appendingPathComponent("replacement-git", isDirectory: true)
+        let parked = output.appendingPathComponent("original-git", isDirectory: true)
+        let source = project.appendingPathComponent("README.md"), query = "approvalmarker"
+        let content = Data("# Public project\n\(query) original source\n".utf8), draft = "核对项目连接时保留的草稿。"
+        try fm.createDirectory(at: project, withIntermediateDirectories: false)
+        try content.write(to: source)
+        func git(_ arguments: [String]) throws {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["-C", project.path, "-c", "user.name=Public Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false"] + arguments
+            var environment = ProcessInfo.processInfo.environment
+            environment["GIT_CONFIG_GLOBAL"] = "/dev/null"; environment["GIT_CONFIG_NOSYSTEM"] = "1"
+            process.environment = environment
+            process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+            try process.run(); process.waitUntilExit()
+            guard process.terminationStatus == 0 else { throw PetError("无法准备公开 Git 样例") }
+        }
+        try git(["init", "--initial-branch=main", "--separate-git-dir", metadata.path]); try git(["add", "README.md"]); try git(["commit", "-m", "Public test"])
+        try fm.copyItem(at: metadata, to: replacement)
+        let index = try AgentProjectIndex(workspace: project.path, storage: tasks.directory)
+        let searchTask = tasks.create(title: "连接项目检索", workspace: project.path, mode: .ask, draft: draft)
+        try tasks.organization.register(project.path, mode: .coding)
+        control.showAgentTask(searchTask); control.showAgentKnowledge()
+        guard let catalog = host.currentController as? AgentRepoWikiWindow else { throw PetError("项目知识目录未打开") }
+        for _ in 0..<100 { if catalog.checkState["loading"] as? Bool == false { break }; await wait(0.025) }
+        try catalog.checkOpen(workspace: project.path, action: "search")
+        guard let search = host.currentController as? AgentKnowledgeWindow, search.taskID == searchTask else { throw PetError("未打开原项目检索") }
+        search.search.stringValue = query
+        func views(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(views) }
+        func approval(for operation: String) async throws -> (AgentProjectKnowledgeApproval, NSButton, NSButton) {
+            for _ in 0..<100 {
+                if let page = host.currentController as? AgentProjectKnowledgeApproval, let body = page.pageContentView {
+                    let children = views(body), buttons = children.compactMap { $0 as? NSButton }
+                    let text = children.compactMap { $0 as? NSTextView }.first { $0.accessibilityLabel() == "设置审阅正文" }?.string ?? ""
+                    if page.isPageVisible, page.window?.title == operation, text.contains(project.path), text.contains(metadata.path),
+                       let cancel = buttons.first(where: { $0.title == "取消" }), let connect = buttons.first(where: { $0.title == "连接" }) {
+                        return (page, cancel, connect)
+                    }
+                }
+                await wait(0.025)
+            }
+            throw PetError("未打开\(operation)的原项目连接审阅")
+        }
+        search.find.performClick(nil)
+        let (initial, cancel, _) = try await approval(for: "检索项目")
+        checks["knowledgeApprovalUsesOriginalWindowAndSafeFocus"] = initial.presentingWindow === control.window &&
+            control.window?.hasBlockingDialog == false && control.window?.firstResponder === cancel
+        let recovery = try await host.captureWorkspaceRecovery(active: true)
+        checks["pendingApprovalDoesNotScanOrPersistAndKeepsRecovery"] = index.snapshot() == nil && tasks.task(searchTask)?.gitDirectory == nil && recovery?.active == true
+        cancel.performClick(nil); await search.job?.value
+        checks["cancelReturnsToSameQueryAndDoesNotConnect"] = host.currentController === search && search.search.stringValue == query &&
+            search.submittedQuery == nil && index.snapshot() == nil && tasks.task(searchTask)?.gitDirectory == nil
+
+        search.find.performClick(nil)
+        let (stale, dismiss, connectStale) = try await approval(for: "检索项目")
+        try fm.moveItem(at: metadata, to: parked); try fm.moveItem(at: replacement, to: metadata)
+        connectStale.performClick(nil)
+        checks["samePathReplacementDisablesOldKnowledgeApproval"] = host.currentController === stale && !connectStale.isEnabled && tasks.task(searchTask)?.gitDirectory == nil
+        try fm.moveItem(at: metadata, to: replacement); try fm.moveItem(at: parked, to: metadata)
+        dismiss.performClick(nil); await search.job?.value
+
+        search.find.performClick(nil)
+        let (_, _, connect) = try await approval(for: "检索项目")
+        let record = tasks.directory.appendingPathComponent(searchTask + ".json"), original = try Data(contentsOf: record)
+        try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: record.path)
+        connect.performClick(nil)
+        checks["readOnlyRecordDoesNotConnectOrStartIndex"] = try connect.isEnabled && tasks.task(searchTask)?.gitDirectory == nil &&
+            Data(contentsOf: record) == original && index.snapshot() == nil
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: record.path)
+        connect.performClick(nil); await search.job?.value
+        checks["approvalResumesExactSearchInSamePage"] = host.currentController === search && search.submittedQuery == query &&
+            search.hits.contains { $0.path == "README.md" } && tasks.task(searchTask)?.gitDirectory == metadata.path
+        host.checkBack()
+
+        let cardTask = tasks.create(title: "连接知识卡片", workspace: project.path, mode: .ask, draft: draft)
+        control.showKnowledgeCards(taskID: cardTask)
+        guard let cards = host.currentController as? AgentKnowledgeCardWindow else { throw PetError("知识卡片未打开") }
+        try Data("# Public second file\n".utf8).write(to: project.appendingPathComponent("second.md"))
+        checks["unconnectedCardPageOffersConnectionBeforeGeneration"] = cards.generate.title == "连接项目知识" && cards.generate.isEnabled
+        cards.generate.performClick(nil)
+        let (_, _, connectCards) = try await approval(for: "刷新知识卡片")
+        checks["cardTaskRequiresItsOwnConnection"] = try tasks.task(cardTask)?.gitDirectory == nil && !index.contains("second.md")
+        connectCards.performClick(nil); await cards.job?.value
+        checks["cardRefreshContinuesAfterItsApproval"] = try host.currentController === cards && index.contains("second.md") && tasks.task(cardTask)?.gitDirectory == metadata.path
+        host.checkBack()
+
+        let wikiTask = tasks.create(title: "连接 Wiki 导入", workspace: project.path, draft: draft)
+        let wiki = project.appendingPathComponent(".bluefatfish/wiki", isDirectory: true)
+        try fm.createDirectory(at: wiki, withIntermediateDirectories: true)
+        try Data("# 公开 Wiki 页面\n\n本文引用公开样例。\n".utf8).write(to: wiki.appendingPathComponent("index.md"))
+        let publisher = tasks.create(title: "公开 Wiki 出版样例", workspace: project.path)
+        tasks.update(publisher) { $0.gitDirectory = metadata.path }
+        _ = try await AgentWiki.exportWiki(store: tasks, taskID: publisher, language: "zh")
+        control.presentAgentRecords(section: 6, taskID: wikiTask)
+        guard let reader = host.currentController as? AgentRecordWindow, let body = reader.pageContentView,
+              let wikiConnect = views(body).compactMap({ $0 as? NSButton }).first(where: { $0.title == "连接项目知识" && $0.isEnabled }) else {
+            throw PetError("未连接 Wiki 的主操作未打开")
+        }
+        wikiConnect.performClick(nil)
+        let (_, cancelWiki, _) = try await approval(for: "连接 Wiki")
+        cancelWiki.performClick(nil)
+        for _ in 0..<100 { if wikiConnect.isEnabled { break }; await wait(0.025) }
+        checks["wikiMainActionCanConnectWithoutStartingGeneration"] = wikiConnect.isEnabled && host.currentController === reader && tasks.task(wikiTask)?.gitDirectory == nil
+        let importPreview = Task { @MainActor in await reader.checkKnowledgeReview("import", language: "zh") }
+        let (_, _, connectWiki) = try await approval(for: "预览导入 Wiki")
+        connectWiki.performClick(nil)
+        guard let review = await importPreview.value else { throw PetError("连接后未继续原 Wiki 导入") }
+        await review.checkLoad()
+        checks["wikiConnectionContinuesToActualImportPreview"] = host.currentController === review &&
+            review.checkState["applyEnabled"] as? Bool == true && tasks.task(wikiTask)?.gitDirectory == metadata.path
+        checks["connectionPreservesOriginalSourcesAndAllThreeDrafts"] = try Data(contentsOf: source) == content &&
+            [searchTask, cardTask, wikiTask].allSatisfy { tasks.task($0)?.draft == draft }
+        host.checkBack(); host.checkBack()
     }
 
     private func checkProjectSearchPage(_ page: AgentKnowledgeWindow, workspace: URL, output: URL, checks: inout [String: Bool]) async throws {

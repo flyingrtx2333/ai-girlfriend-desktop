@@ -41,7 +41,9 @@ import AppKit
         return value
     }
     var canPreserveForQuit: Bool { openedRoot != nil && store.task(taskID).map { $0.sideTask?.retained != false } == true }
-    func prepareWorkspaceNavigation() -> Bool { !busy && presentingWindow?.hasBlockingDialog != true }
+    func prepareWorkspaceNavigation() -> Bool {
+        (!busy || knowledgeApproval?.isWaiting == true) && presentingWindow?.hasBlockingDialog != true
+    }
     @discardableResult func requireOriginalIndexScope() throws -> AgentFiles {
         guard let root = openedRoot, let task = store.task(taskID) else { throw PetError("项目检索原任务不可用") }
         let files = try AgentFiles(workspace: task.workspace)
@@ -78,7 +80,8 @@ import AppKit
         if !previewBlocked, selectedHash != nil, viewport == nil { viewport = try AgentTextViewport(preview); viewport?.focused = lastContentFocus == "preview" }
         let value = RecoveryState(taskID: taskID, root: root, query: search.stringValue, submittedQuery: submittedQuery,
             hits: hits, selected: table.selectedRow, hash: selectedHash, viewport: viewport,
-            querySelection: querySelection, active: lastContentFocus, summary: state.stringValue, source: try sourceWindow?.captureWorkspaceRecovery(), sourceOwner: sourceOwner)
+            querySelection: querySelection, active: lastContentFocus, summary: knowledgeApproval?.isWaiting == true ? indexSummary : state.stringValue,
+            source: try sourceWindow?.captureWorkspaceRecovery(), sourceOwner: sourceOwner)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "knowledge-index", state: try encoder.encode(value), dirty: false, asset: nil)
         _ = try Self.recoveryState(page); return page

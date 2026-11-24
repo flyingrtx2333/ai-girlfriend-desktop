@@ -10,27 +10,30 @@ import AppKit
             catch { if !Task.isCancelled, let workspace = task?.workspace { cards.notices[workspace] = error.localizedDescription } }
         }
     }
-    func connect() async throws {
+    func connect(for operation: String) async throws {
         guard task?.workspace != nil else { throw PetError("请先选择工作区") }
         let tools = AgentTools(store: store, taskID: taskID), call = AgentToolCall(id: UUID().uuidString, name: "index_project", arguments: "{}")
         let directory = try tools.gitDirectory(for: call)
         if let reason = try tools.approvalReason(for: call, gitDirectory: directory) {
-            let alert = AgentConfirmation(); alert.messageText = "连接项目知识"; alert.informativeText = reason; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
-            guard alert.runModal() == .alertFirstButtonReturn else { throw PetError("已取消") }
-            if let directory { store.update(taskID) { $0.gitDirectory = directory } }
+            try await AgentProjectKnowledgeApproval.request(from: self, operation: operation, tools: tools, call: call, directory: directory, reason: reason)
         }
         _ = try await tools.execute(call, gitDirectory: directory); try Task.checkCancellation()
     }
     @objc func generateCards() {
+        if needsConnection { reloadCards(); return }
         do { try requireOriginalCardScope() } catch { state.stringValue = error.localizedDescription; return }
         guard discard() else { return }
         if value?.cards.contains(where: \.manual) == true {
             let alert = AgentConfirmation(); alert.messageText = "重新核对已编辑的卡片？"; alert.informativeText = "将依据当前源码重新生成，旧版本可恢复。"; alert.addButton(withTitle: "重新生成"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
-        run { [self] in try await connect(); _ = try await cards.generate(sourceID: taskID, language: selectedLanguage, focus: focus.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let language = selectedLanguage, instruction = focus.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        run { [self] in
+            try await connect(for: "生成知识卡片")
+            _ = try await cards.generate(sourceID: taskID, language: language, focus: instruction)
+        }
     }
-    @objc func reloadCards() { guard discard() else { return }; resetRecoverySnapshot(); run { [self] in try await connect() } }
+    @objc func reloadCards() { guard discard() else { return }; resetRecoverySnapshot(); run { [self] in try await connect(for: "刷新知识卡片") } }
     var latestTask: AgentTaskRecord? {
         guard let task, let scope = try? cards.scope(task) else { return nil }
         return store.tasks.filter { $0.kind == AgentKnowledgeCards.kind && $0.workspace == scope.root && $0.knowledgeJob?.branch == scope.branch && $0.knowledgeJob?.language == selectedLanguage && !$0.archived }.max { $0.updated < $1.updated }
@@ -58,7 +61,7 @@ import AppKit
         if openedScope != nil { do { try requireOriginalCardScope() } catch { state.stringValue = error.localizedDescription; return } }
         let language = selectedLanguage, citation = citation.state == .on, automatic = automatic.state == .on, exporting = exporting.state == .on
         run { [self] in
-            try await connect()
+            try await connect(for: "应用知识卡片设置")
             guard let current = task?.workspace, try AgentFiles(workspace: current).root == AgentFiles(workspace: workspace).root else { throw PetError("知识卡片所属工作区已变化，设置未写入") }
             var options = try cards.options(workspace: workspace)
             options.language = language; options.citation = citation; options.autoUpdate = automatic; options.autoExport = exporting; options.sourceTaskID = taskID
@@ -107,9 +110,9 @@ import AppKit
     @objc func importCards() {
         do { try requireOriginalCardScope() } catch { state.stringValue = error.localizedDescription; return }
         guard discard() else { return }
+        let language = selectedLanguage
         run { [self] in
-            try await connect(); guard task != nil else { return }
-            let language = selectedLanguage
+            try await connect(for: "预览导入知识卡片"); guard task != nil else { return }
             let review = AgentKnowledgeReviewWindow(title: "导入知识卡片", action: "导入", scope: language == "zh" ? "简体中文" : "English", load: { [weak self] _, _ in
                 guard let self, let original = self.task, !self.dirty else { throw PetError("任务或卡片草稿已变化，请重新预览") }
                 let readOnly = try self.store.agents.limits(original, store: self.store).readOnly

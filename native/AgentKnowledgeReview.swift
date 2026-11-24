@@ -281,7 +281,10 @@ struct AgentKnowledgeReviewVersion {
     }
     private func complete(_ result: String) { closed = true; super.close(); onClose?(); onClose = nil; onApplied(result) }
     @objc private func cancelReview() { close() }
-    override func canLeaveSettings() -> Bool { if hasPendingOperation { state.stringValue = "请等待当前知识操作完成"; return false }; return true }
+    override func canLeaveSettings() -> Bool {
+        if hasPendingOperation, knowledgeApproval?.isWaiting != true { state.stringValue = "请等待当前知识操作完成"; return false }
+        return true
+    }
     override func close() { if canLeaveSettings() { finishClose(); super.close() } }
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeaveSettings() }
     func windowWillClose(_ notification: Notification) { finishClose() }

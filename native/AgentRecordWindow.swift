@@ -46,11 +46,13 @@ import UniformTypeIdentifiers
     private weak var wikiRuntime: AgentRuntime?
     private var onWikiTask: ((String) -> Void)?
     private var wikiGeneration: AgentWikiGenerationState?
+    private var wikiNeedsConnection = false
     private var wikiKnowledgeSignature = ""
     private var wikiPlanWindow: AgentWikiPlanWindow?
     private var wikiSharingTask: Task<Void, Never>?
     private var wikiSharingAlert: AgentConfirmation?
     private var wikiReviewWindow: AgentKnowledgeReviewWindow?
+    private var wikiReviewIsWorking: Bool { wikiReviewWindow?.hasPendingOperation == true && wikiReviewWindow?.knowledgeApproval?.isWaiting != true }
     private struct WikiCatalogScope {
         let workspace: String, branch: String, language: String, root: String
     }
@@ -361,7 +363,7 @@ import UniformTypeIdentifiers
         pageDidLayout()
     }
     func prepareWorkspaceNavigation() -> Bool {
-        guard wikiReviewWindow?.hasPendingOperation != true else { state.stringValue = "请等待当前知识操作完成"; return false }
+        guard !wikiReviewIsWorking else { state.stringValue = "请等待当前知识操作完成"; return false }
         guard !saving else { state.stringValue = "正在保存…"; return false }
         if isPageVisible, !viewer.isHidden, !textViewportScheduled, presentingWindow?.firstResponder === text { rememberedTextFocus = true }
         guard wikiPlanWindow?.prepareWorkspaceNavigation() != false else { return false }
@@ -522,7 +524,9 @@ import UniformTypeIdentifiers
         return value
     }
     func captureWorkspaceRecovery() async throws -> AgentWorkspaceRecovery.Page {
-        guard !saving, wikiSharingTask == nil, wikiReviewWindow?.hasPendingOperation != true else { throw PetError("请先完成当前文档操作") }
+        guard !saving, wikiSharingTask == nil || knowledgeApproval?.isWaiting == true, !wikiReviewIsWorking else {
+            throw PetError("请先完成当前文档操作")
+        }
         let playback = hasInlineVideoPlayback ? await video.capturePlayback() : nil
         let child = try await videoWindow?.captureWorkspaceRecovery(includingHosted: wikiOnly)
         var source: AgentMarkdownSourceWindow.RecoveryState?
@@ -862,6 +866,16 @@ import UniformTypeIdentifiers
     @objc private func generateWiki() {
         guard wikiSharingTask == nil, wikiTree.selectedLanguage != "legacy" else { return }
         guard let runtime = wikiRuntime else { if wikiPlanWindow?.confirmClosing() != false, canLeave() { onGenerateWiki?(wikiTree.selectedLanguage) }; return }
+        if wikiNeedsConnection {
+            wikiSharingTask = Task { @MainActor [weak self] in
+                guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
+                do {
+                    try await connectWikiIndex(for: "连接 Wiki")
+                    state.stringValue = "已连接项目知识"; refreshWikiCatalog()
+                } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
+            }
+            updateWikiSharingState(); return
+        }
         do {
             let language = wikiTree.selectedLanguage
             guard let snapshot = wikiGeneration else { throw PetError("请刷新 Wiki 生成状态") }
@@ -873,7 +887,7 @@ import UniformTypeIdentifiers
                 wikiSharingTask = Task { @MainActor [weak self] in
                     guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
                     do {
-                        try await connectWikiIndex()
+                        try await connectWikiIndex(for: snapshot.action == "resume" ? "继续生成 Wiki" : "生成 Wiki")
                         if snapshot.action == "resume", try AgentWiki.generationState(store: store, runtime: runtime, sourceID: taskID, language: language).taskID != snapshot.taskID { throw PetError("生成状态已变化，请刷新后重试") }
                         let id = try await store.projectKnowledge.start(sourceID: taskID, language: language, runtime: runtime)
                         guard !Task.isCancelled else { return }
@@ -918,12 +932,13 @@ import UniformTypeIdentifiers
             if let workspace = task?.workspace, ["zh", "en"].contains(wikiTree.selectedLanguage) { wikiMaintenance = try AgentWiki.maintenance(store: store, workspace: workspace, language: wikiTree.selectedLanguage); wikiTree.setMaintenanceState(wikiMaintenance?.options) }
             else { wikiMaintenance = nil; wikiTree.setMaintenanceState(nil) }
         } catch { wikiMaintenance = nil; wikiTree.setMaintenanceState(nil, problem: error.localizedDescription) }
-        wikiGeneration = nil
+        wikiGeneration = nil; wikiNeedsConnection = false
         if let runtime = wikiRuntime, wikiTree.selectedLanguage != "legacy" {
             do { wikiGeneration = try AgentWiki.generationState(store: store, runtime: runtime, sourceID: taskID, language: wikiTree.selectedLanguage); generate.toolTip = nil }
+            catch is AgentKnowledgeConnectionNeeded { wikiNeedsConnection = true; generate.toolTip = nil }
             catch { generate.toolTip = error.localizedDescription }
         }
-        generate.title = wikiGeneration?.title ?? "生成 Wiki"
+        generate.title = wikiNeedsConnection ? "连接项目知识" : wikiGeneration?.title ?? "生成 Wiki"
         state.toolTip = nil
         if !dirty, wikiSharingTask == nil, let id = wikiGeneration?.taskID, let notice = store.projectKnowledge.notice(wikiID: id) {
             state.toolTip = notice.text
@@ -931,14 +946,14 @@ import UniformTypeIdentifiers
         }
         wikiCards.isEnabled = task?.workspace != nil && ["zh", "en"].contains(wikiTree.selectedLanguage)
         wikiTree.setSharingState(busy: wikiSharingTask != nil, writable: writable, canRegenerate: wikiGeneration != nil && !["publishing", "preparing"].contains(wikiGeneration?.action ?? ""))
-        generate.isEnabled = wikiSharingTask == nil && writable && (wikiRuntime == nil ? onGenerateWiki != nil : wikiGeneration != nil) && !["publishing", "preparing"].contains(wikiGeneration?.action ?? "") && wikiTree.selectedLanguage != "legacy"
+        generate.isEnabled = wikiSharingTask == nil && writable && (wikiRuntime == nil ? onGenerateWiki != nil : wikiGeneration != nil || wikiNeedsConnection) && !["publishing", "preparing"].contains(wikiGeneration?.action ?? "") && wikiTree.selectedLanguage != "legacy"
     }
-    private func connectWikiIndex(allowConfirmation: Bool = true) async throws {
+    private func connectWikiIndex(for operation: String, allowConfirmation: Bool = true) async throws {
         let tools = AgentTools(store: store, taskID: taskID), call = AgentToolCall(id: UUID().uuidString, name: "index_project", arguments: "{}"), directory = try tools.gitDirectory(for: call)
         if let reason = try tools.approvalReason(for: call, gitDirectory: directory) {
             guard allowConfirmation else { throw PetError("请重新预览以连接当前项目") }
-            let alert = AgentConfirmation(); alert.messageText = "连接项目知识"; alert.informativeText = reason; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
-            guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { throw PetError("已取消") }; if let directory { store.update(taskID) { $0.gitDirectory = directory } }
+            let owner = wikiReviewWindow.flatMap { $0.isPageVisible ? $0 as AgentSettingsPageController : nil } ?? self
+            try await AgentProjectKnowledgeApproval.request(from: owner, operation: operation, tools: tools, call: call, directory: directory, reason: reason)
         }
         _ = try await tools.execute(call, gitDirectory: directory); try Task.checkCancellation()
     }
@@ -1051,7 +1066,7 @@ import UniformTypeIdentifiers
                     let count = try await AgentWiki.exportWiki(store: store, taskID: taskID, language: language)
                     state.stringValue = "已导出 \(count) 页 · " + (try AgentWiki.sharingPath(language)) + (dirty ? " · 当前草稿未保存" : ""); return
                 }
-                try await connectWikiIndex(); try Task.checkCancellation()
+                try await connectWikiIndex(for: action == "restore" ? "恢复 Wiki 版本" : "预览导入 Wiki")
                 let review: AgentKnowledgeReviewWindow
                 if action == "restore" { review = try makeKnowledgeVersionReview(.wiki, language: language) }
                 else { review = AgentKnowledgeReviewWindow(title: "导入 Wiki", action: "导入", scope: URL(fileURLWithPath: workspace).lastPathComponent + " · " + (language == "zh" ? "简体中文" : "English"), load: { [weak self] _, _ in
@@ -1073,7 +1088,7 @@ import UniformTypeIdentifiers
                     let count = try await AgentProjectKnowledgeSharing.export(store: store, taskID: taskID, language: language)
                     state.stringValue = "已导出 \(count.pages) 页 Wiki · \(count.cards) 张卡片"; return
                 }
-                try await connectWikiIndex(); try Task.checkCancellation()
+                try await connectWikiIndex(for: action == "knowledge-restore" ? "恢复项目知识版本" : "预览导入项目知识")
                 let review: AgentKnowledgeReviewWindow
                 if action == "knowledge-restore" { review = try makeKnowledgeVersionReview(.project, language: language) }
                 else { review = AgentKnowledgeReviewWindow(title: "导入项目知识", action: "导入", scope: language == "zh" ? "简体中文" : "English", load: { [weak self] _, _ in
@@ -1095,7 +1110,7 @@ import UniformTypeIdentifiers
             do {
                 guard let task = store.task(taskID), try AgentFiles(workspace: task.workspace).root.path == snapshot.workspace else { throw PetError("项目已变化，请刷新后重试") }
                 if enabling {
-                    if action == "auto-update" { try await connectWikiIndex() }
+                    if action == "auto-update" { try await connectWikiIndex(for: "开启 Wiki 自动更新") }
                     let alert = AgentConfirmation(); alert.messageText = action == "auto-update" ? "开启自动更新？" : "开启自动导出？"
                     alert.informativeText = (language == "zh" ? "简体中文" : "English") + "\n" + (action == "auto-update" ? "应用运行期间，Git 提交变化后自动使用此任务的模型增量更新 Wiki，可能产生模型费用。人工修改的文档先保留，需手动审阅更新。" : "生成、更新或导入发布后，自动导出当前语言的 Wiki 与知识卡片。检测到外部文件修改时停止覆盖。")
                     alert.addButton(withTitle: "开启"); alert.addButton(withTitle: "取消")
@@ -1122,7 +1137,7 @@ import UniformTypeIdentifiers
         return AgentKnowledgeReviewWindow(title: "增量更新 Wiki", action: "更新", scope: scope, context: context, load: { [weak self] _, recovering in
             guard let self, !self.dirty else { throw PetError("请先保存当前文档，草稿已保留") }
             try context.require(self.store)
-            try await self.connectWikiIndex(allowConfirmation: !recovering)
+            try await self.connectWikiIndex(for: "预览 Wiki 增量更新", allowConfirmation: !recovering)
             let preview = try await AgentWiki.previewUpdate(store: self.store, runtime: runtime, sourceID: self.taskID, language: language)
             try context.require(self.store)
             let commits = String(preview.baseCommit.prefix(8)) + " → " + String(preview.commit.prefix(8))
@@ -1153,7 +1168,7 @@ import UniformTypeIdentifiers
             let signature = AgentKnowledgeReviewSnapshot.signature([identity, view.root, preview.generationID ?? "", preview.publishedID ?? "", preview.configurationHash ?? ""])
             return AgentKnowledgeReviewSnapshot(scope: scope, impact: target + " · " + count + "；使用当前任务模型，可能产生费用。当前生成将暂停，原任务和文档保留。", items: items, targetSignature: signature) { [weak self] in
                 guard let self, !self.dirty else { throw PetError("请先保存当前文档，草稿已保留") }
-                try await self.connectWikiIndex()
+                try await self.connectWikiIndex(for: "重新生成 Wiki")
                 guard try AgentKnowledgeCards.identity(preview.workspace) == identity else { throw PetError("项目目录已变化，请重新预览") }
                 return try await self.store.projectKnowledge.regenerate(preview, sourceID: self.taskID, runtime: runtime)
             }
@@ -1541,7 +1556,7 @@ import UniformTypeIdentifiers
     func undoManager(for view: NSTextView) -> UndoManager? { text.previewUndoManager }
     func textViewDidChangeSelection(_ notification: Notification) { sourceSelection.update(); sourceAdd.isHidden = viewer.isHidden || onAddSelection == nil; textViewportChanged(notification) }
     private func canLeave() -> Bool {
-        guard wikiReviewWindow?.hasPendingOperation != true else { state.stringValue = "请等待当前知识操作完成"; return false }
+        guard !wikiReviewIsWorking else { state.stringValue = "请等待当前知识操作完成"; return false }
         guard !saving else { state.stringValue = "正在保存…"; return false }
         do { try markdown.prepareWorkspaceNavigation() } catch { state.stringValue = error.localizedDescription; return false }
         guard dirty else { return true }

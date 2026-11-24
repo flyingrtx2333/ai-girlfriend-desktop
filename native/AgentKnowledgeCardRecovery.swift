@@ -64,7 +64,9 @@ import AppKit
         return value
     }
     var canPreserveForQuit: Bool { openedScope != nil && task?.sideTask?.retained != false && task != nil }
-    func prepareWorkspaceNavigation() -> Bool { !busy && reviewWindow?.hasPendingOperation != true && presentingWindow?.hasBlockingDialog != true }
+    func prepareWorkspaceNavigation() -> Bool {
+        (!busy || knowledgeApproval?.isWaiting == true) && reviewWindow?.hasPendingOperation != true && presentingWindow?.hasBlockingDialog != true
+    }
     func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page? {
         guard prepareWorkspaceNavigation() else { throw PetError("请先完成当前知识卡片操作") }
         guard let scope = openedScope else { if dirty { throw PetError("卡片原范围尚未读取，编辑已保留") }; return nil }
