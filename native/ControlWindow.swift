@@ -5457,8 +5457,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         taskWorkspace.show(taskID: id) { preparedGitWorkspace(store: store, taskID: id) }
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
-    private func preparedGitWorkspace(store: AgentStore, taskID: String, recovery: AgentGitDraftRecovery? = nil) -> AgentGitWindow {
-        AgentGitWindow(store: store, taskID: taskID, runtime: companion?.agentRuntime, recovery: recovery) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") }
+    private func preparedGitWorkspace(store: AgentStore, taskID: String, recovery: AgentGitDraftRecovery? = nil,
+                                      reading: AgentGitDraftRecovery.Reading? = nil) -> AgentGitWindow {
+        AgentGitWindow(store: store, taskID: taskID, runtime: companion?.agentRuntime, recovery: recovery, reading: reading) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") }
     }
     internal func gitWorkspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
@@ -5722,7 +5723,8 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         if let runtime = companion?.agentRuntime { record.configureWikiRuntime(runtime) { [weak self] taskID in self?.selectAgentTask(taskID); self?.show(tab: "chat") } }
         return record
     }
-    internal func materializeRecoveryRoot(task id: String, tab: AgentWorkspaceRecovery.Tab, loaded: AgentWorkspaceRecovery.LoadedPage?, activate: Bool = true) async throws {
+    internal func materializeRecoveryRoot(task id: String, tab: AgentWorkspaceRecovery.Tab, loaded: AgentWorkspaceRecovery.LoadedPage?,
+                                          gitReading: AgentGitDraftRecovery.Reading? = nil, activate: Bool = true) async throws {
         guard (!activate || agentTaskID == id && selectedTab == "chat"), let store = companion?.agentStore, let task = store.task(id), let root = AgentTaskWorkspace.Root(key: tab.root) else { throw PetError("请在原任务中重新选择该标签页") }
         if !activate {
             let kind = loaded?.saved.value.kind
@@ -5810,18 +5812,19 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
                 try editor.restoreWorkspaceRecovery(page)
             } catch { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: editor); throw error }
             editor.window?.orderOut(nil)
-        } else if let page = loaded?.saved.value, page.kind == "git-draft" {
-            guard root == .review, page.taskID == id, task.sideTask?.retained != false else { throw PetError("恢复的 Git 草稿与原任务或标签不匹配") }
-            let recovery = try AgentGitDraftRecovery.decode(page)
-            try recovery.scope?.requireCurrent(task)
-            try recovery.remoteForm?.requireCurrent(task)
-            if let push = recovery.push, push.opened { try push.requireCurrent(task) }
-            let editor = preparedGitWorkspace(store: store, taskID: id, recovery: recovery)
+        } else if loaded?.saved.value.kind == "git-draft" || gitReading != nil {
+            guard root == .review, loaded.map({ $0.saved.value.taskID == id }) != false,
+                  task.sideTask?.retained != false else { throw PetError("恢复的 Git 草稿与原任务或标签不匹配") }
+            let recovery = try loaded.map { try AgentGitDraftRecovery.decode($0.saved.value) }
+            try recovery?.scope?.requireCurrent(task)
+            try recovery?.remoteForm?.requireCurrent(task)
+            if let push = recovery?.push, push.opened { try push.requireCurrent(task) }
+            let editor = preparedGitWorkspace(store: store, taskID: id, recovery: recovery, reading: gitReading)
             guard present(editor) else { editor.endSettingsHosting(); throw PetError("工作区当前无法打开 Git 草稿") }
             do {
                 try editor.restorePushPage()
-                if let form = recovery.worktreeForm { try editor.restoreWorktreeCreation(form) }
-                if let manager = recovery.worktreeManager { try editor.openWorktreeManager(recovery: manager) }
+                if let form = recovery?.worktreeForm { try editor.restoreWorktreeCreation(form) }
+                if let manager = recovery?.worktreeManager { try editor.openWorktreeManager(recovery: manager) }
             }
             catch { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: editor); throw error }
             editor.window?.orderOut(nil)

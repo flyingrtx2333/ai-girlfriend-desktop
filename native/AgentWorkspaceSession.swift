@@ -25,8 +25,8 @@ private actor AgentWorkspaceJournal {
         } }
         return (values, issues)
     }
-    func loadPage(windowID: String, pageID: String, taskID: String, contextPosition: Bool = false) throws -> AgentWorkspaceRecovery.LoadedPage? {
-        try storage.loadPage(windowID: windowID, pageID: pageID, taskID: taskID, contextPosition: contextPosition)
+    func loadPage(windowID: String, pageID: String, taskID: String, reading: AgentWorkspaceRecovery.ReadingPage? = nil) throws -> AgentWorkspaceRecovery.LoadedPage? {
+        try storage.loadPage(windowID: windowID, pageID: pageID, taskID: taskID, reading: reading)
     }
     func savePage(_ page: AgentWorkspaceRecovery.Page, asset: URL?, windowID: String, pageID: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Page> {
         try storage.savePage(page, asset: asset, windowID: windowID, pageID: pageID, expected: expected)
@@ -78,6 +78,8 @@ private actor AgentWorkspaceJournal {
     private var savedTerminalAppearance: AgentWorkspaceRecovery.Saved<AgentTerminalAppearanceRecord>?
     private var terminalAppearanceReadOnly = false
     private var pages: [String: AgentWorkspaceRecovery.Page] = [:], pageHashes: [String: String] = [:]
+    private var gitReadingPages: [String: AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Page>] = [:]
+    private var protectedGitReadingPages = Set<String>()
     private var revision = 0, savedRevision = -1, disabled = false, stopped = false, closing = false
     private var job: Task<Void, Never>?, roots: [String: Task<Void, Never>] = [:]
     private var tabStateJob: Task<Void, Never>?
@@ -473,8 +475,20 @@ private actor AgentWorkspaceJournal {
                     } else if let context = controller as? AgentContextWindow {
                         let page = try context.captureWorkspaceRecovery()
                         if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
-                    } else if let git = controller as? AgentGitWindow, let page = try git.captureWorkspaceRecovery(persistClean: pages[tab.id] != nil), pages[tab.id] != page {
-                        try await persist(page, asset: nil, pageID: tab.id)
+                    } else if let git = controller as? AgentGitWindow {
+                        if let page = try git.captureWorkspaceRecovery(persistClean: pages[tab.id] != nil), pages[tab.id] != page {
+                            try await persist(page, asset: nil, pageID: tab.id)
+                        }
+                        if !protectedGitReadingPages.contains(tab.id), let reading = try git.captureReviewReading(),
+                           gitReadingPages[tab.id]?.value != reading {
+                            do {
+                                let saved = try await journal.savePage(reading, asset: nil, windowID: id, pageID: tab.id, expected: gitReadingPages[tab.id]?.hash)
+                                gitReadingPages[tab.id] = saved
+                            } catch {
+                                protectedGitReadingPages.insert(tab.id)
+                                owner.setStatus("Git 审阅位置未保存：" + error.localizedDescription, error: true)
+                            }
+                        }
                     }
                 }
                 let journal = journal
@@ -624,7 +638,12 @@ private actor AgentWorkspaceJournal {
         await waitForPendingRestores()
         // Read the latest media position even between throttled time events.
         if editors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) || owner?.knowledgePageHost.recoveryReaders.contains(where: \.hasVideoPlayback) == true { revision &+= 1 }
-        if editors.contains(where: { ($0.2 as? AgentGitWindow)?.recoveryWorktreeForm?.hasDraft == true }) { revision &+= 1 }
+        if try editors.contains(where: { _, tab, controller in
+            guard let git = controller as? AgentGitWindow else { return false }
+            if git.recoveryWorktreeForm?.hasDraft == true { return true }
+            guard !protectedGitReadingPages.contains(tab.id), let reading = try git.captureReviewReading() else { return false }
+            return gitReadingPages[tab.id]?.value != reading
+        }) { revision &+= 1 }
         if !workspaceEditorRecoveryReadOnly, let owner,
            workspaceEditorDrafts(including: owner.captureWorkspaceEditorDraft()) != (savedWorkspaceEditorDrafts?.value.drafts ?? [:]) { revision &+= 1 }
         if !archivedTaskNavigationReadOnly, let state = owner?.captureArchivedTaskNavigation(),
@@ -663,10 +682,24 @@ private actor AgentWorkspaceJournal {
             defer { roots[tab.id] = nil; owner.taskWorkspace.retryRecovery(tab.id) }
             do {
                 let journal = journal, windowID = id
-                let loaded = try await journal.loadPage(windowID: windowID, pageID: tab.id, taskID: task, contextPosition: tab.root == "context")
+                let loaded = try await journal.loadPage(windowID: windowID, pageID: tab.id, taskID: task, reading: tab.root == "context" ? .context : nil)
+                var gitReading: AgentGitDraftRecovery.Reading?, readingError: Error?
+                if tab.root == AgentTaskWorkspace.Root.review.key {
+                    do {
+                        if let saved = try await journal.loadPage(windowID: windowID, pageID: tab.id, taskID: task, reading: .git)?.saved {
+                            gitReading = try AgentGitDraftRecovery.Reading.decode(saved.value)
+                            gitReadingPages[tab.id] = saved
+                        }
+                        protectedGitReadingPages.remove(tab.id)
+                    } catch {
+                        protectedGitReadingPages.insert(tab.id)
+                        readingError = error
+                    }
+                }
                 guard !stopped, (!activate || owner.agentTaskID == task), owner.taskWorkspace.recoveryLayouts.contains(where: { $0.taskID == task && $0.tabs.contains(where: { $0.id == tab.id }) }) else { return }
                 if let loaded { pageHashes[tab.id] = loaded.saved.hash; pages[tab.id] = loaded.saved.value }
-                try await owner.materializeRecoveryRoot(task: task, tab: tab, loaded: loaded, activate: activate)
+                try await owner.materializeRecoveryRoot(task: task, tab: tab, loaded: loaded, gitReading: gitReading, activate: activate)
+                if let readingError { owner.setStatus("Git 审阅位置未读取：" + readingError.localizedDescription, error: true) }
                 owner.taskWorkspace.reportRecoveryFailure(tab.id, message: nil); changed()
             } catch {
                 let message = "标签恢复失败，原草稿已保留：" + error.localizedDescription

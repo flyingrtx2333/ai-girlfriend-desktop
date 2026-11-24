@@ -156,7 +156,7 @@ enum AgentGitDiffRows {
 }
 
 @MainActor final class AgentGitDiffView: AgentThemeView, NSTableViewDataSource, NSTableViewDelegate {
-    struct SplitPosition: Codable, Sendable {
+    struct SplitPosition: Codable, Equatable, Sendable {
         let row: Int, fraction: Double
         var valid: Bool { row >= 0 && fraction.isFinite && (0...1).contains(fraction) }
     }
@@ -171,6 +171,8 @@ enum AgentGitDiffRows {
     var splitMode = false { didSet { unifiedHost.isHidden = splitMode; split.isHidden = !splitMode; needsLayout = true } }
     var wraps = true { didSet { widths = .zero; heights.removeAll(); configureUnified(); needsLayout = true } }
     var patch: String { text.string }
+    var splitHorizontalOffsets: [Double] { [oldScroll, newScroll].map { Double(max(0, $0.contentView.bounds.minX)) } }
+    var onUnifiedScroll: (() -> Void)?
     var onSplitScroll: (() -> Void)?
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -288,15 +290,18 @@ enum AgentGitDiffRows {
         let bounds = oldTable.rect(ofRow: row)
         return SplitPosition(row: row, fraction: min(1, max(0, (y - bounds.minY) / max(1, bounds.height))))
     }
-    @discardableResult func restoreSplitPosition(_ position: SplitPosition) -> Bool {
-        guard splitMode, position.valid, rows.indices.contains(position.row), oldScroll.contentSize.height > 0 else { return false }
+    @discardableResult func restoreSplitPosition(_ position: SplitPosition, horizontal: [Double]? = nil) -> Bool {
+        guard splitMode, position.valid, rows.indices.contains(position.row), oldScroll.contentSize.height > 0,
+              horizontal.map({ $0.count == 2 }) != false else { return false }
         layoutSubtreeIfNeeded()
         let row = oldTable.rect(ofRow: position.row), maximum = max(0, oldTable.bounds.height - oldScroll.contentSize.height)
         let y = min(maximum, row.minY + row.height * position.fraction)
         synchronizing = true
         defer { synchronizing = false }
-        for scroll in [oldScroll, newScroll] {
-            scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.minX, y: y)); scroll.reflectScrolledClipView(scroll.contentView)
+        for (index, scroll) in [oldScroll, newScroll].enumerated() {
+            let x = horizontal.map { CGFloat($0[index]) } ?? scroll.contentView.bounds.minX
+            let maximumX = max(0, (scroll.documentView?.bounds.width ?? 0) - scroll.contentSize.width)
+            scroll.contentView.scroll(to: NSPoint(x: min(maximumX, x), y: y)); scroll.reflectScrolledClipView(scroll.contentView)
         }
         return true
     }
@@ -366,7 +371,11 @@ enum AgentGitDiffRows {
         return cell
     }
     @objc private func scrolled(_ notification: Notification) {
-        if notification.object as? NSClipView === unified.contentView { gutter.needsDisplay = true; return }
+        if notification.object as? NSClipView === unified.contentView {
+            gutter.needsDisplay = true
+            if !splitMode { onUnifiedScroll?() }
+            return
+        }
         if abs(widths.width - oldScroll.contentSize.width) > 0.5 || abs(widths.height - newScroll.contentSize.width) > 0.5 { needsLayout = true }
         guard splitMode, !synchronizing, let clip = notification.object as? NSClipView else { return }
         let other = clip === oldScroll.contentView ? newScroll : oldScroll
@@ -374,8 +383,10 @@ enum AgentGitDiffRows {
         onSplitScroll?()
     }
     func readingReadback() -> [String: Any] {
-        ["split": splitMode, "wraps": wraps, "gutterVisible": !gutter.isHidden, "gutterWidth": gutterWidth.constant, "splitNumberWidth": numberWidth, "horizontalScroller": unified.hasHorizontalScroller,
+        let splitPosition = captureSplitPosition().map { ["row": $0.row, "fraction": $0.fraction] as [String: Any] }
+        return ["split": splitMode, "wraps": wraps, "gutterVisible": !gutter.isHidden, "gutterWidth": gutterWidth.constant, "splitNumberWidth": numberWidth, "horizontalScroller": unified.hasHorizontalScroller,
          "textWidth": text.bounds.width, "viewportWidth": unified.contentSize.width, "unifiedScroll": [unified.contentView.bounds.minX, unified.contentView.bounds.minY],
+         "splitPosition": splitPosition as Any? ?? NSNull(), "splitHorizontal": splitHorizontalOffsets,
          "gutterFrame": [gutter.frame.minX, gutter.frame.minY, gutter.frame.width, gutter.frame.height], "scrollFrame": [unified.frame.minX, unified.frame.minY, unified.frame.width, unified.frame.height],
          "selectedRange": [text.selectedRange().location, text.selectedRange().length],
          "records": text.records.map { ["range": [$0.range.location, $0.range.length], "old": $0.old as Any? ?? NSNull(), "new": $0.new as Any? ?? NSNull(), "kind": String(describing: $0.kind)] }]

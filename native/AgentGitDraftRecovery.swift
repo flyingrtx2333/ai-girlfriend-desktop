@@ -1,8 +1,8 @@
 import Foundation
 
 struct AgentGitDraftRecovery: Codable {
-    struct Scope: Codable, Equatable {
-        struct Checkout: Codable, Equatable {
+    struct Scope: Codable, Equatable, Sendable {
+        struct Checkout: Codable, Equatable, Sendable {
             var directory: String, identity: String, head: String
         }
         var workspace: String, identity: String
@@ -53,6 +53,47 @@ struct AgentGitDraftRecovery: Codable {
             let symbolic = head.hasPrefix("ref: refs/") && head.utf8.count < 8192 && !head.dropFirst(5).utf8.contains { $0 <= 32 || $0 == 127 }
             let detached = [40, 64].contains(head.count) && head.allSatisfy { $0.isASCII && $0.isHexDigit }
             return Self.validPath(checkout.directory) && Self.validIdentity(checkout.identity) && (symbolic || detached)
+        }
+    }
+
+    struct Reading: Codable, Equatable, Sendable {
+        var version = 1
+        var scope: Scope
+        var source: AgentGitSource
+        var revision: String
+        var paths: [String]
+        var split: Bool
+        var wraps: Bool
+        var ignoresWhitespace: Bool
+        var fileList: Bool?
+        var patchHash: String?
+        var unified: AgentTextViewport?
+        var sideBySide: AgentGitDiffView.SplitPosition?
+        var splitHorizontal: [Double]?
+
+        func page(taskID: String) throws -> AgentWorkspaceRecovery.Page {
+            let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+            return AgentWorkspaceRecovery.Page(taskID: taskID, kind: "git-reading", state: try encoder.encode(self), dirty: false, asset: nil)
+        }
+
+        static func decode(_ page: AgentWorkspaceRecovery.Page) throws -> Self {
+            let failure = PetError("Git 审阅位置格式无效，原记录已保留")
+            guard page.kind == "git-reading", !page.dirty, page.asset == nil,
+                  let raw = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
+                  Set(raw.keys).isSubset(of: ["version", "scope", "source", "revision", "paths", "split", "wraps", "ignoresWhitespace", "fileList", "patchHash", "unified", "sideBySide", "splitHorizontal"]),
+                  let scope = raw["scope"] as? [String: Any], Set(scope.keys).isSubset(of: ["workspace", "identity", "checkout"]),
+                  let checkout = scope["checkout"] as? [String: Any], Set(checkout.keys).isSubset(of: ["directory", "identity", "head"]) else { throw failure }
+            if let unified = raw["unified"] { try AgentTextViewport.validateObject(unified) }
+            if let split = raw["sideBySide"] as? [String: Any], !Set(split.keys).isSubset(of: ["row", "fraction"]) { throw failure }
+            let value = try JSONDecoder().decode(Self.self, from: page.state)
+            guard value.version == 1, value.scope.valid, value.revision.utf8.count <= 512, !value.revision.contains("\0"),
+                  value.paths.count <= 100_000, Set(value.paths).count == value.paths.count,
+                  value.paths.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("/") && $0.utf8.count < 8192 && !$0.contains("\0") }),
+                  value.patchHash.map({ !value.paths.isEmpty && $0.utf8.count == 64 && $0.allSatisfy { $0.isASCII && $0.isHexDigit && !$0.isUppercase } }) != false,
+                  value.unified.map({ !value.split && value.patchHash != nil && $0.valid }) != false,
+                  value.sideBySide.map({ value.split && value.patchHash != nil && $0.valid }) != false,
+                  value.splitHorizontal.map({ value.sideBySide != nil && $0.count == 2 && $0.allSatisfy { $0.isFinite && (0...1_000_000_000).contains($0) } }) != false else { throw failure }
+            return value
         }
     }
 

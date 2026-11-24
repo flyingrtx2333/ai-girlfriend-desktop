@@ -118,6 +118,13 @@ struct AgentWorkspaceRecovery: Sendable {
         var saved: Saved<Page>
         var asset: URL?
     }
+    // Keep reading positions beside the original editor payload so an older
+    // application can still open the task and recover its draft.
+    enum ReadingPage: String {
+        case context = "context-position"
+        case git = "git-reading"
+        var suffix: String { self == .context ? ".context.json" : ".git-reading.json" }
+    }
     struct Listing: Sendable {
         var windows: [Saved<Window>] = []
         var issues: [String] = []
@@ -533,17 +540,15 @@ struct AgentWorkspaceRecovery: Sendable {
         guard value.taskID == taskID else { throw PetError("恢复草稿不属于当前任务") }
         return value.dirty
     }
-    func loadPage(windowID: String, pageID: String, taskID: String, contextPosition: Bool = false) throws -> LoadedPage? {
-        // The old build can still open its task details when it sees no editor
-        // payload. Keep the reading position beside that payload.
-        let suffix = contextPosition ? ".context.json" : ".json"
+    func loadPage(windowID: String, pageID: String, taskID: String, reading: ReadingPage? = nil) throws -> LoadedPage? {
+        let suffix = reading?.suffix ?? ".json"
         let files = try files(), path = try pagePath(windowID, pageID) + suffix, url = try literal(files, path)
         if try files.entryMetadata(url).kind == "missing" { return nil }
         return try locked(windowID) { files in
             let data = try files.readData(url, maximum: Self.maximumState), value = try decodePage(data)
             guard value.taskID == taskID else { throw PetError("恢复草稿不属于当前任务") }
-            if contextPosition, value.kind != "context-position" || value.dirty || value.asset != nil {
-                throw PetError("任务详情位置格式无效，原记录已保留")
+            if let reading, value.kind != reading.rawValue || value.dirty || value.asset != nil {
+                throw PetError("阅读位置格式无效，原记录已保留")
             }
             var asset: URL?
             if let stored = value.asset {
@@ -557,9 +562,9 @@ struct AgentWorkspaceRecovery: Sendable {
     @discardableResult func savePage(_ value: Page, asset: URL?, windowID: String, pageID: String, expected: String?) throws -> Saved<Page> {
         try validate(value)
         guard value.asset == nil || (asset == nil && value.kind == "office") else { throw PetError("恢复附件必须由保存入口生成") }
-        let contextPosition = value.kind == "context-position"
-        if contextPosition, value.dirty || asset != nil { throw PetError("任务详情只能保存阅读位置") }
-        let suffix = contextPosition ? ".context.json" : ".json"
+        let reading = ReadingPage(rawValue: value.kind)
+        if reading != nil, value.dirty || asset != nil { throw PetError("阅读位置不能包含编辑草稿或附件") }
+        let suffix = reading?.suffix ?? ".json"
         _ = try encoded(value)
         return try locked(windowID) { files in
             let path = try pagePath(windowID, pageID), url = try literal(files, path + suffix)

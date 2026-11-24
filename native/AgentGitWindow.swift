@@ -31,6 +31,7 @@ import AppKit
     private var wideViewerLeading: NSLayoutConstraint!, compactViewerTop: NSLayoutConstraint!, compactLayout: Bool?, filesRequested: Bool?
     private var source: AgentGitSource = .uncommitted, inspection: AgentGitInspection?, restoreID: String?
     private var ignoresWhitespace = false
+    private var pendingReading: AgentGitDraftRecovery.Reading?
     private var changes: [AgentGitChange] = [], review: AgentGitReview?, git: AgentGit?, job: Task<Void, Never>?, lastResult = "", displayedBranchRef = ""
     private var draftScope: AgentGitDraftRecovery.Scope?, currentDraftScope: AgentGitDraftRecovery.Scope?
     private var draftSelection: AgentTextViewport.Selection?, pendingDraftPaths: [String]?
@@ -40,7 +41,8 @@ import AppKit
     var onWorkspaceChange: (() -> Void)?
     private let activityOwner = UUID()
     private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: taskID, busy: busy) } } }
-    init(store: AgentStore, taskID: String, runtime: AgentRuntime? = nil, recovery: AgentGitDraftRecovery? = nil, onSelectTask: @escaping (String) -> Void) {
+    init(store: AgentStore, taskID: String, runtime: AgentRuntime? = nil, recovery: AgentGitDraftRecovery? = nil,
+         reading: AgentGitDraftRecovery.Reading? = nil, onSelectTask: @escaping (String) -> Void) {
         self.store = store; self.taskID = taskID; self.runtime = runtime; self.onSelectTask = onSelectTask
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Git · " + (store.task(taskID)?.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "项目")
@@ -124,6 +126,14 @@ import AppKit
             draftFocused = recovery.focused; restoreDraftFocus = draftFocused; pendingDraftPaths = recovery.paths
             source = recovery.source; revision.stringValue = recovery.revision; updateSourceControls()
         }
+        if let reading {
+            let matchesDraft = recovery.map {
+                $0.message.isEmpty || (reading.source == $0.source && reading.revision == $0.revision && reading.paths == $0.paths)
+            } ?? true
+            if matchesDraft { pendingReading = reading }
+        }
+        diffView.onUnifiedScroll = { [weak self] in self?.reviewReadingChanged() }
+        diffView.onSplitScroll = { [weak self] in self?.reviewReadingChanged() }
         parkedPush = recovery?.push
         pendingRemoteForm = recovery?.remoteForm
         content.onResize = { [weak self] in self?.pageDidLayout() }; pageDidLayout(); refresh()
@@ -163,6 +173,9 @@ import AppKit
         } else if isPageVisible, !busy, !restoreDraftFocus { draftFocused = false }
     }
     @objc private func draftSelectionChanged(_ notification: Notification) {
+        if notification.object as? NSTextView === text, presentingWindow?.firstResponder === text {
+            reviewReadingChanged(); return
+        }
         guard !applyingDraftFocus, !restoreDraftFocus, let editor = notification.object as? NSTextView,
               editor === message.currentEditor(), editor === presentingWindow?.firstResponder else { return }
         rememberDraftSelection(); onWorkspaceChange?()
@@ -188,6 +201,43 @@ import AppKit
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "git-draft", state: try encoder.encode(saved), dirty: dirty, asset: nil)
         _ = try AgentGitDraftRecovery.decode(page); return page
     }
+    private func readingHash(_ result: AgentGitInspection) -> String {
+        AgentFiles.hash(Data((result.hash + "\0" + diffView.patch).utf8))
+    }
+    func captureReviewReading() throws -> AgentWorkspaceRecovery.Page? {
+        if let pendingReading { return try pendingReading.page(taskID: taskID) }
+        guard !busy, let scope = currentDraftScope, scope.checkout != nil else { return nil }
+        let revision = inspection?.revision ?? self.revision.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard revision.utf8.count <= 512, !revision.contains("\0") else { return nil }
+        let split = diffView.splitMode
+        let position = inspection != nil && split ? diffView.captureSplitPosition() : nil
+        let unified = inspection != nil && !split ? try AgentTextViewport(text) : nil
+        let value = AgentGitDraftRecovery.Reading(scope: scope, source: source, revision: revision, paths: selectedPaths,
+            split: split, wraps: diffView.wraps, ignoresWhitespace: ignoresWhitespace, fileList: filesRequested,
+            patchHash: inspection.map(readingHash), unified: unified, sideBySide: position,
+            splitHorizontal: position.map { _ in diffView.splitHorizontalOffsets })
+        let page = try value.page(taskID: taskID)
+        _ = try AgentGitDraftRecovery.Reading.decode(page)
+        return page
+    }
+    private func reviewReadingChanged() {
+        if !busy, pendingReading == nil, isPageVisible { onSettingsRecoveryChange?() }
+    }
+    private func restoreReviewReadingWhenVisible() {
+        guard pendingReading != nil, inspection != nil, !busy, isPageVisible else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let reading = pendingReading, let inspection, !busy, isPageVisible else { return }
+            if reading.patchHash == readingHash(inspection), reading.split == diffView.splitMode, reading.wraps == diffView.wraps {
+                pageContentView?.layoutSubtreeIfNeeded()
+                if let split = reading.sideBySide, !diffView.restoreSplitPosition(split, horizontal: reading.splitHorizontal) { return }
+                if let unified = reading.unified, !unified.apply(to: text) { return }
+            } else if reading.patchHash != nil {
+                state.stringValue += " · 差异已更新"
+            }
+            pendingReading = nil
+            reviewReadingChanged()
+        }
+    }
     private func requestDraftTextFocus() {
         guard restoreDraftFocus, !busy else { return }
         DispatchQueue.main.async { [weak self] in
@@ -203,6 +253,7 @@ import AppKit
     func windowDidResize(_ notification: Notification) { pageDidLayout() }
     override func settingsDidAppear() {
         super.settingsDidAppear(); setBusy(busy)
+        restoreReviewReadingWhenVisible()
         if returnToRestore, restoreButton.isEnabled { presentingWindow?.makeFirstResponder(restoreButton) }
         returnToRestore = false
     }
@@ -215,8 +266,9 @@ import AppKit
         list.isHidden = !shown; listWidth.constant = shown ? 190 : 0; listHeight.constant = shown ? max(32, min(108, fileArea.bounds.height - 88)) : 0
         wideViewerLeading.constant = shown ? 12 : 0; compactViewerTop.constant = shown ? 8 : 0
         let label = shown ? "隐藏文件列表" : "显示文件列表"; filesButton.setAccessibilityLabel(label); filesButton.toolTip = label
+        restoreReviewReadingWhenVisible()
     }
-    @objc private func toggleFiles() { filesRequested = !(filesRequested ?? !(compactLayout ?? false)); pageDidLayout() }
+    @objc private func toggleFiles() { filesRequested = !(filesRequested ?? !(compactLayout ?? false)); pageDidLayout(); reviewReadingChanged() }
     @objc private func selectFile() {
         guard !busy, let path = filePicker.selectedItem?.representedObject as? String, let row = changes.firstIndex(where: { $0.path == path }) else { return }
         table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row)
@@ -333,6 +385,16 @@ import AppKit
                 displayedBranchRef = symbolic.failed ? "HEAD" : (symbolic.stdout ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 currentDraftScope = try? AgentGitDraftRecovery.Scope.current(store.task(taskID))
                 if let original = draftScope, original.checkout == nil, original.matches(currentDraftScope) { draftScope = currentDraftScope }
+                if let reading = pendingReading {
+                    guard reading.scope == currentDraftScope else {
+                        throw PetError("原审阅位于另一仓库或分支。切回后刷新，或选择改动来源继续当前仓库。")
+                    }
+                    source = reading.source; revision.stringValue = reading.revision; updateSourceControls()
+                    pendingDraftPaths = reading.paths; filesRequested = reading.fileList
+                    displayMode.selectedSegment = reading.split ? 1 : 0; wrap.state = reading.wraps ? .on : .off
+                    ignoresWhitespace = reading.ignoresWhitespace
+                    changeDisplay(); pageDidLayout()
+                }
                 let currentBranch = displayedBranchRef == "HEAD" ? "分离状态" : displayedBranchRef.hasPrefix("refs/heads/") ? String(displayedBranchRef.dropFirst(11)) : displayedBranchRef
                 branch.stringValue = currentBranch
                 changes = try await git.inspectionChanges(source: source, revision: revision.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -345,9 +407,14 @@ import AppKit
                 if let paths = pendingDraftPaths {
                     pendingDraftPaths = nil
                     let expected = Set(paths), rows = IndexSet(changes.indices.filter { expected.contains(changes[$0].path) })
-                    if rows.count != expected.count { state.stringValue = "已保留提交说明，请重新选择要审阅的文件" }
+                    if rows.count != expected.count {
+                        pendingReading = nil
+                        state.stringValue = draftText.isEmpty ? "原文件变更已不可用，请重新选择" : "已保留提交说明，请重新选择要审阅的文件"
+                    }
                     else if let first = rows.first { table.selectRowIndexes(rows, byExtendingSelection: false); table.scrollRowToVisible(first) }
+                    else { pendingReading = nil }
                 } else if !changes.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+                reviewReadingChanged()
             } catch {
                 guard !Task.isCancelled else { return }
                 currentDraftScope = try? AgentGitDraftRecovery.Scope.current(store.task(taskID))
@@ -359,6 +426,7 @@ import AppKit
     }
     @objc private func changeSource() {
         guard !busy, AgentGitSource.allCases.indices.contains(sourcePopup.indexOfSelectedItem) else { return }
+        if pendingReading != nil { pendingReading = nil; pendingDraftPaths = nil }
         source = AgentGitSource.allCases[sourcePopup.indexOfSelectedItem]
         revision.stringValue = source == .committed ? "HEAD" : ""; updateSourceControls()
         lastResult = ""; refresh()
@@ -369,11 +437,12 @@ import AppKit
         sourcePopup.toolTip = source == .lastTurn ? "本轮文件工具、命令和 MCP 执行期间记录的项目文件变化。" : nil
         revision.isHidden = !source.usesRevision
     }
-    @objc private func changeDisplay() { diffView.splitMode = displayMode.selectedSegment == 1; diffView.wraps = wrap.state == .on }
+    @objc private func changeDisplay() { diffView.splitMode = displayMode.selectedSegment == 1; diffView.wraps = wrap.state == .on; reviewReadingChanged() }
     @objc private func toggleWhitespace() {
         guard !busy, initializeButton.isHidden, git != nil else { return }
         ignoresWhitespace.toggle()
         inspectSelection()
+        reviewReadingChanged()
     }
     private func showDiff(_ patch: String) {
         let titles: (String, String)
@@ -399,7 +468,9 @@ import AppKit
         guard !busy, let git else { return }
         let selected = table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path }
         if location != nil { ignoresWhitespace = false }
-        review = nil; inspection = nil; showDiff(""); statistics.stringValue = ""; guard !selected.isEmpty else { setBusy(false); return }; setBusy(true); state.stringValue = "读取差异…"
+        review = nil; inspection = nil; showDiff(""); statistics.stringValue = ""
+        guard !selected.isEmpty else { setBusy(false); reviewReadingChanged(); return }
+        setBusy(true); state.stringValue = "读取差异…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
@@ -424,7 +495,7 @@ import AppKit
                 }
             }
             catch { if !Task.isCancelled { showError(error) } }
-            if !Task.isCancelled { setBusy(false) }
+            if !Task.isCancelled { setBusy(false); restoreReviewReadingWhenVisible(); reviewReadingChanged() }
         }
     }
     @objc private func openSecurityOptions() {
@@ -771,7 +842,7 @@ import AppKit
             let rect = content.convert(view.bounds, from: view)
             return [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)]
         }
-        return ["taskID": taskID, "busy": busy, "source": source.rawValue, "revision": revision.stringValue, "paths": inspection?.paths ?? [], "diff": diffView.patch, "diffReader": diffView.readingReadback(), "draft": message.stringValue, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "stateFrame": frame(state), "sourceFrame": frame(sourceFrame), "fileFrame": frame(fileFrame), "messageFrame": frame(message), "revisionFrame": frame(revision), "revisionVisible": !revision.isHidden, "diffFrame": frame(diffView), "listFrame": frame(list), "filePickerEnabled": filePicker.isEnabled, "sourceEnabled": sourcePopup.isEnabled, "split": diffView.splitMode, "wraps": diffView.wraps, "fileListVisible": !list.isHidden, "files": changes.map(\.path), "controls": frames, "checks": checks]
+        return ["taskID": taskID, "busy": busy, "source": source.rawValue, "revision": revision.stringValue, "paths": inspection?.paths ?? [], "diff": diffView.patch, "diffReader": diffView.readingReadback(), "draft": message.stringValue, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "stateFrame": frame(state), "sourceFrame": frame(sourceFrame), "fileFrame": frame(fileFrame), "messageFrame": frame(message), "revisionFrame": frame(revision), "revisionVisible": !revision.isHidden, "diffFrame": frame(diffView), "listFrame": frame(list), "filePickerEnabled": filePicker.isEnabled, "sourceEnabled": sourcePopup.isEnabled, "split": diffView.splitMode, "wraps": diffView.wraps, "ignoresWhitespace": ignoresWhitespace, "readingPending": pendingReading != nil, "fileListVisible": !list.isHidden, "files": changes.map(\.path), "controls": frames, "checks": checks]
     }
     func checkWorkspace(source: AgentGitSource? = nil, path: String? = nil, message: String? = nil, action: String? = nil) async {
         guard AgentTaskWorkspace.readbackEnabled else { return }

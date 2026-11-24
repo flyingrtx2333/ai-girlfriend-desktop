@@ -163,6 +163,7 @@ import AppKit
             checks["missingRepositoryIsActionableWithoutFloatingModal"] = missing.workspaceReadback()["busy"] as? Bool == false && (missing.workspaceReadback()["state"] as? String)?.isEmpty == false && missing.presentingWindow === control.window
             control.showAgentTask(fixture.taskID); await git.checkWorkspace(source: .uncommitted, path: "review.txt")
             checks.merge(try await checkGitWhitespaceReview(git, fixture: fixture, tasks: tasks, rawGit: rawGit)) { _, value in value }
+            checks.merge(try await checkGitReadingJournal(git, output: output)) { _, value in value }
             checks["modelTransmissionsRemainZero"] = requests == 0 && tasks.tasks.allSatisfy { $0.modelReceipts?.isEmpty != false && $0.inputTokens == 0 && $0.outputTokens == 0 }
             report["head"] = head; report["taskID"] = fixture.taskID; report["workspace"] = fixture.workspace.path; report["modelRequests"] = requests
             report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }; report["scope"] = "Actual task window, independent Git repository/index/commit objects and loopback remote preparation; no model requests. Publishing remains an explicit UI confirmation."
@@ -171,6 +172,31 @@ import AppKit
     }
 
     private func gitReviewSubviews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(gitReviewSubviews) }
+
+    private func checkGitReadingJournal(_ page: AgentGitWindow, output: URL) async throws -> [String: Bool] {
+        let path = "whitespace-review.txt", task = page.boundTaskID
+        await page.checkWorkspace(source: .unstaged, path: path, action: "split")
+        guard let reading = try page.captureReviewReading() else { throw PetError("未保存 Git 审阅位置") }
+        let value = try AgentGitDraftRecovery.Reading.decode(reading)
+        let profile = output.appendingPathComponent("git-reading-journal", isDirectory: true)
+        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+        let journal = AgentWorkspaceRecovery(profile: profile), window = UUID().uuidString, tab = UUID().uuidString
+        let saved = try journal.savePage(reading, asset: nil, windowID: window, pageID: tab, expected: nil)
+        let cleanHasNoDraft = try journal.loadPage(windowID: window, pageID: tab, taskID: task) == nil &&
+            journal.loadTabDirtyState(windowID: window, pageID: tab, taskID: task) == nil
+        await page.checkWorkspace(message: "Original commit draft")
+        guard let draft = try page.captureWorkspaceRecovery(persistClean: false) else { throw PetError("缺少原提交草稿") }
+        _ = try journal.savePage(draft, asset: nil, windowID: window, pageID: tab, expected: nil)
+        let loaded = try journal.loadPage(windowID: window, pageID: tab, taskID: task, reading: .git)?.saved
+        let original = try journal.loadPage(windowID: window, pageID: tab, taskID: task)?.saved.value
+        let draftRoundTrips = try original.map(AgentGitDraftRecovery.decode)?.message == "Original commit draft"
+        await page.checkWorkspace(message: "")
+        return ["gitReadingPreservesRealSelectedSourceAndSplitOptions": value.paths == [path] && value.source == .unstaged &&
+                    value.split && value.ignoresWhitespace && value.sideBySide != nil && value.patchHash != nil,
+                "gitReadingStoresNoDraftOrPatchText": cleanHasNoDraft && !String(decoding: reading.state, as: UTF8.self).contains("eligible ="),
+                "gitReadingAndLegacyCommitDraftUseIndependentStorage": draftRoundTrips && loaded?.hash == saved.hash &&
+                    loaded?.value == reading]
+    }
 
     private func checkGitWhitespaceReview(_ page: AgentGitWindow, fixture: GitWorkspaceFixture, tasks: AgentStore, rawGit: ([String]) async throws -> String) async throws -> [String: Bool] {
         let git = try AgentGit(store: tasks, taskID: fixture.taskID, directory: AgentGit.metadata(workspace: fixture.workspace.path))
