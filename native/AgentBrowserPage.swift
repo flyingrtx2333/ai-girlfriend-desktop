@@ -26,7 +26,9 @@ import WebKit
     private var recovery: Recovery?
     private var restoringView: Task<Void, Never>?
     private weak var pageDialog: AgentConfirmation?
-    var hasPageDialog: Bool { pageDialog != nil }
+    private weak var filePanel: NSOpenPanel?
+    private var hasSharedLocalFiles = false
+    var hasPageDialog: Bool { pageDialog != nil || filePanel != nil }
     var recoveryWaiting: Bool { if case .waiting? = recovery { return true }; return false }
     private var restoringPage: Bool { if case .restoring? = recovery { return true }; return false }
     private struct DownloadIntent {
@@ -95,7 +97,10 @@ import WebKit
         busy = true; pageError = nil; explicitAddress = nil; downloadIntent = nil; notify()
     }
     private func end() { busy = false; notify() }
-    func dismissPageDialog() { pageDialog?.endDialog(.abort) }
+    func dismissPageDialog() {
+        pageDialog?.endDialog(.abort)
+        filePanel?.cancel(nil)
+    }
     private func cancelRestoringView() { restoringView?.cancel(); restoringView = nil }
     private func pauseRecovery() {
         cancelRestoringView()
@@ -363,9 +368,33 @@ import WebKit
     }
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) { decisionHandler(.deny) }
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
-        guard let window = web.window else { completionHandler(nil); return }
-        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = parameters.allowsMultipleSelection
-        panel.beginSheetModal(for: window) { response in completionHandler(response == .OK ? panel.urls : nil) }
+        let requesting = frame.securityOrigin
+        let scheme = requesting.protocol.lowercased()
+        guard webView === web, let owner = pageDialogOwner(), ["http", "https"].contains(scheme),
+              !requesting.host.isEmpty else { completionHandler(nil); return }
+        var origin = URLComponents()
+        origin.scheme = scheme
+        origin.host = requesting.host
+        if requesting.port != 0 { origin.port = requesting.port }
+        guard let url = origin.url else { completionHandler(nil); return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.canChooseFiles = !parameters.allowsDirectories
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.message = "网页 · " + AgentBrowser.origin(url)
+        panel.prompt = "选取"
+        let document = documentID, scope = navigation, address = web.url
+        filePanel = panel; invalidate()
+        panel.beginSheetModal(for: owner) { [weak self, weak owner] response in
+            guard let self, filePanel === panel else { completionHandler(nil); return }
+            filePanel = nil; invalidate()
+            let current = !closed && documentID == document && navigation == scope && address == web.url &&
+                owner?.isVisible == true && web.window === owner && allowsPageDialog?() == true
+            let selection = response == .OK && current ? panel.urls : []
+            if !selection.isEmpty { hasSharedLocalFiles = true }
+            completionHandler(selection.isEmpty ? nil : selection)
+            if !closed { notify() }
+        }
     }
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
         presentPageDialog(message, frame: frame) { _ in completionHandler() }
@@ -379,10 +408,14 @@ import WebKit
         input.setAccessibilityLabel("网页输入"); input.stringValue = defaultText ?? ""
         presentPageDialog(prompt, frame: frame, input: input) { accepted in completionHandler(accepted ? input.stringValue : nil) }
     }
+    private func pageDialogOwner() -> NSWindow? {
+        guard !closed, !restoringPage, !hasPageDialog, allowsPageDialog?() == true,
+              let owner = web.window, owner.isVisible, owner.isKeyWindow, !owner.hasBlockingDialog else { return nil }
+        return owner
+    }
     private func presentPageDialog(_ message: String, frame: WKFrameInfo, input: AgentDialogTextField? = nil,
                                    confirmation: Bool = false, completion: @escaping (Bool) -> Void) {
-        guard !closed, !restoringPage, !hasPageDialog, allowsPageDialog?() == true,
-              let owner = web.window, owner.isVisible, owner.isKeyWindow, !owner.hasBlockingDialog,
+        guard let owner = pageDialogOwner(),
               let value = frame.request.url, let url = try? AgentBrowser.url(value.absoluteString),
               allowedOrigins.contains(AgentBrowser.origin(url)) else { completion(false); return }
         let dialog = AgentConfirmation(); dialog.messageText = "网页 · " + AgentBrowser.origin(url)
@@ -410,10 +443,14 @@ import WebKit
         if let recovery { return recovery.page }
         guard let url = web.url else { return .init(id: id, title: "", origins: allowedOrigins.sorted(), zoom: web.pageZoom, x: 0, y: 0) }
         _ = try AgentBrowser.url(url.absoluteString)
+        let document = documentID
         let point = try await web.callAsyncJavaScript(AgentBrowserFormRecovery.captureScript, arguments: [:], in: nil, contentWorld: world) as? [String: Any]
-        guard !closed, web.url == url, point?["url"] as? String == url.absoluteString,
+        guard !hasPageDialog else { throw PetError("网页正等待输入或确认，上次恢复记录已保留") }
+        // WebKit history may hold local file paths even after leaving the form.
+        let interaction = hasSharedLocalFiles ? nil : web.interactionState as? Data
+        guard !closed, documentID == document, web.url == url, point?["url"] as? String == url.absoluteString,
               let x = point?["x"] as? Double, let y = point?["y"] as? Double,
-              let interaction = web.interactionState as? Data else { throw PetError("网页正在变化，请稍候重试恢复保存") }
+              hasSharedLocalFiles || interaction != nil else { throw PetError("网页正在变化，请稍候重试恢复保存") }
         let forms = try point?["forms"].flatMap { $0 is NSNull ? nil : try AgentBrowserFormRecovery.capture($0, url: url.absoluteString) }
         return .init(id: id, title: web.title ?? "", url: url.absoluteString, interaction: interaction, origins: allowedOrigins.sorted(), zoom: web.pageZoom, x: x, y: y, forms: forms)
     }

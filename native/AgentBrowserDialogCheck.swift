@@ -4,6 +4,11 @@ import WebKit
 @MainActor extension AppDelegate {
     func runBrowserDialogCheck(_ output: URL) async {
         var report: [String: Any] = [:], checks: [String: Bool] = [:], requests = 0
+        defer {
+            report["appPID"] = getpid(); report["checks"] = checks; report["modelRequests"] = requests
+            report["success"] = report["error"] == nil && requests == 0 && !checks.isEmpty && checks.values.allSatisfy { $0 }
+            try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("browser-report.json"))
+        }
         do {
             let arguments = CommandLine.arguments
             guard let flag = arguments.firstIndex(of: "--browser-dialogs"), arguments.indices.contains(flag + 1),
@@ -18,6 +23,10 @@ import WebKit
             defer { tasks.browser.close(id) }
             guard let owner = browser.presentingWindow else { throw PetError("浏览器没有窗口") }
             owner.makeKeyAndOrderFront(nil)
+            if arguments.contains("--browser-file-chooser") {
+                checks = try await checkBrowserFileChooser(browser, owner: owner, address: base.appendingPathComponent("upload"))
+                return
+            }
             let order = base.appendingPathComponent("order"), web = browser.web
             _ = try await browser.open(order)
 
@@ -107,8 +116,46 @@ import WebKit
             let recovery = try await browser.captureWorkspaceRecovery()
             checks["captureResumesAfterWebsiteFinishes"] = try AgentBrowserRecoveryState.decode(recovery).pages.first?.url == web.url?.absoluteString
         } catch { report["error"] = error.localizedDescription }
-        report["appPID"] = getpid(); report["checks"] = checks; report["modelRequests"] = requests
-        report["success"] = report["error"] == nil && requests == 0 && !checks.isEmpty && checks.values.allSatisfy { $0 }
-        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("browser-report.json"))
+    }
+
+    private func checkBrowserFileChooser(_ browser: AgentBrowserWindow, owner: NSWindow, address: URL) async throws -> [String: Bool] {
+        _ = try await browser.open(address)
+        guard let page = browser.pages.first else { throw PetError("文件选择网页未打开") }
+        let web = page.web
+        var checks: [String: Bool] = [:]
+        func click(_ name: String) -> Task<Void, Error> {
+            Task { _ = try await web.callAsyncJavaScript("document.getElementById(id).click();", arguments: ["id": name], in: nil, contentWorld: .page) }
+        }
+        func open(_ name: String) async throws -> (NSOpenPanel, Task<Void, Error>) {
+            let action = click(name)
+            for _ in 0..<80 {
+                if let panel = owner.attachedSheet as? NSOpenPanel { return (panel, action) }
+                await wait(0.05)
+            }
+            action.cancel()
+            throw PetError("网页未打开文件选择器")
+        }
+        for (name, files, folders, multiple) in [("single", true, false, false), ("files", true, false, true), ("folder", false, true, true)] {
+            let (panel, action) = try await open(name)
+            checks[name + "NativePickerMatchesWebControlAndOrigin"] = panel.canChooseFiles == files &&
+                panel.canChooseDirectories == folders && panel.allowsMultipleSelection == multiple &&
+                panel.message == "网页 · " + AgentBrowser.origin(address)
+            if name == "files" {
+                checks["pickerKeepsOriginalTaskInPlace"] = page.hasPageDialog && !browser.prepareWorkspaceNavigation() && !browser.canPreserveForQuit
+                do { _ = try await browser.captureWorkspaceRecovery(); checks["pendingPickerPreservesPriorRecovery"] = false }
+                catch { checks["pendingPickerPreservesPriorRecovery"] = error.localizedDescription.contains("恢复记录") }
+                browser.stop()
+            } else { panel.cancel(nil) }
+            _ = try? await action.value
+            for _ in 0..<30 where page.hasPageDialog || owner.attachedSheet != nil { await wait(0.05) }
+            let empty = try await web.evaluateJavaScript("document.getElementById('\(name)').files.length === 0") as? Bool == true
+            checks[name + "CancelDoesNotAssignFiles"] = empty && owner.attachedSheet == nil && !page.hasPageDialog
+        }
+        let cancelled = try await page.captureWorkspaceRecovery()
+        checks["cancelledPickerKeepsHistoryRecovery"] = cancelled.interaction != nil && cancelled.url == address.absoluteString
+        _ = try await browser.open(address, newTab: true)
+        _ = try? await click("single").value
+        checks["backgroundDocumentCannotOpenPicker"] = owner.attachedSheet == nil && !page.hasPageDialog
+        return checks
     }
 }
