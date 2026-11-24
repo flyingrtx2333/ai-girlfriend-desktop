@@ -73,7 +73,7 @@ import AppKit
                 let directory = output.appendingPathComponent("公开项目范围", isDirectory: true)
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let service = store.mcp
-                let oauth = try service.save(encoded(["name": "公开库存连接器", "type": "http", "url": "https://example.com/mcp", "oauthClientID": "public-registered"]))
+                let oauth = try service.save(encoded(["name": "Public Inventory Connector · 公开库存长连接器名称", "type": "http", "url": "https://example.com/mcp", "oauthClientID": "public-registered"]))
                 var project = AgentMCPServer(name: "公开项目连接器", type: "stdio", command: "/bin/echo", enabled: false)
                 project.workspace = directory.path
                 try service.addImported(project)
@@ -86,7 +86,12 @@ import AppKit
                 store.update(task) { $0.draft = "原任务草稿" }
                 control.showAgentTask(task)
                 let manager = try showCatalog(control)
-                manager.selectServer(oauth.id); resizeAndFocus(control, wide: false)
+                resizeAndFocus(control, wide: false)
+                let narrow = control.window?.frame.size
+                manager.selectServer(oauth.id)
+                await wait(0.1)
+                checks["longConnectorOpensAtTheExistingMinimumWindowSize"] = narrow == NSSize(width: 780, height: 540) &&
+                    control.window?.frame.size == narrow && control.settingsRecoveryControllers.last?.detailHeading?.title == oauth.name
                 let host = control.window
                 func review(_ title: String) throws -> AgentSettingsPageController {
                     let more = try view(NSPopUpButton.self, "连接器更多操作", in: control)
@@ -97,10 +102,12 @@ import AppKit
                     return review
                 }
                 let stale = try review("移除本机授权")
+                await wait(0.1)
                 let impact = try view(NSTextField.self, "移除影响", in: control)
                 checks["authorizationReviewKeepsSettingsAndNamesTheEffect"] = stale.presentingWindow === host && stale.window?.isVisible == false &&
                     host?.attachedSheet == nil && host?.agentDialog == nil && stale.detailHeading?.scope == "用户" && impact.stringValue.contains("重新授权")
                 checks["authorizationReviewFocusesCancel"] = (host?.firstResponder as? NSButton)?.title == "取消"
+                checks["longConnectorReviewKeepsWindowSize"] = host?.frame.size == narrow
                 checks["reviewKeepsOriginalGrantUntilConfirmed"] = try credentials.read(grant) == receipt
                 try service.setEnabled(oauth.id, false)
                 try click("移除授权", in: control)
@@ -109,6 +116,8 @@ import AppKit
                 checks["changedConnectorDisablesTheOldReviewAndKeepsGrant"] = try control.settingsRecoveryControllers.last === stale && !disabled.isEnabled &&
                     invalid.stringValue.contains("连接器已变化") && credentials.read(grant) == receipt
                 try click("取消", in: control)
+                await wait(0.1)
+                checks["cancelRestoresLongConnectorAtOriginalWindowSize"] = host?.frame.size == narrow && control.settingsRecoveryControllers.last?.detailHeading?.title == oauth.name
                 _ = try review("移除本机授权"); try click("移除授权", in: control)
                 checks["confirmedAuthorizationClearsGrantAndReturnsToConnector"] = try credentials.read(grant).isEmpty &&
                     service.availableServers(workspace: nil).first { $0.id == oauth.id }?.name == oauth.name &&

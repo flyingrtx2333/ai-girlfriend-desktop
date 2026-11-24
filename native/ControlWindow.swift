@@ -3130,7 +3130,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             pageTitle.stringValue = settingsHeading.stringValue
         }
         settingsHeading.font = .systemFont(ofSize: 20, weight: .semibold); settingsHeading.textColor = .labelColor
-        settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        settingsHeading.lineBreakMode = .byTruncatingTail
+        // Give the editing scope priority over the full name without widening the window.
+        settingsHeading.setContentCompressionResistancePriority(.init(NSLayoutConstraint.Priority.defaultLow.rawValue - 1), for: .horizontal)
         title.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let footerSpacer = NSView()
         savedStatus.onChange = { [weak footerSpacer] text in footerSpacer?.isHidden = !text.isEmpty }
