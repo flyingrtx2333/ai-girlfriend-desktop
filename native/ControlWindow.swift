@@ -734,7 +734,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         }
         window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
         for (category, kind, title, entryLabel, contentID, actions) in [
-            ("extensions", "mcp", "设置连接器", "配置连接器 设置连接器", "settings-card-mcp-basic", ["连接", "保存"]),
+            ("extensions", "mcp", "设置连接器", "配置连接器 用户 · 设置连接器", "settings-card-mcp-basic", ["连接", "保存"]),
             ("extensions", "plugins", "zz-settings-many", "配置 zz-settings-many", "插件说明预览", ["在任务中使用"]),
             ("memory", "rules", "settings-rule", "配置 settings-rule", "settings-card-rule-body", ["在任务中使用", "保存"])
         ] {

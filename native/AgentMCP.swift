@@ -197,7 +197,12 @@ struct AgentMCPServer: Codable, Identifiable {
         let scopedServers = availableServers(workspace: workspace)
         let old = id.flatMap { id in scopedServers.first { $0.id == id } }
         if id != nil && (old == nil || old?.revision != expectedRevision) { throw PetError("配置已由其他窗口更新，请重新打开后编辑") }
-        guard !scopedServers.contains(where: { $0.id != id && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }), savedServers.count < 128 || savedServers.contains(where: { $0.id == id }), old != nil || savedServers.filter({ $0.plugin == nil }).count < 64 else { throw PetError("连接器重名或数量超过限制") }
+        let keepsName = old?.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        guard keepsName || !scopedServers.contains(where: { $0.id != id && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) else {
+            throw PetError("已存在同名连接器，请使用其他名称")
+        }
+        guard savedServers.count < 128 || savedServers.contains(where: { $0.id == id }),
+              old != nil || savedServers.filter({ $0.plugin == nil }).count < 64 else { throw PetError("连接器数量超过限制") }
         if let old, let reference = old.plugin {
             guard name == old.name, type == old.type, let plugins else { throw PetError("插件连接器的名称和类型由插件声明") }
             let template = try plugins.mcpConfiguration(reference)

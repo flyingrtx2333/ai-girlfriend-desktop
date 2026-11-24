@@ -311,16 +311,18 @@ import UniformTypeIdentifiers
             let label = NSTextField(labelWithString: catalogRows[row].heading ?? ""); label.font = .systemFont(ofSize: 12, weight: .medium); label.textColor = AgentWorkbenchTheme.secondaryText; return label
         }
         let name = NSTextField(labelWithString: server.name); name.font = .systemFont(ofSize: 13); name.lineBreakMode = .byTruncatingTail
-        let type = NSTextField(labelWithString: (server.type == "stdio" ? "本机程序" : server.type == "sse" ? "SSE" : "HTTP") + (server.plugin.map { " · " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? "")); type.font = .systemFont(ofSize: 12); type.textColor = AgentWorkbenchTheme.secondaryText; type.lineBreakMode = .byTruncatingTail
-        let labels = NSStackView(views: [name, type]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 5
+        let source = NSTextField(labelWithString: catalogSubtitle(server)); source.font = .systemFont(ofSize: 12); source.textColor = AgentWorkbenchTheme.secondaryText; source.lineBreakMode = .byTruncatingTail
+        let labels = NSStackView(views: [name, source]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 5
         let status = NSTextField(labelWithString: service.status(server.id, owner: sessionOwner, workspace: workspace)); status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingTail; status.toolTip = status.stringValue
-        let toggle = NSSwitch(); toggle.controlSize = .mini; toggle.target = self; toggle.action = #selector(toggleListedServer(_:)); toggle.identifier = .init(server.id); toggle.state = server.enabled ? .on : .off; toggle.isEnabled = server.configured != false && server.pluginEnabled != false && job == nil; toggle.setAccessibilityLabel("启用连接器 " + server.name)
-        let open = NSButton(image: NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)!, target: self, action: #selector(openListedServer(_:))); open.isBordered = false; open.identifier = .init(server.id); open.setAccessibilityLabel("配置连接器 " + server.name)
+        let scopedTitle = AgentMCPSelection.title(server)
+        let toggle = NSSwitch(); toggle.controlSize = .mini; toggle.target = self; toggle.action = #selector(toggleListedServer(_:)); toggle.identifier = .init(server.id); toggle.state = server.enabled ? .on : .off; toggle.isEnabled = server.configured != false && server.pluginEnabled != false && job == nil; toggle.setAccessibilityLabel("启用连接器 " + scopedTitle)
+        let open = NSButton(image: NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)!, target: self, action: #selector(openListedServer(_:))); open.isBordered = false; open.identifier = .init(server.id); open.setAccessibilityLabel("配置连接器 " + scopedTitle)
         let icon = NSImageView(image: NSImage(systemSymbolName: "point.3.connected.trianglepath.dotted", accessibilityDescription: nil)!); icon.contentTintColor = AgentWorkbenchTheme.secondaryText
         let stack = NSStackView(views: [icon, labels, NSView(), status, toggle, open]); stack.spacing = 12; stack.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 12, right: 14)
         icon.widthAnchor.constraint(equalToConstant: 22).isActive = true; open.widthAnchor.constraint(equalToConstant: 20).isActive = true; status.widthAnchor.constraint(lessThanOrEqualToConstant: 120).isActive = true
         labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        stack.toolTip = server.name + " · " + type.stringValue + " · " + status.stringValue; return stack
+        stack.toolTip = [server.name, source.stringValue, status.stringValue, AgentMCPSelection.sourceWorkspace(server)].compactMap { $0 }.joined(separator: " · ")
+        return stack
     }
     @objc private func openSelectedServer() {
         guard catalogRows.indices.contains(table.selectedRow), let server = catalogRows[table.selectedRow].server else { return }; selectServer(server.id)
@@ -336,8 +338,17 @@ import UniformTypeIdentifiers
         if settingsHostWindow != nil || window?.isVisible == true { requestedDetail = false; showDetail() }
     }
     private func select(_ id: String?) { table.delegate = nil; if let id, let row = catalogRows.firstIndex(where: { $0.server?.id == id }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { table.deselectAll(nil) }; table.delegate = self }
+    private func catalogSubtitle(_ server: AgentMCPServer) -> String {
+        let transport = server.type == "stdio" ? "本机程序" : server.type.uppercased()
+        let plugin = server.plugin.flatMap { try? AgentPlugins.scope($0.name).name }
+        return [AgentMCPSelection.scope(server), transport, plugin].compactMap { $0 }.joined(separator: " · ")
+    }
     private func rebuildRows() {
-        let query = search.stringValue, filtered = items.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.type.localizedCaseInsensitiveContains(query) }
+        let query = search.stringValue
+        let filtered = items.filter {
+            query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.type.localizedCaseInsensitiveContains(query) ||
+                catalogSubtitle($0).localizedCaseInsensitiveContains(query)
+        }
         catalogRows = []
         for (title, servers) in [("由插件提供", filtered.filter { $0.plugin != nil }), ("自定义连接器", filtered.filter { $0.plugin == nil })] where !servers.isEmpty {
             catalogRows.append(CatalogRow(heading: title + " " + String(servers.count), server: nil)); catalogRows += servers.map { CatalogRow(heading: nil, server: $0) }

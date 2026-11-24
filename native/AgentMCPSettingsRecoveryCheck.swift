@@ -69,6 +69,86 @@ import AppKit
             guard let store = agentStore, let runtime = agentRuntime else { throw PetError("连接器验收缺少任务服务") }
             runtime.modelRequestCheck = { modelRequests += 1; throw PetError("连接器设置验收禁止模型请求") }
             NSApp.activate(ignoringOtherApps: true)
+            if stage == "scoped-catalog" {
+                let directory = output.appendingPathComponent("华东库存项目", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let service = store.mcp, plugins = store.extensions.plugins
+                let name = "Public Inventory · 公开库存清单"
+                var project = AgentMCPServer(name: name, type: "stdio", command: "/bin/echo", enabled: false)
+                project.workspace = directory.path
+                try service.addImported(project)
+                func document(_ name: String, timeout: Double = 60) throws -> String {
+                    try encoded(["name": name, "type": "stdio", "command": "/bin/echo", "args": [], "env": [:], "timeoutSeconds": timeout])
+                }
+                let user = try service.save(document(name)), controlServer = try service.save(document("其他用户连接器"))
+                for pluginName in ["public-scope-fixture", "public-user-scope-fixture"] {
+                    let package = output.appendingPathComponent(pluginName, isDirectory: true)
+                    let manifest = package.appendingPathComponent(".qoder-plugin/plugin.json")
+                    try FileManager.default.createDirectory(at: manifest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try Data(encoded(["name": pluginName, "version": "1.0.0",
+                        "mcpServers": ["fixture": ["type": "stdio", "command": "/bin/echo"]]]).utf8).write(to: manifest)
+                    let inspected = try await plugins.inspect(package)
+                    _ = try plugins.install(inspected)
+                    if pluginName == "public-scope-fixture" { _ = try plugins.install(inspected, workspace: directory.path) }
+                }
+
+                let task = store.create(title: "连接器列表范围核对", workspace: directory.path)
+                store.update(task) { $0.draft = "连接器范围核对的原任务草稿。" }
+                control.showAgentTask(task)
+                let manager = try showCatalog(control)
+                resizeAndFocus(control, wide: false)
+                let catalog = try view(NSTableView.self, "MCP 连接器列表", in: control)
+                let search = try view(NSSearchField.self, "搜索连接器", in: control)
+                func filter(_ text: String) {
+                    search.stringValue = text
+                    if let action = search.action { NSApp.sendAction(action, to: search.target, from: search) }
+                    control.window?.contentView?.layoutSubtreeIfNeeded()
+                }
+                func entry(_ identity: String) throws -> NSButton {
+                    try find(NSButton.self, in: catalog) { $0.identifier?.rawValue == identity && $0.accessibilityLabel()?.hasPrefix("配置连接器 ") == true }
+                }
+                filter(name)
+                let userEntry = try entry(user.id), projectEntry = try entry(project.id)
+                checks["sameNameRowsAnnounceDifferentScopes"] = catalog.numberOfRows == 3 && userEntry.accessibilityLabel() == "配置连接器 用户 · " + name &&
+                    projectEntry.accessibilityLabel() == "配置连接器 项目 · 华东库存项目 · " + name
+                checks["projectRowShowsVisibleScopeAndExactLocation"] = try find(NSTextField.self, in: catalog, where: { $0.stringValue == "项目 · 华东库存项目 · 本机程序" }).visibleRect.width > 70 &&
+                    projectEntry.superview?.toolTip?.contains(directory.path) == true
+                filter("华东库存项目")
+                guard let projectPlugin = service.availableServers(workspace: directory.path).first(where: {
+                    $0.plugin != nil && AgentMCPSelection.sourceWorkspace($0) == directory.path
+                }) else { throw PetError("缺少项目插件连接器") }
+                checks["projectSearchFindsOnlyProjectConnectorAndPlugin"] = try catalog.numberOfRows == 4 && entry(project.id).isEnabled && entry(projectPlugin.id).isEnabled
+                filter("用户插件")
+                checks["pluginScopesAreSearchable"] = try catalog.numberOfRows == 2 && find(NSTextField.self, in: catalog, where: { $0.stringValue == "用户插件 · 本机程序 · public-user-scope-fixture" }).visibleRect.width > 70
+                filter("public-scope-fixture")
+                checks["projectPluginStillOverridesSameInstalledUserPlugin"] = try catalog.numberOfRows == 2 && entry(projectPlugin.id).isEnabled
+                filter("项目 · 华东库存项目")
+                try entry(project.id).performClick(nil)
+                guard let detail = control.settingsRecoveryControllers.last, detail !== manager else { throw PetError("项目连接器未打开") }
+                let timeout = try view(NSTextField.self, "MCP 超时毫秒", in: control)
+                setField(timeout, "72500")
+                let userFile = service.profile.appendingPathComponent("extensions/mcp.json")
+                let projectFile = service.profile.appendingPathComponent("extensions/mcp-projects.json")
+                let originalUser = try Data(contentsOf: userFile)
+                try click("保存", in: control); await wait(0.10)
+                let edited = try JSONDecoder().decode([AgentMCPServer].self, from: Data(contentsOf: projectFile))
+                guard let original = edited.first(where: { $0.id == project.id }) else { throw PetError("找不到保存后的项目连接器") }
+                checks["sameNameProjectSavesOnlyItsOriginalRecord"] = try edited.count == 1 && original.workspace == directory.path && original.name == name &&
+                    original.revision != project.revision && original.timeoutSeconds == 72.5 && Data(contentsOf: userFile) == originalUser
+                let savedProject = try Data(contentsOf: projectFile)
+                do { _ = try service.save(document(name)); checks["duplicateCreationRemainsBlocked"] = false }
+                catch { checks["duplicateCreationRemainsBlocked"] = error.localizedDescription.contains("同名") }
+                do {
+                    _ = try service.save(document(controlServer.name), id: project.id, expectedRevision: original.revision, workspace: directory.path)
+                    checks["conflictingRenameRemainsBlocked"] = false
+                } catch { checks["conflictingRenameRemainsBlocked"] = error.localizedDescription.contains("同名") }
+                checks["rejectedChangesPreserveBothSources"] = try Data(contentsOf: projectFile) == savedProject && Data(contentsOf: userFile) == originalUser
+                detail.close(); await wait(0.10)
+                checks["catalogReturnsToExactProjectRowAndFilter"] = try control.settingsRecoveryControllers.last === manager && search.stringValue == "项目 · 华东库存项目" &&
+                    catalog.selectedRow == 1 && catalog.row(for: entry(project.id)) == catalog.selectedRow && control.window?.firstResponder === catalog
+                checks["originalTaskDraftRemains"] = store.task(task)?.draft == "连接器范围核对的原任务草稿。"
+                return
+            }
             if stage == "removal" {
                 let directory = output.appendingPathComponent("公开项目范围", isDirectory: true)
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
