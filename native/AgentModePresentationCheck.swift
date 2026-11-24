@@ -22,7 +22,11 @@ import AppKit
             checks["missingConfigurationUsesModeDefaultsWithoutWriting"] = service.error == nil && service.settings == AgentModePresentation.Settings() && !FileManager.default.fileExists(atPath: file.path)
             func matches(_ window: ControlWindow, _ value: AgentModePresentation.Presentation, changes: Int, workspace: Bool) -> Bool {
                 let state = window.modePresentationReadback()
-                return state["projectEntryHidden"] as? Bool == !value.projectEntry && state["emptyProjectHidden"] as? Bool == !value.projectEntry && state["inputEnvironmentHidden"] as? Bool == !value.inputEnvironment && state["gitEntryHidden"] as? Bool == !value.changeReview && state["branchHidden"] as? Bool == !(value.inputEnvironment && workspace) && state["inspectorChangeRows"] as? Int == (value.changeReview ? changes : 0)
+                let environmentHidden = !value.inputEnvironment || (value.projectEntry && !workspace)
+                return state["projectEntryHidden"] as? Bool == !value.projectEntry && state["composerWorkspaceHidden"] as? Bool == !value.projectEntry &&
+                    state["composerWorkspaceTitle"] as? String == (workspace ? "公开项目" : "无工作区") &&
+                    state["inputEnvironmentHidden"] as? Bool == environmentHidden && state["gitEntryHidden"] as? Bool == !value.changeReview &&
+                    state["branchHidden"] as? Bool == !(value.inputEnvironment && workspace) && state["inspectorChangeRows"] as? Int == (value.changeReview ? changes : 0)
             }
             checks["existingWindowsUseIndependentCodingAndGeneralDefaults"] = matches(control, .defaults(.coding), changes: 1, workspace: true) && matches(second, .defaults(.general), changes: 1, workspace: true)
             var values = service.settings
@@ -34,7 +38,7 @@ import AppKit
             checks["environmentAndProjectChoicesAreIndependent"] = matches(control, values.coding, changes: 1, workspace: true) && matches(second, values.general, changes: 1, workspace: true)
             checks["savedConfigurationReloadsExactModesPrivately"] = try AgentModePresentation(directory: store.directory).settings == values && (FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600
             second.showAgentTask(noWorkspace)
-            checks["enabledGeneralEnvironmentNeedsNoWorkspace"] = matches(second, values.general, changes: 0, workspace: false)
+            checks["generalModeShowsWorkspaceScopeWithoutProject"] = matches(second, values.general, changes: 0, workspace: false)
             second.showAgentTask(general)
             checks["switchingTasksRestoresTheirOwnModePreferences"] = matches(second, values.general, changes: 1, workspace: true) && second.modePresentationReadback()["draft"] as? String == "保留通用展示验收输入"
             guard control.showSettingsCategory("modes"), let content = control.window?.contentView else { throw PetError("模式设置页不可见") }

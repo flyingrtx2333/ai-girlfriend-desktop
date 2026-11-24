@@ -286,6 +286,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
     private var generalSettingsSave: AgentDialogButton?
     private var generalSettingsPanel: AgentGeneralSettingsView?
     private var settingsFooter: NSStackView?
+    private let composerWorkspace = AgentWorkbenchButton()
     private let executionLocation = AgentWorkbenchButton()
     private let branchControl = AgentWorkbenchButton()
     private var branchTask: Task<Void, Never>?, branchKey: String?
@@ -324,7 +325,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
     private var terminalPanel: AgentTerminalPanel?
     private let taskBack = AgentWorkbenchButton(), taskForward = AgentWorkbenchButton(), taskMore = AgentWorkbenchButton(), taskModel = AgentWorkbenchButton(), voiceInput = AgentWorkbenchButton(), sidebarToggle = AgentWorkbenchButton()
     private let workbenchSidebar = NSView()
-    private let workbenchEmpty = NSStackView(), emptyBefore = NSView(), emptyAfter = NSView(), emptyProject = AgentWorkbenchButton()
+    private let workbenchEmpty = NSStackView(), emptyBefore = NSView(), emptyAfter = NSView()
     private var homeGamesView: AgentHomeGamesView?
     private let workbenchEmptyTitle = NSButton(title: "新的任务", target: nil, action: nil)
     private let workbenchFeedback = NSStackView()
@@ -1056,7 +1057,10 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         taskSidebar.onSelect = { [weak self] id in self?.selectAgentTask(id) }
         taskSidebar.onAttention = { [weak self] in self?.showAttentionPage() }
         taskSidebar.onNew = { [weak self] in self?.newAgentTask() }
-        taskSidebar.onNewWorkspace = { [weak self] in self?.chooseProjectDirectory() }
+        taskSidebar.onNewWorkspace = { [weak self] in
+            guard let self, let task = currentAgentTask else { return }
+            showWorkspaceDirectoryPicker(for: task)
+        }
         taskSidebar.onNewInWorkspace = { [weak self] path, mode in
             guard let self, let tasks = self.companion?.agentStore, self.saveAgentDraft() else { return }
             do { self.selectAgentTask(try tasks.createWorkspaceTask(path,mode:mode)) } catch { self.setStatus(error.localizedDescription,error:true) }
@@ -1124,7 +1128,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         pageTitle.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(pageTitle); main.addSubview(workbenchBadge)
         workbenchBadge.target = self; workbenchBadge.action = #selector(revealWorkbenchStatus)
         titleLeading = pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 126)
-        projectButton.target = self; projectButton.action = #selector(chooseProject); AgentWorkbenchTheme.toolbar(projectButton, title: "选择项目", symbol: "folder")
+        projectButton.target = self; projectButton.action = #selector(chooseProject(_:)); AgentWorkbenchTheme.toolbar(projectButton, title: "选择项目", symbol: "folder")
         browserButton.target = self; browserButton.action = #selector(showAgentBrowser); AgentWorkbenchTheme.toolbar(browserButton, title: "浏览器", symbol: "rectangle.on.rectangle")
         terminalButton.target = self; terminalButton.action = #selector(toggleTaskTerminal)
         AgentWorkbenchTheme.toolbar(terminalButton, title: "打开终端", symbol: "terminal")
@@ -1246,12 +1250,21 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         taskModel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); taskModel.widthAnchor.constraint(lessThanOrEqualToConstant: 160).isActive = true
         sendButton.title = ""; sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: nil); sendButton.imagePosition = .imageOnly; sendButton.isBordered = false; sendButton.contentTintColor = .white; sendButton.wantsLayer = true; sendButton.layer?.backgroundColor = AgentWorkbenchTheme.accent.cgColor; sendButton.layer?.cornerRadius = 8; sendButton.setAccessibilityLabel("发送"); sendButton.target = self; sendButton.action = #selector(send)
         sendButton.widthAnchor.constraint(equalToConstant: 34).isActive = true; sendButton.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        composerWorkspace.isBordered = false; composerWorkspace.font = .systemFont(ofSize: 13)
+        composerWorkspace.imagePosition = .imageLeading; composerWorkspace.cell?.lineBreakMode = .byTruncatingTail
+        composerWorkspace.target = self; composerWorkspace.action = #selector(chooseProject(_:))
+        composerWorkspace.identifier = .init("composer-workspace")
+        composerWorkspace.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        composerWorkspace.widthAnchor.constraint(lessThanOrEqualToConstant: 136).isActive = true
         executionLocation.isBordered = false; executionLocation.font = .systemFont(ofSize: 13); executionLocation.target = self; executionLocation.action = #selector(showExecutionLocation); executionLocation.imagePosition = .imageTrailing; executionLocation.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
         executionLocation.cell?.lineBreakMode = .byTruncatingTail
         executionLocation.setContentCompressionResistancePriority(.required, for: .horizontal)
         executionLocation.setAccessibilityLabel("执行位置")
         branchControl.isBordered = false; branchControl.font = .systemFont(ofSize: 12); branchControl.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil); branchControl.imagePosition = .imageLeading; branchControl.target = self; branchControl.action = #selector(showAgentGit); branchControl.setAccessibilityLabel("当前分支"); branchControl.cell?.lineBreakMode = .byTruncatingMiddle; branchControl.widthAnchor.constraint(lessThanOrEqualToConstant: 155).isActive = true
-        entryLeading.orientation = .horizontal; entryLeading.spacing = 8; entryLeading.addArrangedSubview(attachmentButton); entryLeading.addArrangedSubview(taskMCPContext); entryLeading.addArrangedSubview(executionLocation); entryLeading.addArrangedSubview(branchControl); entryLeading.addArrangedSubview(AgentSettingsPopupFrame(modePopup, outlined: false)); entryLeading.addArrangedSubview(AgentSettingsPopupFrame(permissionPopup, outlined: false))
+        entryLeading.orientation = .horizontal; entryLeading.spacing = 8
+        let leadingControls: [NSView] = [attachmentButton, taskMCPContext, composerWorkspace, executionLocation, branchControl,
+                                        AgentSettingsPopupFrame(modePopup, outlined: false), AgentSettingsPopupFrame(permissionPopup, outlined: false)]
+        leadingControls.forEach(entryLeading.addArrangedSubview)
         voiceInput.target = self; voiceInput.action = #selector(toggleWorkbenchVoice); AgentWorkbenchTheme.toolbar(voiceInput, title: "语音输入", symbol: "mic")
         entryTrailing.orientation = .horizontal; entryTrailing.spacing = 8; entryTrailing.addArrangedSubview(taskModel); entryTrailing.addArrangedSubview(taskContext); entryTrailing.addArrangedSubview(voiceInput); entryTrailing.addArrangedSubview(sendButton)
         for view in [entryLeading, entryTrailing] { entryToolbar.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
@@ -1304,11 +1317,10 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         heading.setContentCompressionResistancePriority(.required, for: .vertical)
         heading.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
         heading.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil); heading.imagePosition = .imageTrailing; heading.target = self; heading.action = #selector(chooseExecutor); heading.setAccessibilityLabel("任务执行者")
-        emptyProject.title = "选择项目"; emptyProject.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil); emptyProject.imagePosition = .imageLeading; emptyProject.isBordered = false; emptyProject.target = self; emptyProject.action = #selector(chooseProject); emptyProject.font = .systemFont(ofSize: 13)
         let add = AgentWorkbenchButton(title: "添加附件", target: self, action: #selector(addAttachments)); add.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: nil); add.imagePosition = .imageLeading; add.isBordered = false; add.font = .systemFont(ofSize: 13)
         let browse = AgentWorkbenchButton(title: "浏览器", target: self, action: #selector(showAgentBrowser)); browse.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil); browse.imagePosition = .imageLeading; browse.isBordered = false; browse.font = .systemFont(ofSize: 13)
-        for button in [emptyProject, add, browse] { button.setContentCompressionResistancePriority(.required, for: .vertical); button.heightAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true }
-        let shortcuts = stack([emptyProject, add, browse], spacing: 22); shortcuts.setContentCompressionResistancePriority(.required, for: .vertical); workbenchEmpty.orientation = .vertical; workbenchEmpty.alignment = .centerX; workbenchEmpty.spacing = 18; workbenchEmpty.addArrangedSubview(heading); workbenchEmpty.addArrangedSubview(shortcuts)
+        for button in [add, browse] { button.setContentCompressionResistancePriority(.required, for: .vertical); button.heightAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true }
+        let shortcuts = stack([add, browse], spacing: 22); shortcuts.setContentCompressionResistancePriority(.required, for: .vertical); workbenchEmpty.orientation = .vertical; workbenchEmpty.alignment = .centerX; workbenchEmpty.spacing = 18; workbenchEmpty.addArrangedSubview(heading); workbenchEmpty.addArrangedSubview(shortcuts)
         if let companion {
             let games = AgentHomeGamesView(service: companion.homeGames, choice: { [weak companion] in companion?.generalSettings.settings.homeGame ?? .random })
             homeGamesView = games; workbenchEmpty.addArrangedSubview(games); games.widthAnchor.constraint(equalTo: workbenchEmpty.widthAnchor).isActive = true
@@ -1430,12 +1442,10 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         if gamesVisible, let store = companion?.agentStore { companion?.homeGames.refreshActivity(store) }
         workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "默认执行者"
         workbenchEmptyTitle.isEnabled = task.canChooseExecutor
-        emptyProject.title = companion?.agentStore?.organization.name(task.organizationWorkspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle; emptyProject.toolTip = task.workspace
-        if let entry = companion?.agentStore?.organization.entry(task.organizationWorkspace ?? "",mode:task.organizationMode,tasks:companion?.agentStore?.tasks ?? []) { emptyProject.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); emptyProject.contentTintColor = (entry.color ?? .forest).nsColor } else { emptyProject.image = NSImage(systemSymbolName:"folder",accessibilityDescription:nil); emptyProject.contentTintColor = AgentWorkbenchTheme.secondaryText }
         composer.placeholder = task.skillEvolutionJob?.creation != nil && task.messages.isEmpty ? "描述要创建的 Skill…" : hasMessages ? "添加要求…" : "描述任务…"
         let presentation = companion?.modePresentation.settings[task.organizationMode] ?? .defaults(task.organizationMode)
-        projectButton.isHidden = !presentation.projectEntry; emptyProject.isHidden = !presentation.projectEntry
-        executionLocation.isHidden = !presentation.inputEnvironment
+        projectButton.isHidden = !presentation.projectEntry; composerWorkspace.isHidden = !presentation.projectEntry
+        executionLocation.isHidden = !presentation.inputEnvironment || presentation.projectEntry && task.workspace == nil
         let titleAndActionsWidth = remaining - (showInspector && !fullMonitor ? target : 0) - titleLeading.constant
         let compactTaskTools = titleAndActionsWidth < 500
         desktopButton.isHidden = compactTaskTools; gitButton.isHidden = compactTaskTools || !presentation.changeReview
@@ -1807,10 +1817,13 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             switch state {
             case "empty":
                 checks["EmptyWorkbenchOffersExecutorAndNoWorkspaceTerminal"] = visible(workbenchEmptyTitle) && terminalButton.isEnabled && history.isHidden
+                checks["NarrowEmptyComposerShowsUnscopedWorkspace"] = fullyInConversation([composerWorkspace]) && composerWorkspace.title == "无工作区" &&
+                    composerWorkspace.bounds.width + 1 >= composerWorkspace.intrinsicContentSize.width && executionLocation.isHidden
                 checks["NoWorkspaceGitRemainsDisabledInCompactTaskMenu"] = overflowTools(task).first { $0.action == gitButton.action }?.isEnabled == false
             case "running": checks["RunningWorkbenchShowsStopForLiveProcess"] = busy && sendButton.accessibilityLabel() == "停止任务" && !taskModel.isEnabled
             case "waiting":
                 checks["WaitingWorkbenchShowsApprovalWithDisabledSelectors"] = visible(approveButton) && visible(denyButton) && approveButton.isEnabled && denyButton.isEnabled && !modePopup.isEnabled && !taskModel.isEnabled
+                checks["ApprovalKeepsWorkspaceNameVisibleWithoutAllowingChanges"] = fullyInConversation([composerWorkspace, executionLocation, branchControl]) && !composerWorkspace.isEnabled && composerWorkspace.title == "project"
                 let tools = overflowTools(task)
                 checks["WaitingApprovalSidebarUsesTheSameStatus"] = taskSidebar.selectedTaskAccessibilityLabel()?.contains("，待审批") == true
                 if let row = frames[state]?["sidebarTitle"] {
@@ -1960,6 +1973,49 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         }
         checks.merge(await checkWorkbenchStatusNavigation(ids)) { _, result in result }
         return (checks, frames)
+    }
+    func checkComposerWorkspace(_ ids: [String: String]) async throws -> [String: Bool] {
+        guard CommandLine.arguments.contains("--task-monitor-check"), let window, let tasks = companion?.agentStore,
+              let project = ids["primary"].flatMap(tasks.task)?.workspace,
+              let empty = ids["empty"], let emptyTask = tasks.task(empty) else { throw PetError("工作区输入区验收资料缺失") }
+        let draft = "从这里继续 🐳 核对公开说明", selection = (draft as NSString).range(of: "核对")
+        var checks: [String: Bool] = [:]
+        showAgentTask(empty)
+        window.makeFirstResponder(composer); composer.string = draft; composer.didChangeText(); composer.setSelectedRange(selection)
+        let initialMenu = workspaceSelectionMenu(emptyTask, store: tasks)
+        guard let pick = initialMenu.items.first(where: { $0.action == #selector(selectWorkspaceEntry(_:)) }),
+              let none = initialMenu.items.last else { throw PetError("工作区菜单选项不完整") }
+        checks["UnscopedWorkspaceMenuMarksCurrentChoice"] = none.title == "无工作区" && none.state == .on && !none.isEnabled
+        selectWorkspaceEntry(pick)
+        guard let attached = tasks.task(empty), let remove = workspaceSelectionMenu(attached, store: tasks).items.last else { throw PetError("项目选择未保存") }
+        checks["SameTaskShowsChosenWorkspaceAndKeepsInputSelection"] = attached.workspace == project && agentTaskID == empty &&
+            composerWorkspace.title == "project" && !executionLocation.isHidden && !branchControl.isHidden && attached.draft == draft &&
+            composer.selectedRange() == selection && window.firstResponder === composer
+        checks["ScopedDraftMenuCanClearInPlace"] = remove.title == "无工作区" && remove.state == .off && remove.isEnabled
+        clearTaskWorkspace(remove)
+        checks["SameTaskReturnsToUnscopedWithoutLosingDraftOrSelection"] = tasks.task(empty)?.workspace == nil && agentTaskID == empty &&
+            composerWorkspace.title == "无工作区" && executionLocation.isHidden && branchControl.isHidden &&
+            composer.string == draft && composer.selectedRange() == selection && window.firstResponder === composer
+
+        let history = tasks.create(title: "原项目对话", workspace: project, mode: .ask)
+        let file = try await AgentAttachments.importFile(URL(fileURLWithPath: project).appendingPathComponent("README.md"), store: tasks, taskID: history)
+        tasks.update(history) { task in
+            task.status = .completed; task.messages = [AgentMessage(role: "user", content: "核对公开说明")]
+            task.permission = .review; task.draft = draft
+        }
+        showAgentTask(history)
+        clearTaskWorkspace(remove)
+        checks["DetachedWorkspaceMenuCannotClearAnotherTask"] = agentTaskID == history && tasks.task(history)?.workspace == project
+        guard let original = tasks.task(history), let start = workspaceSelectionMenu(original, store: tasks).items.last else { throw PetError("原项目记录缺失") }
+        let originalHash = try tasks.recordVersion(history)
+        checks["PastConversationOffersNewUnscopedTask"] = start.title == "新建无工作区任务" && start.isEnabled
+        clearTaskWorkspace(start)
+        guard let id = agentTaskID, id != history, let newTask = tasks.task(id) else { throw PetError("未打开新无工作区任务") }
+        checks["UnscopedTaskCopiesOnlyDraftSettingsAndAttachment"] = newTask.workspace == nil && newTask.workspaceScope == nil && newTask.messages.isEmpty &&
+            newTask.mode == original.mode && newTask.permission == original.permission && newTask.draft == draft &&
+            newTask.draftAttachmentIDs == [file.id] && newTask.attachments?.first?.sha256 == file.sha256 && composerWorkspace.title == "无工作区"
+        checks["OriginalProjectConversationIsByteExact"] = try tasks.recordVersion(history) == originalHash
+        return checks
     }
     private func checkWorkbenchStatusNavigation(_ ids: [String: String]) async -> [String: Bool] {
         guard let window, let root = window.contentView, let companion, let output = companion.checkDirectory, let tasks = companion.agentStore,
@@ -2926,7 +2982,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         status.isHidden = true
         var contents: [NSView] = [history, status, entry]
         if companion?.usesAgent == true {
-            projectButton.title = "选择项目"; projectButton.target = self; projectButton.action = #selector(chooseProject)
+            projectButton.title = "选择项目"; projectButton.target = self; projectButton.action = #selector(chooseProject(_:))
             projectButton.bezelStyle = .inline; projectButton.font = .systemFont(ofSize: 11)
             projectButton.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil); projectButton.imagePosition = .imageLeading
             projectButton.cell?.lineBreakMode = .byTruncatingMiddle; projectButton.widthAnchor.constraint(lessThanOrEqualToConstant: 145).isActive = true
@@ -5352,32 +5408,55 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             }
         }
     }
-    @objc func chooseProject() {
-        guard let task = currentAgentTask, let tasks = companion?.agentStore else { return }
+    private func canChooseTaskWorkspace(_ task: AgentTaskRecord, store: AgentStore) -> Bool {
+        guard !task.archived, task.automation == nil, task.agent?.ownerID == nil,
+              !task.isProjectDocumentation, task.kind != "hook", task.pendingFileRollback == nil else { return false }
+        guard let workspace = task.workspace else { return true }
+        return ![.running, .waiting].contains(task.status) && companion?.agentRuntime?.isRunning(task.id) != true && !store.hasFileRollback(in: workspace)
+    }
+    private func workspaceSelectionTask(_ original: AgentTaskRecord, store: AgentStore) throws -> AgentTaskRecord {
+        guard let task = currentAgentTask, task.id == original.id, task.workspace == original.workspace,
+              task.workspaceScope == original.workspaceScope, task.organizationMode == original.organizationMode,
+              canChooseTaskWorkspace(task, store: store) else { throw PetError("原任务已变化，请重新选择工作区") }
+        return task
+    }
+    private func needsNewUnscopedTask(_ task: AgentTaskRecord) -> Bool {
+        !task.canChooseExecutor || !task.changes.isEmpty || task.worktreeOrigin != nil || task.worktreeSetup != nil
+    }
+    @objc private func chooseProject(_ sender: NSButton) {
+        guard let task = currentAgentTask, let tasks = companion?.agentStore, canChooseTaskWorkspace(task, store: tasks) else { return }
+        workspaceSelectionMenu(task, store: tasks).popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+    private func workspaceSelectionMenu(_ task: AgentTaskRecord, store: AgentStore) -> NSMenu {
         let menu = NSMenu(); menu.autoenablesItems = false
-        let choose = NSMenuItem(title:"新建" + task.organizationMode.directoryTitle + "…",action:#selector(chooseProjectDirectory),keyEquivalent:""); choose.target = self; menu.addItem(choose)
-        let entries = tasks.organization.directories(task.organizationMode,tasks:tasks.tasks)
+        let choose = NSMenuItem(title: "新建" + task.organizationMode.directoryTitle + "…", action: #selector(chooseProjectDirectory(_:)), keyEquivalent: "")
+        choose.target = self; choose.representedObject = task; menu.addItem(choose)
+        let entries = store.organization.directories(task.organizationMode, tasks: store.tasks)
         if !entries.isEmpty { menu.addItem(.separator()) }
         for entry in entries {
-            let item = NSMenuItem(title:entry.title,action:#selector(selectWorkspaceEntry(_:)),keyEquivalent:""); item.target = self; item.representedObject = [entry.path,entry.mode.rawValue]
+            let item = NSMenuItem(title: entry.title, action: #selector(selectWorkspaceEntry(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = (task, entry.path)
             item.state = task.organizationWorkspace == entry.path ? .on : .off; item.toolTip = entry.sourceFolders.joined(separator:"\n")
             item.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); menu.addItem(item)
         }
-        if task.organizationMode == .general {
-            menu.addItem(.separator()); let none = NSMenuItem(title:"不关联文件夹",action:#selector(clearGeneralDirectory),keyEquivalent:""); none.target = self; none.isEnabled = task.workspace != nil && ![.running,.waiting].contains(task.status) && task.automation == nil; menu.addItem(none)
-        }
-        let anchor = emptyProject.isHiddenOrHasHiddenAncestor ? projectButton : emptyProject
-        menu.popUp(positioning:nil,at:NSPoint(x:0,y:anchor.bounds.height+4),in:anchor)
+        let hasWorkspace = task.workspace != nil
+        let title = hasWorkspace && needsNewUnscopedTask(task) ? "新建无工作区任务" : "无工作区"
+        let none = NSMenuItem(title: title, action: #selector(clearTaskWorkspace(_:)), keyEquivalent: "")
+        none.target = self; none.representedObject = task; none.state = hasWorkspace ? .off : .on; none.isEnabled = hasWorkspace
+        menu.addItem(.separator()); menu.addItem(none)
+        return menu
     }
-    @objc private func selectWorkspaceEntry(_ sender:NSMenuItem) {
-        guard let values = sender.representedObject as? [String], values.count == 2, let mode = AgentWorkMode(rawValue:values[1]), let task = currentAgentTask, mode == task.organizationMode, let tasks = companion?.agentStore,
-              let entry = tasks.organization.entry(values[0],mode:mode,tasks:tasks.tasks) else { return }
-        do { try applyWorkspaceSelection(entry,original:task) } catch { setStatus(error.localizedDescription,error:true) }
+    @objc private func selectWorkspaceEntry(_ sender: NSMenuItem) {
+        guard let (original, path) = sender.representedObject as? (AgentTaskRecord, String), let tasks = companion?.agentStore else { return }
+        do {
+            guard let entry = tasks.organization.entry(path, mode: original.organizationMode, tasks: tasks.tasks) else { throw PetError("工作区已变化，请重新选择") }
+            try applyWorkspaceSelection(entry, original: original)
+        } catch { setStatus(error.localizedDescription, error: true) }
     }
-    private func applyWorkspaceSelection(_ entry:AgentDirectoryEntry, original task:AgentTaskRecord) throws {
-        guard let tasks = companion?.agentStore, agentTaskID == task.id, let current = tasks.task(task.id), current.workspace == task.workspace, current.workspaceScope == task.workspaceScope,
-              current.organizationMode == task.organizationMode, current.automation == nil, current.agent?.ownerID == nil, !current.archived, !current.isProjectDocumentation, current.kind != "hook",
-              current.workspace == nil || ![.running,.waiting].contains(current.status), saveAgentDraft() else { throw PetError("原任务已变化，请重新选择工作区") }
+    private func applyWorkspaceSelection(_ entry: AgentDirectoryEntry, original: AgentTaskRecord) throws {
+        guard let tasks = companion?.agentStore else { return }
+        let task = try workspaceSelectionTask(original, store: tasks)
+        guard saveAgentDraft() else { return }
         let folders = try AgentWorkspaceScope.validateFolders(entry.sourceFolders,primary:entry.primary)
         guard folders == entry.sourceFolders else { throw PetError("源文件夹指向已变化，请重新编辑工作区") }
         let changed = task.workspace != entry.primary || task.workspaceScope != entry.scope
@@ -5385,7 +5464,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             companion?.agentRuntime?.cancel(task.id)
             tasks.update(task.id) { $0.workspace = entry.primary; $0.workspaceScope = entry.scope; $0.gitDirectory = nil; $0.agent?.workspace = entry.primary }
             if !task.messages.isEmpty { companion?.agentRuntime?.submit("已选择项目：" + entry.primary + "。继续原任务。",taskID:task.id) }
-            renderAgentMessages()
+            renderAgentMessages(); focusTaskInput()
         } else if changed && (!task.messages.isEmpty || task.worktreeOrigin != nil) {
             let id = try tasks.createWorkspaceTask(entry.path,mode:task.organizationMode,taskMode:task.mode)
             do { try AgentAttachments.copyDraft(store:tasks,sourceID:task.id,targetID:id) }
@@ -5393,26 +5472,41 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             tasks.update(id) { $0.draft = self.composer.string; $0.permission = task.permission; $0.model = task.model; $0.modelOverride = task.modelOverride; $0.agent = task.agent; $0.agent?.workspace = entry.primary; $0.team = task.team }
             selectAgentTask(id)
         } else if changed {
-            tasks.update(task.id) { $0.workspace = entry.primary; $0.workspaceScope = entry.scope; $0.gitDirectory = nil; $0.agent?.workspace = entry.primary }; renderAgentMessages()
+            tasks.update(task.id) { $0.workspace = entry.primary; $0.workspaceScope = entry.scope; $0.gitDirectory = nil; $0.agent?.workspace = entry.primary }
+            renderAgentMessages(); focusTaskInput()
         }
     }
-    @objc private func clearGeneralDirectory() {
-        guard let tasks = companion?.agentStore, let task = currentAgentTask, task.organizationMode == .general, task.workspace != nil, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !["hook", "wiki"].contains(task.kind ?? ""), ![.running, .waiting].contains(task.status) else { return }
-        saveAgentDraft()
-        if !task.messages.isEmpty || task.worktreeOrigin != nil {
-            let id = tasks.create(mode:task.mode,workMode:.general)
-            do { try AgentAttachments.copyDraft(store:tasks,sourceID:task.id,targetID:id) }
-            catch { selectAgentTask(task.id); setStatus(error.localizedDescription,error:true); return }
-            tasks.update(id) { $0.draft = self.composer.string; $0.permission = task.permission; $0.model = task.model; $0.modelOverride = task.modelOverride; $0.agent = task.agent; $0.agent?.workspace = nil; $0.team = task.team }; selectAgentTask(id)
-        } else { tasks.update(task.id) { $0.workspace = nil; $0.workspaceScope = nil; $0.gitDirectory = nil; $0.agent?.workspace = nil }; renderAgentMessages() }
+    @objc private func clearTaskWorkspace(_ sender: NSMenuItem) {
+        guard let original = sender.representedObject as? AgentTaskRecord, let tasks = companion?.agentStore else { return }
+        do {
+            let task = try workspaceSelectionTask(original, store: tasks)
+            guard task.workspace != nil else { return }
+            let needsNewTask = needsNewUnscopedTask(task)
+            guard needsNewTask == needsNewUnscopedTask(original) else { throw PetError("原任务已变化，请重新选择工作区") }
+            guard saveAgentDraft() else { return }
+            if needsNewTask {
+                let id = tasks.create(mode: task.mode, workMode: task.organizationMode)
+                do { try tasks.copyEnvironmentDraft(sourceID: task.id, targetID: id) }
+                catch { tasks.selectedID = task.id; throw error }
+                selectAgentTask(id)
+            } else {
+                tasks.update(task.id) { $0.workspace = nil; $0.workspaceScope = nil; $0.gitDirectory = nil; $0.agent?.workspace = nil }
+                renderAgentMessages(); focusTaskInput()
+            }
+        } catch { setStatus(error.localizedDescription, error: true) }
     }
-    @objc private func chooseProjectDirectory() {
-        guard let tasks = companion?.agentStore, let task = currentAgentTask, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !task.isProjectDocumentation, task.kind != "hook", task.workspace == nil || ![.running,.waiting].contains(task.status), let window else { return }
+    @objc private func chooseProjectDirectory(_ sender: NSMenuItem) {
+        guard let task = sender.representedObject as? AgentTaskRecord else { return }
+        showWorkspaceDirectoryPicker(for: task)
+    }
+    private func showWorkspaceDirectoryPicker(for task: AgentTaskRecord) {
+        guard let tasks = companion?.agentStore, (try? workspaceSelectionTask(task, store: tasks)) != nil, let window else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.prompt = "选择" + task.organizationMode.directoryTitle
         if let path = task.workspace { panel.directoryURL = URL(fileURLWithPath:path) }
         panel.beginSheetModal(for:window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
             do {
+                _ = try workspaceSelectionTask(task, store: tasks)
                 try tasks.organization.register(url.path,mode:task.organizationMode)
                 guard let entry = tasks.organization.entry(url.resolvingSymlinksInPath().path,mode:task.organizationMode,tasks:tasks.tasks) else { throw PetError("工作区未登记") }
                 try applyWorkspaceSelection(entry,original:task)
@@ -6239,8 +6333,17 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
                             searchRevision: tasks.taskSearchRevision, waitingStates: waitingStates)
         workbenchBadge.update(task, waiting: waiting)
         if selectedTab == "chat" { pageTitle.stringValue = task.title; pageTitle.toolTip = task.title }
-        projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = tasks.organization.name(task.organizationWorkspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle
-        if let entry = tasks.organization.entry(task.organizationWorkspace ?? "",mode:task.organizationMode,tasks:tasks.tasks) { projectButton.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); projectButton.contentTintColor = (entry.color ?? .forest).nsColor } else { projectButton.image = NSImage(systemSymbolName:"folder",accessibilityDescription:nil); projectButton.contentTintColor = AgentWorkbenchTheme.secondaryText }
+        let workspaceName = tasks.organization.name(task.organizationWorkspace, mode: task.organizationMode)
+        let workspaceEntry = task.organizationWorkspace.flatMap { tasks.organization.entry($0, mode: task.organizationMode, tasks: tasks.tasks) }
+        let workspaceIcon = NSImage(systemSymbolName: (workspaceEntry?.icon ?? .folder).rawValue, accessibilityDescription: nil)
+        let workspaceTint = workspaceEntry.map { ($0.color ?? .forest).nsColor } ?? AgentWorkbenchTheme.secondaryText
+        let selectWorkspaceTitle = "选择" + task.organizationMode.directoryTitle
+        projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = workspaceName ?? selectWorkspaceTitle
+        composerWorkspace.title = workspaceName ?? "无工作区"
+        composerWorkspace.toolTip = task.workspace.map { [workspaceName, $0].compactMap { $0 }.joined(separator: "\n") } ?? selectWorkspaceTitle
+        composerWorkspace.setAccessibilityLabel(workspaceName.map { "工作区：" + $0 } ?? "无工作区")
+        projectButton.image = workspaceIcon; projectButton.contentTintColor = workspaceTint
+        composerWorkspace.image = workspaceIcon; composerWorkspace.contentTintColor = AgentWorkbenchTheme.secondaryText
         modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: task.mode) ?? 2)
         permissionPopup.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: task.permission) ?? 1)
         let running = companion?.agentRuntime?.isRunning(task.id) == true
@@ -6250,9 +6353,10 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         executionLocation.title = task.worktreeOrigin == nil ? "本地" : "工作树"
         refreshBranch(task)
         executionLocation.toolTip = task.workspace ?? "终端使用当前任务目录"; executionLocation.isEnabled = task.canChooseEnvironment && !running
-        for view in [projectButton, modePopup, permissionPopup] as [NSControl] { view.isEnabled = !locked && !task.archived && !managed && !delegated }
+        for view in [modePopup, permissionPopup] { view.isEnabled = !locked && !task.archived && !managed && !delegated }
         for popup in [modePopup, permissionPopup] { (popup.superview as? AgentSettingsPopupFrame)?.refreshEnabledState() }
-        projectButton.isEnabled = (!locked || task.workspace == nil) && !task.archived && !managed && !delegated
+        let workspaceChoiceEnabled = canChooseTaskWorkspace(task, store: tasks)
+        projectButton.isEnabled = workspaceChoiceEnabled; composerWorkspace.isEnabled = workspaceChoiceEnabled
         gitButton.isEnabled = task.workspace != nil && !managed
         browserButton.isEnabled = !managed
         resumeButton.isHidden = (managed && task.kind != AgentKnowledgeCards.kind) || running || rollbackBlocked || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived || task.requiresNewInputAfterRejection
@@ -7218,7 +7322,8 @@ extension ControlWindow {
         }
         let mode = currentAgentTask?.organizationMode ?? displayedWorkMode
         let gitInTaskMenu = taskOverflowControls.contains { $0 === gitButton }
-        return ["mode": mode.rawValue, "projectEntryHidden": projectButton.isHidden, "emptyProjectHidden": emptyProject.isHidden,
+        return ["mode": mode.rawValue, "projectEntryHidden": projectButton.isHidden, "composerWorkspaceHidden": composerWorkspace.isHidden,
+                "composerWorkspaceTitle": composerWorkspace.title,
                 "inputEnvironmentHidden": executionLocation.isHidden, "branchHidden": branchControl.isHidden,
                 "gitEntryHidden": gitButton.isHidden && !gitInTaskMenu, "gitEntryInTaskMenu": gitInTaskMenu,
                 "inspectorChangeRows": changeRows(workbenchInspector), "draft": composer.string,
@@ -7283,6 +7388,8 @@ extension ControlWindow {
             value["workspaceEditor"] = workspaceEditor?.checkState() ?? ["visible":false]
             value["unsavedConfirmation"] = AgentUnsavedChanges.checkState()
             value["taskFind"] = taskFind.checkState()
+            value["composerWorkspace"] = ["title": composerWorkspace.title, "enabled": composerWorkspace.isEnabled,
+                                           "visible": !composerWorkspace.isHiddenOrHasHiddenAncestor, "width": composerWorkspace.bounds.width]
             value["executionLocation"] = ["title": executionLocation.title, "enabled": executionLocation.isEnabled,
                                           "visible": !executionLocation.isHiddenOrHasHiddenAncestor, "singleLine": executionLocation.cell?.wraps == false,
                                           "width": executionLocation.bounds.width, "intrinsicWidth": executionLocation.intrinsicContentSize.width]

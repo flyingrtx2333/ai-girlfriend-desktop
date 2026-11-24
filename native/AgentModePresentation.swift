@@ -73,7 +73,7 @@ import AppKit
             let row = AgentSettingsStyle.formRow(title, control, trailing: true)
             addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
-        project.toolTip = "显示任务顶部和新任务中的项目或文件夹选择入口"
+        project.toolTip = "显示任务顶部和输入区的项目或文件夹选择入口"
         environment.toolTip = "显示输入区的本地、工作树和 Git 分支入口"
         changes.toolTip = "显示 Git 审阅入口和记录侧栏中的文件变更；已打开的审阅与执行记录继续保留"
         status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText

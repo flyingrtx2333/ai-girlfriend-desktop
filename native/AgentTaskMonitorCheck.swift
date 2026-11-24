@@ -214,6 +214,7 @@ import AppKit
             report["workbenchGeometry"] = layout.frames
             checks["WorkbenchProcessRemainsLiveAcrossTaskNavigation"] = runtime.isRunning(b) && kill(pid, 0) == 0
             checks.merge(await control.checkWorkbenchStop(workbenchStates, pid: pid)) { _, new in new }
+            checks.merge(try await control.checkComposerWorkspace(workbenchStates)) { _, new in new }
             for (key, pass) in try await checkMonitorSources(output) { checks["Source-" + key] = pass }
             report["boundary"] = "Actual public file read, local background Hook and interactive terminal; fixed component fixtures verify module rendering only. No model-generated recap or assistant reply is claimed."
             report["states"] = [control.taskMonitorReadback(), second.taskMonitorReadback()]; report["backgroundPID"] = pid
