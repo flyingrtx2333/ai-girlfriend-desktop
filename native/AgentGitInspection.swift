@@ -9,11 +9,13 @@ enum AgentGitSource: String, CaseIterable, Codable {
 struct AgentGitInspection {
     var source: AgentGitSource; var revision: String; var paths: [String]; var changes: [AgentGitChange]
     var head: String?; var hash: String; var diff: String; var additions: Int; var deletions: Int; var binaryFiles: Int
+    var whitespaceFilteredDiff: String? = nil
 }
 enum AgentGitFileAction: Equatable { case stage, unstage, restore }
 struct AgentGitFileResult { var checkpointID: String?; var trashedPath: String? }
 
 @MainActor extension AgentGit {
+    static let patchOptions = ["--no-ext-diff", "--no-textconv", "--no-color", "--binary"]
     private func resolvedCommit(_ revision: String) async throws -> String {
         guard !revision.isEmpty, revision.utf8.count <= 512, !revision.contains("\0"), !revision.hasPrefix("-") else { throw PetError("请选择有效的提交或分支") }
         let value = try await output(["rev-parse", "--verify", "--end-of-options", revision + "^{commit}"])
@@ -50,35 +52,48 @@ struct AgentGitFileResult { var checkpointID: String?; var trashedPath: String? 
         if source == .unstaged { changes += try await status().changes.filter { $0.status == "??" } }
         return changes
     }
-    func inspect(source: AgentGitSource, revision: String, requested: [String]) async throws -> AgentGitInspection {
+    func inspect(source: AgentGitSource, revision: String, requested: [String], ignoringWhitespace: Bool = false) async throws -> AgentGitInspection {
+        try await inspect(source: source, revision: revision, requested: requested, ignoringWhitespace: ignoringWhitespace, saveReview: true)
+    }
+    private func inspect(source: AgentGitSource, revision: String, requested: [String], ignoringWhitespace: Bool, saveReview: Bool) async throws -> AgentGitInspection {
         let state = try await status(), selected = try paths(requested, allowRecordedTypes: source == .lastTurn)
         let changes = try await inspectionChanges(source: source, revision: revision)
         guard selected.allSatisfy({ path in changes.contains { $0.path == path || $0.previousPath == path } }) else { throw PetError("所选文件或来源已变化，请刷新后重新审阅") }
-        let options = ["--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--binary"]
-        var diff = "", identity = "", fingerprint = "", additions = 0, deletions = 0
-        if source == .lastTurn {
-            guard let turn = store.task(taskID)?.gitTurn else { throw PetError("本轮尚无文件修改记录") }
-            identity = turn.id
-            for path in selected {
-                guard let change = turn.changes.first(where: { $0.path == files.root.appendingPathComponent(path).path }), change.afterState != nil else { throw PetError("本轮检查点不存在") }
-                let comparison = try AgentChanges.comparison(change, taskID: taskID, store: store, strict: true)
-                defer { try? FileManager.default.removeItem(at: comparison.directory) }
-                let result = try await run(["diff", "--no-index"] + options + ["--", comparison.left.path, comparison.right.path], readRoots: [comparison.directory])
-                guard [0, 1].contains(result.exitCode ?? -1), result.truncated != true else { throw PetError("本轮差异较大或不可读取，请选择较小的文件") }
-                diff += AgentChanges.labels(result.stdout ?? "", path: path); fingerprint += change.id + comparison.fingerprint
+        let reviewPaths = source == .uncommitted ? try uncommittedPaths(selected, state: state) : selected
+        let turn = source == .lastTurn ? store.task(taskID)?.gitTurn : nil
+        let range: (arguments: [String], identity: String)?
+        if source == .uncommitted || source == .lastTurn { range = nil }
+        else { range = try await diffArguments(source, revision: revision) }
+        func readPatch(_ displayOptions: [String] = []) async throws -> (diff: String, fingerprint: String) {
+            let options = Self.patchOptions + displayOptions
+            if source == .uncommitted {
+                return (try await uncommittedPatch(reviewPaths, head: state.head, options: options), "")
             }
-        } else if source == .uncommitted {
-            let value = try await self.diff(selected); diff = value.diff
-        } else {
-            let range = try await diffArguments(source, revision: revision); identity = range.identity
-            for path in selected {
-                let untracked = source == .unstaged && state.changes.contains { $0.path == path && $0.status == "??" }
-                let result = try await run(untracked ? ["diff", "--no-index"] + options + ["--", "/dev/null", path] : range.arguments + options + ["-p", "--", path])
-                guard result.exitCode == 0 || untracked && result.exitCode == 1 else { throw PetError(result.text) }
-                guard result.truncated != true else { throw PetError("差异较大，请选择更小的文件") }; diff += result.stdout ?? ""
+            let compare = options + ["--no-renames"]
+            var diff = "", fingerprint = ""
+            if source == .lastTurn {
+                guard let turn else { throw PetError("本轮尚无文件修改记录") }
+                for path in selected {
+                    guard let change = turn.changes.first(where: { $0.path == files.root.appendingPathComponent(path).path }), change.afterState != nil else { throw PetError("本轮检查点不存在") }
+                    let comparison = try AgentChanges.comparison(change, taskID: taskID, store: store, strict: true)
+                    defer { try? FileManager.default.removeItem(at: comparison.directory) }
+                    let result = try await run(["diff", "--no-index"] + compare + ["--", comparison.left.path, comparison.right.path], readRoots: [comparison.directory])
+                    guard [0, 1].contains(result.exitCode ?? -1), result.truncated != true else { throw PetError("本轮差异较大或不可读取，请选择较小的文件") }
+                    diff += AgentChanges.labels(result.stdout ?? "", path: path); fingerprint += change.id + comparison.fingerprint
+                }
+            } else if let range {
+                for path in selected {
+                    let untracked = source == .unstaged && state.changes.contains { $0.path == path && $0.status == "??" }
+                    let result = try await run(untracked ? ["diff", "--no-index"] + compare + ["--", "/dev/null", path] : range.arguments + compare + ["-p", "--", path])
+                    guard result.exitCode == 0 || untracked && result.exitCode == 1 else { throw PetError(result.text) }
+                    guard result.truncated != true else { throw PetError("差异较大，请选择更小的文件") }; diff += result.stdout ?? ""
+                }
             }
+            guard diff.utf8.count <= 100_000 else { throw PetError("差异较多，请分批审阅") }
+            return (diff, fingerprint)
         }
-        guard diff.utf8.count <= 100_000 else { throw PetError("差异较多，请分批审阅") }
+        let raw = try await readPatch(), diff = raw.diff
+        var identity = turn?.id ?? range?.identity ?? "", fingerprint = raw.fingerprint, additions = 0, deletions = 0
         var inHunk = false
         for line in diff.split(separator: "\n") {
             if line.hasPrefix("diff --git ") { inHunk = false }
@@ -101,10 +116,23 @@ struct AgentGitFileResult { var checkpointID: String?; var trashedPath: String? 
             identity += "\0" + (branchRef ?? "")
         }
         let hash = AgentFiles.hash(Data(([source.rawValue, revision, identity, state.head ?? "unborn", selected.joined(separator: "\0"), fingerprint, diff].joined(separator: "\0")).utf8))
-        if source == .staged {
-            store.update(taskID) { $0.gitReview = AgentGitReview(paths: selected, head: state.head, hash: hash, diff: diff, source: .staged, branchRef: branchRef) }
+        var presentation: String?
+        if ignoringWhitespace, !diff.isEmpty {
+            let filtered = try await readPatch(["--ignore-all-space", "--ignore-blank-lines"])
+            let current = try await inspect(source: source, revision: revision, requested: selected, ignoringWhitespace: false, saveReview: false)
+            guard current.hash == hash else { throw PetError("文件、暂存区或 HEAD 已变化，请重新审阅") }
+            presentation = filtered.diff
         }
-        return AgentGitInspection(source: source, revision: revision, paths: selected, changes: changes, head: state.head, hash: hash, diff: diff, additions: additions, deletions: deletions, binaryFiles: diff.components(separatedBy: "GIT binary patch").count - 1)
+        if saveReview {
+            switch source {
+            case .uncommitted:
+                store.update(taskID) { $0.gitReview = Self.uncommittedReview(reviewPaths, head: state.head, diff: diff) }
+            case .staged:
+                store.update(taskID) { $0.gitReview = AgentGitReview(paths: selected, head: state.head, hash: hash, diff: diff, source: .staged, branchRef: branchRef) }
+            default: break
+            }
+        }
+        return AgentGitInspection(source: source, revision: revision, paths: selected, changes: changes, head: state.head, hash: hash, diff: diff, additions: additions, deletions: deletions, binaryFiles: diff.components(separatedBy: "GIT binary patch").count - 1, whitespaceFilteredDiff: presentation)
     }
     func apply(_ action: AgentGitFileAction, inspection: AgentGitInspection, restoreScope: AgentGitDraftRecovery.Scope? = nil) async throws -> AgentGitFileResult {
         try validateWorkspace()

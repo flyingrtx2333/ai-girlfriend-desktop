@@ -162,6 +162,7 @@ import AppKit
             await missing.checkWorkspace()
             checks["missingRepositoryIsActionableWithoutFloatingModal"] = missing.workspaceReadback()["busy"] as? Bool == false && (missing.workspaceReadback()["state"] as? String)?.isEmpty == false && missing.presentingWindow === control.window
             control.showAgentTask(fixture.taskID); await git.checkWorkspace(source: .uncommitted, path: "review.txt")
+            checks.merge(try await checkGitWhitespaceReview(git, fixture: fixture, tasks: tasks, rawGit: rawGit)) { _, value in value }
             checks["modelTransmissionsRemainZero"] = requests == 0 && tasks.tasks.allSatisfy { $0.modelReceipts?.isEmpty != false && $0.inputTokens == 0 && $0.outputTokens == 0 }
             report["head"] = head; report["taskID"] = fixture.taskID; report["workspace"] = fixture.workspace.path; report["modelRequests"] = requests
             report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }; report["scope"] = "Actual task window, independent Git repository/index/commit objects and loopback remote preparation; no model requests. Publishing remains an explicit UI confirmation."
@@ -170,6 +171,74 @@ import AppKit
     }
 
     private func gitReviewSubviews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(gitReviewSubviews) }
+
+    private func checkGitWhitespaceReview(_ page: AgentGitWindow, fixture: GitWorkspaceFixture, tasks: AgentStore, rawGit: ([String]) async throws -> String) async throws -> [String: Bool] {
+        let git = try AgentGit(store: tasks, taskID: fixture.taskID, directory: AgentGit.metadata(workspace: fixture.workspace.path))
+        let path = "whitespace-review.txt", url = fixture.workspace.appendingPathComponent(path)
+        let context = (1...12).map { "context \($0)\n" }.joined()
+        let base = "quantity = 1\n" + context + "eligible = true\n"
+        let staged = "quantity  = 1\n" + context + "eligible = true\n\n"
+        let working = staged.replacingOccurrences(of: "eligible = true", with: "eligible = false")
+        try Data(base.utf8).write(to: url)
+        for args in [["add", "--", path], ["commit", "--only", "-m", "Whitespace review fixture", "--", path]] {
+            let result = try await git.run(args, write: true)
+            guard !result.failed else { throw PetError(result.text) }
+        }
+        let originalHead = try await rawGit(["rev-parse", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let backups = try AgentFiles(workspace: tasks.backupDirectory(fixture.taskID).path)
+        let beforeTurn = try AgentCapturedFile.read(url.path, files: git.files, backups: backups)
+        try Data(staged.utf8).write(to: url)
+        let stage = try await git.run(["add", "--", path], write: true)
+        guard !stage.failed else { throw PetError(stage.text) }
+        try Data(working.utf8).write(to: url)
+        let afterTurn = try AgentCapturedFile.read(url.path, files: git.files, backups: nil)
+        guard let turn = tasks.task(fixture.taskID)?.messages.last(where: \.isHumanInput)?.id else { throw PetError("缺少差异验收的原任务轮次") }
+        AgentChanges.record([AgentChange(path: url.path, existed: true, backup: beforeTurn.backup, beforeHash: beforeTurn.state.hash,
+            afterHash: afterTurn.state.hash, permissions: beforeTurn.state.permissions, beforeKind: "file", afterKind: "file",
+            afterPermissions: afterTurn.state.permissions)], taskID: fixture.taskID, turnID: turn, store: tasks)
+
+        let diff = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary"]
+        let filter = ["--ignore-all-space", "--ignore-blank-lines"]
+        let raw = try await rawGit(diff + ["HEAD", "--", path])
+        let filtered = try await rawGit(diff + filter + ["HEAD", "--", path])
+        let index = try await rawGit(["ls-files", "--stage", "-z"])
+        var checks: [String: Bool] = [:]
+        await page.checkWorkspace(source: .uncommitted, path: path)
+        let originalReview = tasks.task(fixture.taskID)?.gitReview
+        checks["whitespaceReviewInitiallyShowsExactRawPatch"] = page.workspaceReadback()["diff"] as? String == raw && raw.contains("+quantity  = 1")
+        await page.checkWorkspace(action: "whitespace")
+        let mixed = page.workspaceReadback(), keptReview = tasks.task(fixture.taskID)?.gitReview
+        checks["whitespaceReviewHidesWhitespaceHunkAndKeepsContentHunk"] = mixed["diff"] as? String == filtered && !filtered.contains("+quantity") && filtered.contains("+eligible = false")
+        checks["whitespaceReviewKeepsSelectedFileAndRawReview"] = mixed["paths"] as? [String] == [path] &&
+            keptReview?.hash == originalReview?.hash && keptReview?.diff == raw && (mixed["state"] as? String)?.contains("已忽略空白") == true
+        await page.checkWorkspace(source: .lastTurn, path: path)
+        checks["whitespaceReviewSupportsTaskSnapshotDiff"] = (page.workspaceReadback()["diff"] as? String)?.contains("+eligible = false") == true &&
+            (page.workspaceReadback()["diff"] as? String)?.contains("+quantity") == false
+        await page.checkWorkspace(source: .unstaged, path: path)
+        let unstaged = try await rawGit(diff + filter + ["--", path])
+        checks["whitespaceReviewUsesIndexToWorktreeForUnstaged"] = page.workspaceReadback()["diff"] as? String == unstaged && unstaged.contains("+eligible = false")
+        await page.checkWorkspace(source: .staged, path: path)
+        let stagedPatch = try await rawGit(diff + ["--cached", "--", path])
+        checks["whitespaceReviewIdentifiesOnlyWhitespaceInStagedSource"] = page.workspaceReadback()["diff"] as? String == "所选文件仅有空白变更" &&
+            tasks.task(fixture.taskID)?.gitReview?.diff == stagedPatch && !stagedPatch.contains("+eligible = false")
+        await page.checkWorkspace(action: "whitespace")
+        checks["whitespaceReviewCanRestoreExactRawStagedPatch"] = page.workspaceReadback()["diff"] as? String == stagedPatch
+        await page.checkWorkspace(action: "whitespace")
+        checks["whitespaceReviewDoesNotWriteIndexOrWorkingFile"] = try await rawGit(["ls-files", "--stage", "-z"]) == index &&
+            String(contentsOf: url, encoding: .utf8) == working
+        let otherIndex = try await rawGit(["show", ":other.txt"])
+        await page.checkWorkspace(message: "Commit selected whitespace", action: "commit")
+        let committed = try await rawGit(["show", "HEAD:" + path])
+        let committedPaths = try await rawGit(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
+        let finalOtherIndex = try await rawGit(["show", ":other.txt"])
+        checks["whitespaceReviewCommitsOriginalStagedBytesOnly"] = try committed == staged && committedPaths == path + "\n" &&
+            String(contentsOf: url, encoding: .utf8) == working && finalOtherIndex == otherIndex
+        let committedReview = try await git.inspect(source: .committed, revision: "HEAD", requested: [path], ignoringWhitespace: true)
+        let branchReview = try await git.inspect(source: .branch, revision: originalHead, requested: [path], ignoringWhitespace: true)
+        checks["whitespaceReviewSupportsCommitAndBranchSources"] = committedReview.diff == stagedPatch && committedReview.whitespaceFilteredDiff == "" &&
+            branchReview.diff == stagedPatch && branchReview.whitespaceFilteredDiff == ""
+        return checks
+    }
 
     private func checkGitRestorePermissions(_ fixture: GitWorkspaceFixture, tasks: AgentStore) async throws -> [String: Bool] {
         let git = try AgentGit(store: tasks, taskID: fixture.taskID, directory: AgentGit.metadata(workspace: fixture.workspace.path))

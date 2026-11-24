@@ -136,21 +136,34 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
             return saved
         }
         guard source == .uncommitted else { throw PetError("提交审阅请选择未提交或已暂存来源") }
-        let state = try await status(), requested = try paths(requested)
+        let state = try await status()
+        let selected = try uncommittedPaths(paths(requested), state: state)
+        let diff = try await uncommittedPatch(selected, head: state.head, options: Self.patchOptions)
+        let review = Self.uncommittedReview(selected, head: state.head, diff: diff)
+        store.update(taskID) { $0.gitReview = review }
+        return review
+    }
+    func uncommittedPaths(_ requested: [String], state: AgentGitStatus) throws -> [String] {
         let renamed = state.changes.filter { requested.contains($0.path) }.compactMap(\.previousPath)
-        let selected = try paths(requested + renamed); var diff = ""
+        return try paths(requested + renamed)
+    }
+    func uncommittedPatch(_ selected: [String], head: String?, options: [String]) async throws -> String {
+        var diff = ""
         for path in selected {
-            let existsInHead = state.head != nil ? try await run(["cat-file", "-e", "HEAD:" + path]).exitCode == 0 : false
-            let result: AgentToolResult
-            if existsInHead { result = try await run(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", "HEAD", "--", path]) }
-            else { result = try await run(["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", "--", "/dev/null", path]) }
-            guard result.exitCode == 0 || (!existsInHead && result.exitCode == 1) else { throw PetError(result.text) }
+            let base: String?
+            if let head, try await run(["cat-file", "-e", head + ":" + path]).exitCode == 0 { base = head }
+            else { base = nil }
+            let arguments = base.map { options + [$0, "--", path] } ?? (["--no-index"] + options + ["--", "/dev/null", path])
+            let result = try await run(["diff"] + arguments)
+            guard result.exitCode == 0 || base == nil && result.exitCode == 1 else { throw PetError(result.text) }
             guard result.truncated != true else { throw PetError("差异较大，请选择更小的文件") }; diff += result.stdout ?? ""
             guard diff.utf8.count <= 100_000 else { throw PetError("差异较多，请分批审阅") }
         }
-        let fingerprint = Data(((state.head ?? "unborn") + "\0" + selected.joined(separator: "\0") + "\0" + diff).utf8)
-        let review = AgentGitReview(paths: selected, head: state.head, hash: AgentFiles.hash(fingerprint), diff: diff)
-        store.update(taskID) { $0.gitReview = review }; return review
+        return diff
+    }
+    static func uncommittedReview(_ selected: [String], head: String?, diff: String) -> AgentGitReview {
+        let fingerprint = Data(((head ?? "unborn") + "\0" + selected.joined(separator: "\0") + "\0" + diff).utf8)
+        return AgentGitReview(paths: selected, head: head, hash: AgentFiles.hash(fingerprint), diff: diff)
     }
     func validateHooks() async throws {
         let hook = try await run(["config", "--path", "--get", "core.hooksPath"])

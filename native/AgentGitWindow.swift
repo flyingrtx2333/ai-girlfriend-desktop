@@ -30,6 +30,7 @@ import AppKit
     private var wideFiles: [NSLayoutConstraint] = [], compactFiles: [NSLayoutConstraint] = [], listWidth: NSLayoutConstraint!, listHeight: NSLayoutConstraint!
     private var wideViewerLeading: NSLayoutConstraint!, compactViewerTop: NSLayoutConstraint!, compactLayout: Bool?, filesRequested: Bool?
     private var source: AgentGitSource = .uncommitted, inspection: AgentGitInspection?, restoreID: String?
+    private var ignoresWhitespace = false
     private var changes: [AgentGitChange] = [], review: AgentGitReview?, git: AgentGit?, job: Task<Void, Never>?, lastResult = "", displayedBranchRef = ""
     private var draftScope: AgentGitDraftRecovery.Scope?, currentDraftScope: AgentGitDraftRecovery.Scope?
     private var draftSelection: AgentTextViewport.Selection?, pendingDraftPaths: [String]?
@@ -235,6 +236,12 @@ import AppKit
     }
     @objc private func showMore() {
         let menu = NSMenu(); menu.autoenablesItems = false
+        let whitespace = NSMenuItem(title: "忽略空白变更", action: #selector(toggleWhitespace), keyEquivalent: "")
+        whitespace.target = self
+        whitespace.state = ignoresWhitespace ? .on : .off
+        whitespace.isEnabled = !busy && initializeButton.isHidden && git != nil
+        menu.addItem(whitespace)
+        menu.addItem(.separator())
         for button in [manageWorktrees, worktreeButton, handoffButton, dependencyButton, securityButton, undoRestoreButton] where !button.isHidden {
             let item = NSMenuItem(title: button.title, action: button.action, keyEquivalent: ""); item.target = self; item.isEnabled = button.isEnabled; menu.addItem(item)
         }
@@ -363,6 +370,11 @@ import AppKit
         revision.isHidden = !source.usesRevision
     }
     @objc private func changeDisplay() { diffView.splitMode = displayMode.selectedSegment == 1; diffView.wraps = wrap.state == .on }
+    @objc private func toggleWhitespace() {
+        guard !busy, initializeButton.isHidden, git != nil else { return }
+        ignoresWhitespace.toggle()
+        inspectSelection()
+    }
     private func showDiff(_ patch: String) {
         let titles: (String, String)
         switch source {
@@ -386,12 +398,13 @@ import AppKit
     private func inspectSelection(location: (AgentSecurityFinding, AgentSecurityReport)? = nil) {
         guard !busy, let git else { return }
         let selected = table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path }
+        if location != nil { ignoresWhitespace = false }
         review = nil; inspection = nil; showDiff(""); statistics.stringValue = ""; guard !selected.isEmpty else { setBusy(false); return }; setBusy(true); state.stringValue = "读取差异…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
                 if let (finding, report) = location { try await git.validateSecurityLocation(finding, report: report) }
-                let result = try await git.inspect(source: source, revision: revision.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), requested: selected)
+                let result = try await git.inspect(source: source, revision: revision.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), requested: selected, ignoringWhitespace: ignoresWhitespace)
                 if let (finding, report) = location { try await git.validateSecurityLocation(finding, report: report) }
                 try Task.checkCancellation()
                 if [.uncommitted, .staged].contains(source) {
@@ -400,9 +413,11 @@ import AppKit
                     review = saved
                 }
                 inspection = result
-                showDiff(result.diff.isEmpty ? "没有差异" : result.diff)
+                let visibleDiff = result.whitespaceFilteredDiff ?? result.diff
+                showDiff(visibleDiff.isEmpty ? (result.diff.isEmpty ? "没有差异" : "所选文件仅有空白变更") : visibleDiff)
                 statistics.stringValue = "所选 +\(result.additions)  −\(result.deletions)" + (result.binaryFiles > 0 ? " · \(result.binaryFiles) 二进制" : "")
                 state.stringValue = lastResult.isEmpty ? "\(result.paths.count) 个文件" : lastResult
+                if ignoresWhitespace { state.stringValue += " · 已忽略空白" }
                 if let (finding, _) = location {
                     let position = "\(finding.path):\(finding.line)"
                     state.stringValue = diffView.focusNewLine(finding.line) ? position : position + " · 此行在差异范围外"
@@ -778,6 +793,7 @@ import AppKit
         case "security": checkSecurity()
         case "files": toggleFiles()
         case "split": displayMode.selectedSegment = 1; changeDisplay()
+        case "whitespace": toggleWhitespace()
         case "refresh": refresh()
         case "worktrees": openWorktrees()
         case "handoff-worktree": openWorktreeHandoff()
