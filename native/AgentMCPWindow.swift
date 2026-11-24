@@ -480,18 +480,54 @@ import UniformTypeIdentifiers
     }
     @objc private func stop() { job?.cancel(); if let selected { service.disconnect(owner: sessionOwner, serverID: selected.id) }; tools.string = ""; refreshState() }
     @objc private func removeAuthorization() {
-        guard let selected, !dirty, job == nil else { return }
-        let alert = AgentConfirmation(); alert.messageText = "移除“\(selected.name)”的本机授权？"
-        alert.addButton(withTitle: "移除授权").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
-        guard alert.runModal(for: editorWindow) == .alertFirstButtonReturn else { return }
-        do { try service.clearOAuth(selected.id, revision: selected.revision, workspace: workspace); reload(selected.id); state.stringValue = "本机授权已移除" }
-        catch { state.showSaveFailure(error) }
+        reviewRemoval(.authorization)
     }
     @objc private func removeConfig() {
-        guard let selected else { return }
-        let alert = AgentConfirmation(); alert.messageText = "移除“\(selected.name)”？"; alert.addButton(withTitle: "移除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
-        guard alert.runModal(for: editorWindow) == .alertFirstButtonReturn else { return }
-        do { try service.remove(selected.id, revision: selected.revision, workspace: workspace); dirty = false; reload() } catch { state.stringValue = error.localizedDescription }
+        reviewRemoval(.connector)
+    }
+    private func reviewRemoval(_ operation: AgentMCPRemovalView.Operation) {
+        guard let selected, let parent = editingPage, parent.isPageVisible, parent.presentingWindow?.hasBlockingDialog != true,
+              job == nil, operation == .authorization ? !dirty && selected.oauthClientID != nil : selected.plugin == nil else { return }
+        do {
+            let target = try AgentMCPSelection.reference(selected)
+            let position = try? draftViewport.capture()
+            if let position { try? draftViewport.restore(position) }
+            let review = AgentMCPRemovalView(operation: operation, server: selected, hasUnsavedChanges: dirty)
+            let page = AgentSettingsDetailPage(title: operation.title, content: review, scrollsInternally: false)
+            page.detailHeading = .init(title: operation.title, scope: AgentMCPSelection.scope(selected), location: AgentMCPSelection.sourceWorkspace(selected))
+            page.detailActionRow = review.actions
+            page.onAppear = { [weak page, weak review] in
+                guard let review else { return }
+                page?.presentingWindow?.makeFirstResponder(review.cancel)
+            }
+            review.onCancel = { [weak page] in page?.close() }
+            review.onConfirm = { [weak self, weak page, weak review, weak parent] in
+                guard let self, let page, let review, page.isPageVisible else { return }
+                guard job == nil, self.selected?.id == target.id,
+                      let current = service.availableServers(workspace: workspace).first(where: { $0.id == target.id }),
+                      (try? AgentMCPSelection.reference(current)) == target else {
+                    review.invalidate(); return
+                }
+                do {
+                    switch operation {
+                    case .authorization:
+                        try service.clearOAuth(target.id, revision: target.revision, workspace: workspace)
+                        reload(target.id, afterSaving: position)
+                        state.stringValue = "本机授权已移除"
+                    case .connector:
+                        try service.remove(target.id, revision: target.revision, workspace: workspace)
+                        dirty = false; reload()
+                    }
+                    page.close()
+                    if operation == .connector {
+                        parent?.close()
+                        listState.stringValue = "连接器已移除"
+                    }
+                } catch { review.showFailure(error) }
+            }
+            parent.presentSettingsChild(page)
+            if page.settingsHostWindow == nil { page.settingsDidAppear() }
+        } catch { state.showSaveFailure(error) }
     }
     @objc private func importJSON() {
         guard job == nil, let window = editorWindow, !window.hasBlockingDialog, canLeave() else { return }
@@ -544,6 +580,62 @@ import UniformTypeIdentifiers
         _ = try await service.connect(selected.id, revision: selected.revision, owner: sessionOwner, workspace: workspace)
         showTools(); return await service.processID(selected.id, owner: sessionOwner)
     }
+}
+
+@MainActor private final class AgentMCPRemovalView: NSView {
+    enum Operation {
+        case connector, authorization
+        var title: String { self == .connector ? "移除连接器" : "移除本机授权" }
+    }
+    let cancel = AgentDialogButton(title: "取消", target: nil, action: nil)
+    private let confirm = AgentDialogButton(title: "", target: nil, action: nil)
+    private let status = AgentSettingsStatusField("连接器移除状态")
+    lazy var actions = AgentSettingsDetailActions([cancel, confirm])
+    var onCancel: (() -> Void)?
+    var onConfirm: (() -> Void)?
+
+    init(operation: Operation, server: AgentMCPServer, hasUnsavedChanges: Bool) {
+        super.init(frame: .zero)
+        let name = NSTextField(wrappingLabelWithString: server.name)
+        name.font = .systemFont(ofSize: 15, weight: .semibold); name.isSelectable = true
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        var rows: [NSView] = [name]
+        if let path = AgentMCPSelection.sourceWorkspace(server) {
+            let location = AgentSettingsStatusField("项目路径")
+            location.font = .systemFont(ofSize: 12); location.lineBreakMode = .byCharWrapping; location.stringValue = path
+            rows.append(location)
+        }
+        let impact = AgentSettingsStatusField("移除影响")
+        impact.font = .systemFont(ofSize: 13)
+        impact.stringValue = operation == .authorization ? "相关会话会断开，下次连接需要重新授权。" : "相关会话会断开，这项配置将从连接器列表移除。"
+        if hasUnsavedChanges { impact.stringValue += "当前未保存的修改也会丢弃。" }
+        rows.append(impact)
+
+        cancel.target = self; cancel.action = #selector(cancelRemoval)
+        cancel.keyEquivalent = "\u{1b}"; cancel.keyEquivalentModifierMask = []
+        AgentDialogStyle.action(cancel)
+        confirm.title = operation == .authorization ? "移除授权" : "移除配置"
+        confirm.target = self; confirm.action = #selector(confirmRemoval); confirm.hasDestructiveAction = true
+        AgentSettingsStyle.primaryAction(confirm)
+        status.font = .systemFont(ofSize: 13)
+        let card = AgentSettingsStyle.section("", id: "mcp-removal", rows: rows, separatesRows: false)
+        let column = NSStackView(views: [card, status, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 12
+        addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
+        for item in column.arrangedSubviews { item.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([
+            column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor),
+            column.topAnchor.constraint(equalTo: topAnchor, constant: 8), column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func showFailure(_ error: Error) { status.showSaveFailure(error); window?.makeFirstResponder(cancel) }
+    func invalidate() {
+        confirm.isEnabled = false
+        showFailure(PetError("连接器已变化。请返回核对后重新打开移除审阅。"))
+    }
+    @objc private func cancelRemoval() { onCancel?() }
+    @objc private func confirmRemoval() { if confirm.isEnabled { onConfirm?() } }
 }
 
 @MainActor private final class AgentMCPDetailPage: AgentSettingsPageController, NSWindowDelegate {

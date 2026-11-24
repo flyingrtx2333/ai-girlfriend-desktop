@@ -16,6 +16,11 @@ import AppKit
         let marker = (body as NSString).range(of: "PUBLIC_RECOVERY_LINE_75")
         let dummy = "PUBLIC_FIXTURE_UNMASKED_045"
         var checks: [String: Bool] = [:], modelRequests = 0, failure = ""
+        defer {
+            let report: [String: Any] = ["stage": stage, "checks": checks, "error": failure, "appPID": getpid(), "modelRequests": modelRequests,
+                                         "success": failure.isEmpty && !checks.isEmpty && checks.values.allSatisfy { $0 } && modelRequests == 0]
+            try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(stage + "-mcp-settings-report.json"))
+        }
 
         func find<T: NSView>(_ type: T.Type, in root: NSView?, where predicate: (T) -> Bool) throws -> T {
             guard let root else { throw PetError("连接器验收缺少窗口") }
@@ -64,6 +69,79 @@ import AppKit
             guard let store = agentStore, let runtime = agentRuntime else { throw PetError("连接器验收缺少任务服务") }
             runtime.modelRequestCheck = { modelRequests += 1; throw PetError("连接器设置验收禁止模型请求") }
             NSApp.activate(ignoringOtherApps: true)
+            if stage == "removal" {
+                let directory = output.appendingPathComponent("公开项目范围", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let service = store.mcp
+                let oauth = try service.save(encoded(["name": "公开库存连接器", "type": "http", "url": "https://example.com/mcp", "oauthClientID": "public-registered"]))
+                var project = AgentMCPServer(name: "公开项目连接器", type: "stdio", command: "/bin/echo", enabled: false)
+                project.workspace = directory.path
+                try service.addImported(project)
+                let credentials = PetKeychain(service: "com.xjs.bluefatfish.mcp.review-check",
+                    configurationFile: output.appendingPathComponent("mcp-credential-fixture.json"), migrateLegacy: false)
+                let grant = "mcp-" + oauth.id + "-" + oauth.revision
+                let receipt = "PUBLIC_OAUTH_GRANT_FOR_REMOVAL"
+                try credentials.write(receipt, account: grant)
+                let task = store.create(title: "连接器移除审阅", workspace: directory.path)
+                store.update(task) { $0.draft = "原任务草稿" }
+                control.showAgentTask(task)
+                let manager = try showCatalog(control)
+                manager.selectServer(oauth.id); resizeAndFocus(control, wide: false)
+                let host = control.window
+                func review(_ title: String) throws -> AgentSettingsPageController {
+                    let more = try view(NSPopUpButton.self, "连接器更多操作", in: control)
+                    guard let item = more.menu?.item(withTitle: title), let action = item.action,
+                          item.isEnabled, NSApp.sendAction(action, to: item.target, from: item),
+                          let review = control.settingsRecoveryControllers.last as? AgentSettingsDetailPage,
+                          review.isPageVisible else { throw PetError("连接器移除未进入设置右侧") }
+                    return review
+                }
+                let stale = try review("移除本机授权")
+                let impact = try view(NSTextField.self, "移除影响", in: control)
+                checks["authorizationReviewKeepsSettingsAndNamesTheEffect"] = stale.presentingWindow === host && stale.window?.isVisible == false &&
+                    host?.attachedSheet == nil && host?.agentDialog == nil && stale.detailHeading?.scope == "用户" && impact.stringValue.contains("重新授权")
+                checks["authorizationReviewFocusesCancel"] = (host?.firstResponder as? NSButton)?.title == "取消"
+                checks["reviewKeepsOriginalGrantUntilConfirmed"] = try credentials.read(grant) == receipt
+                try service.setEnabled(oauth.id, false)
+                try click("移除授权", in: control)
+                let invalid = try view(NSTextField.self, "连接器移除状态", in: control)
+                let disabled = try find(NSButton.self, in: host?.contentView) { $0.title == "移除授权" }
+                checks["changedConnectorDisablesTheOldReviewAndKeepsGrant"] = try control.settingsRecoveryControllers.last === stale && !disabled.isEnabled &&
+                    invalid.stringValue.contains("连接器已变化") && credentials.read(grant) == receipt
+                try click("取消", in: control)
+                _ = try review("移除本机授权"); try click("移除授权", in: control)
+                checks["confirmedAuthorizationClearsGrantAndReturnsToConnector"] = try credentials.read(grant).isEmpty &&
+                    service.availableServers(workspace: nil).first { $0.id == oauth.id }?.name == oauth.name &&
+                    control.settingsRecoveryControllers.last?.detailHeading?.title == oauth.name
+
+                let detail = control.settingsRecoveryControllers.last
+                detail?.close(); manager.selectServer(project.id)
+                let timeout = try view(NSTextField.self, "MCP 超时毫秒", in: control)
+                let pendingValue = "73000"; let range = NSRange(location: 1, length: 2)
+                setField(timeout, pendingValue); host?.makeFirstResponder(timeout)
+                (timeout.currentEditor() as? NSTextView)?.setSelectedRange(range)
+                let userRegistry = service.profile.appendingPathComponent("extensions/mcp.json")
+                let projectRegistry = service.profile.appendingPathComponent("extensions/mcp-projects.json")
+                let originalUser = try Data(contentsOf: userRegistry), originalProject = try Data(contentsOf: projectRegistry)
+                let removal = try review("移除")
+                let path = try view(NSTextField.self, "项目路径", in: control)
+                let consequence = try view(NSTextField.self, "移除影响", in: control)
+                checks["projectReviewNamesExactScopeAndDraftEffect"] = removal.detailHeading?.scope == "项目 · 公开项目范围" &&
+                    path.stringValue == directory.path && consequence.stringValue.contains("未保存的修改")
+                let route = try control.captureSettingsRecovery()
+                checks["restartKeepsParentDraftAndRequiresFreshRemovalReview"] = route?.pages.map(\.kind) == ["mcp", "mcp-detail"] &&
+                    route?.pages.last.flatMap { String(data: $0.state, encoding: .utf8) }?.contains(pendingValue) == true
+                try click("取消", in: control); await wait(0.1)
+                checks["cancelRestoresOriginalDraftAndFieldSelection"] = timeout.stringValue == pendingValue &&
+                    (timeout.currentEditor() as? NSTextView)?.selectedRange() == range && host?.firstResponder === timeout.currentEditor()
+                checks["cancelKeepsBothRegistryFilesExact"] = try Data(contentsOf: userRegistry) == originalUser && Data(contentsOf: projectRegistry) == originalProject
+                _ = try review("移除"); try click("移除配置", in: control)
+                checks["confirmedRemovalChangesOnlyTheReviewedProjectRecord"] = try JSONDecoder().decode([AgentMCPServer].self, from: Data(contentsOf: projectRegistry)).isEmpty &&
+                    Data(contentsOf: userRegistry) == originalUser && control.settingsRecoveryControllers.last === manager
+                checks["removalLeavesTheOriginalTaskDraft"] = store.task(task)?.draft == "原任务草稿"
+                checks["finalJournalsFlush"] = await flushWorkspaceWindows()
+                return
+            }
             let fixture: MCPSettingsFixture
             if stage == "seed" {
                 let http = try store.mcp.save(encoded(["name": "Public OAuth Original", "type": "http", "url": "https://example.com/mcp", "oauthClientID": "public-registered", "timeoutSeconds": 60]))
@@ -174,8 +252,5 @@ import AppKit
             }
             checks["finalJournalsFlush"] = await flushWorkspaceWindows()
         } catch { failure = error.localizedDescription }
-        let report: [String: Any] = ["stage": stage, "checks": checks, "error": failure, "appPID": getpid(), "modelRequests": modelRequests,
-                                     "success": failure.isEmpty && !checks.isEmpty && checks.values.allSatisfy { $0 } && modelRequests == 0]
-        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(stage + "-mcp-settings-report.json"))
     }
 }
