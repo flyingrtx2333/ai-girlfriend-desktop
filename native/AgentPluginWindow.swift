@@ -404,19 +404,19 @@ import UniformTypeIdentifiers
     }
     override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
         let showsDetail = detailPage?.settingsHostWindow != nil
-        var detail: DetailRecovery?
-        if showsDetail, let item = selected {
-            let readmePosition = try pendingDetail?.readme ?? AgentTextViewport(readme)
-            let rulePosition = try pendingDetail?.rule ?? (selectedRuleIndex == nil ? nil : AgentTextViewport(ruleText))
-            let previewPosition = try pendingDetail?.preview ?? readmePreview.captureViewRecovery(source: readme.string)
-            detail = DetailRecovery(instance: item.instanceID, sourceHash: item.receipt.sourceHash,
-                tab: detailTab, component: componentID, selectedVisible: pendingDetail?.listY != nil
-                    ? pendingDetail?.selectedVisible == true : AgentSettingsRecovery.selectionIsVisible(in: components),
-                listY: pendingDetail?.listY ?? componentY, readme: readmePosition, rule: rulePosition,
-                display: ReadmeMode(rawValue: readmeMode.selectedSegment), preview: previewPosition)
-        }
+        let detail = showsDetail ? try selected.map(captureDetail) : nil
         return try AgentSettingsRecovery.page("plugins", Recovery(workspace: workspace, selectedID: selected?.id,
             project: scopes.selectedSegment == 1, query: search.stringValue, showsDetail: showsDetail, detail: detail))
+    }
+    private func captureDetail(_ item: AgentPluginInstallation) throws -> DetailRecovery {
+        let readmePosition = try pendingDetail?.readme ?? AgentTextViewport(readme)
+        let rulePosition = try pendingDetail?.rule ?? (selectedRuleIndex == nil ? nil : AgentTextViewport(ruleText))
+        let previewPosition = try pendingDetail?.preview ?? readmePreview.captureViewRecovery(source: readme.string)
+        return DetailRecovery(instance: item.instanceID, sourceHash: item.receipt.sourceHash,
+            tab: detailTab, component: componentID, selectedVisible: pendingDetail?.listY != nil
+                ? pendingDetail?.selectedVisible == true : AgentSettingsRecovery.selectionIsVisible(in: components),
+            listY: pendingDetail?.listY ?? componentY, readme: readmePosition, rule: rulePosition,
+            display: ReadmeMode(rawValue: readmeMode.selectedSegment), preview: previewPosition)
     }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
         guard page.kind == "plugins" else { throw PetError("设置草稿不属于插件") }
@@ -690,7 +690,37 @@ import UniformTypeIdentifiers
         return page
     }
     @objc private func removePackage() {
-        guard let item = selected, let window = presentingWindow else { return }; let alert = AgentConfirmation(); alert.messageText = "移除「\(item.metadata.title)」？"; alert.informativeText = "插件会移到废纸篓，已有任务记录保留。"; alert.addButton(withTitle: "移除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
+        guard let item = selected, job == nil, let window = presentingWindow else { return }
+        if let detailPage, detailPage.settingsHostWindow != nil, detailPage.isPageVisible {
+            do {
+                let signature = try AgentSettingsRemovalReview.sourceSignature(item.root)
+                let scope = item.workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户插件"
+                let review = AgentSettingsRemovalReview(title: "移除插件",
+                    target: .init(title: item.metadata.title + " · " + item.metadata.version, scope: scope, location: item.root.path),
+                    impact: "插件会停用，安装目录和其中的历史版本会移到废纸篓。已有任务记录保留。")
+                pendingDetail = try captureDetail(item)
+                review.validateTarget = { [weak self] in
+                    guard let self, job == nil, selected?.id == item.id,
+                          let current = try? service.installation(item.id), current.root == item.root,
+                          current.instanceID == item.instanceID, current.receiptHash == item.receiptHash,
+                          current.activationID == item.activationID,
+                          (try? AgentSettingsRemovalReview.sourceSignature(item.root)) == signature else {
+                        throw PetError("插件安装已变化，请返回核对后重新移除")
+                    }
+                }
+                review.onApply = { [weak self] in
+                    guard let self else { throw PetError("原插件详情已关闭") }
+                    try service.trash(item)
+                    selected = nil; reload()
+                }
+                review.onApplied = { [weak self, weak detailPage] in
+                    detailPage?.close(); self?.state.stringValue = "已移到废纸篓"; self?.onChange?()
+                }
+                detailPage.presentSettingsChild(review)
+            } catch { state.showSaveFailure(error) }
+            return
+        }
+        let alert = AgentConfirmation(); alert.messageText = "移除「\(item.metadata.title)」？"; alert.informativeText = "插件会移到废纸篓，已有任务记录保留。"; alert.addButton(withTitle: "移除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
         alert.beginModal(in: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             do { try service.trash(item); selected = nil; reload(); onChange?() } catch { state.stringValue = error.localizedDescription }

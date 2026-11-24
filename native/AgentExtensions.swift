@@ -227,6 +227,9 @@ struct AgentExtensionDocument: Sendable {
     func trash(_ item: AgentExtensionItem, workspace: String?) throws {
         let current = try self.item(item.id, workspace: workspace, enabled: false)
         guard current.managed else { throw PetError("共享扩展请在来源目录管理") }
+        guard current.file == item.file, current.root == item.root, current.sha256 == item.sha256 else {
+            throw PetError("扩展来源已变化，请返回核对后重新移除")
+        }
         try FileManager.default.trashItem(at: current.kind == .skill ? current.root : current.file, resultingItemURL: nil)
     }
     // Resources are copied into this task's existing command scratch area.

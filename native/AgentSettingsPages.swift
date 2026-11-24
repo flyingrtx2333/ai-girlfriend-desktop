@@ -174,7 +174,7 @@ import AppKit
     }
 }
 
-@MainActor final class AgentSettingsDetailPage: AgentSettingsPageController, NSWindowDelegate {
+@MainActor class AgentSettingsDetailPage: AgentSettingsPageController, NSWindowDelegate {
     var onCanLeave: (() -> Bool)?
     var onAppear: (() -> Void)?
     private let scrollsInternally: Bool
@@ -189,6 +189,82 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func windowShouldClose(_ sender: NSWindow) -> Bool { onCanLeave?() ?? true }
     override func settingsDidAppear() { onAppear?() }
+}
+
+@MainActor final class AgentSettingsRemovalReview: AgentSettingsDetailPage {
+    private let cancel = AgentDialogButton(title: "取消", target: nil, action: nil)
+    private let confirm: AgentDialogButton
+    private let status: AgentSettingsStatusField
+    var validateTarget: (() throws -> Void)?
+    var onApply: (() throws -> Void)?
+    var onApplied: (() -> Void)?
+
+    init(title: String, target: DetailHeading, impact: String, confirmation: String = "移到废纸篓", statusLabel: String = "移除审阅状态") {
+        confirm = AgentDialogButton(title: confirmation, target: nil, action: nil)
+        status = AgentSettingsStatusField(statusLabel)
+        let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.settings)
+        super.init(title: title, content: content, scrollsInternally: false)
+        detailHeading = .init(title: title, scope: target.scope, location: target.location)
+
+        let name = AgentSettingsStatusField("移除对象")
+        name.font = .systemFont(ofSize: 15, weight: .semibold)
+        name.stringValue = target.title
+        name.textColor = .labelColor
+        var rows: [NSView] = [name]
+        if let path = target.location {
+            let location = AgentSettingsStatusField("来源路径")
+            location.font = .systemFont(ofSize: 12)
+            location.lineBreakMode = .byCharWrapping
+            location.stringValue = path
+            rows.append(location)
+        }
+        let consequence = AgentSettingsStatusField("移除影响")
+        consequence.font = .systemFont(ofSize: 13)
+        consequence.stringValue = impact
+        rows.append(consequence)
+
+        cancel.target = self; cancel.action = #selector(cancelReview)
+        cancel.keyEquivalent = "\u{1b}"; cancel.keyEquivalentModifierMask = []
+        AgentDialogStyle.action(cancel)
+        confirm.target = self; confirm.action = #selector(applyReview); confirm.hasDestructiveAction = true
+        AgentSettingsStyle.primaryAction(confirm)
+        status.font = .systemFont(ofSize: 13)
+        let card = AgentSettingsStyle.section("", id: "removal-review", rows: rows, separatesRows: false)
+        let actions = AgentSettingsDetailActions([cancel, confirm]); detailActionRow = actions
+        let column = NSStackView(views: [card, status, actions])
+        column.orientation = .vertical; column.alignment = .leading; column.spacing = 12
+        content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
+        for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([
+            column.leadingAnchor.constraint(equalTo: content.leadingAnchor), column.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            column.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), column.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -12)
+        ])
+        onAppear = { [weak self] in self?.presentingWindow?.makeFirstResponder(self?.cancel) }
+        content.onReturn = { [weak self] in self?.close() }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    static func sourceSignature(_ source: URL) throws -> String {
+        let files = try AgentFiles(workspace: source.deletingLastPathComponent().path)
+        let target = try files.entryMetadata(source)
+        guard target.kind == "file" || target.kind == "directory" else { throw PetError("来源已变化或不可用，请返回核对") }
+        return target.signature
+    }
+
+    @objc private func cancelReview() { close() }
+    @objc private func applyReview() {
+        guard isPageVisible, confirm.isEnabled, let onApply else { return }
+        confirm.isEnabled = false
+        do { try validateTarget?() }
+        catch { showFailure(error); return }
+        do { try onApply(); close(); onApplied?() }
+        catch { confirm.isEnabled = true; showFailure(error) }
+    }
+    private func showFailure(_ error: Error) {
+        status.showSaveFailure(error)
+        presentingWindow?.makeFirstResponder(cancel)
+    }
 }
 
 struct AgentSettingsCatalogGroup {
@@ -843,8 +919,9 @@ struct AgentSettingsCatalogGroup {
         for entry in entries where !(entry.controller is AgentSettingsDetailPage) {
             guard let page = try entry.controller.captureSettingsRecovery() else { return nil }; pages.append(page)
         }
+        let parentY = entries.count > 1 && currentController is AgentSettingsRemovalReview ? entries[entries.count - 2].scrollY : nil
         let value = AgentSettingsRecovery.State(context: recoveryContext, category: category, root: root, active: active,
-            pages: pages, y: pendingRecoveryY ?? max(0, viewport.contentView.bounds.minY))
+            pages: pages, y: parentY ?? pendingRecoveryY ?? max(0, viewport.contentView.bounds.minY))
         guard value.valid else { throw PetError("设置编辑恢复格式无效，原草稿已保留") }; return value
     }
     func restoreRecovery(_ value: AgentSettingsRecovery.State, make: @escaping (String) -> AgentSettingsPageController?) throws {

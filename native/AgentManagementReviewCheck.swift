@@ -9,13 +9,17 @@ import AppKit
             report["binaryHash"] = try AgentFiles(workspace: executable.deletingLastPathComponent().path).fileHash(executable)
             runtime.modelRequestCheck = { requests += 1; throw PetError("设置审阅检查禁止模型请求") }
             let task = try await prepareSettingsPagesCheck(output, tasks: tasks)
-            let plugins = tasks.extensions.plugins, samples = try AgentPluginReviewCheck.prepareSources(output)
-            _ = try plugins.install(await plugins.inspect(samples[0]))
-            let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
-            host.isReleasedWhenClosed = false
-            let pane = AgentSettingsPageHost(); host.contentView = pane; host.makeKeyAndOrderFront(nil)
-            defer { host.close() }
-            checks = try await AgentManagementReviewCheck.run(tasks: tasks, taskID: task, pane: pane, host: host, output: output)
+            if CommandLine.arguments.contains("--extension-removal-only") {
+                checks = try await AgentManagementReviewCheck.runRemovals(owner: control, tasks: tasks, taskID: task, output: output)
+            } else {
+                let plugins = tasks.extensions.plugins, samples = try AgentPluginReviewCheck.prepareSources(output)
+                _ = try plugins.install(await plugins.inspect(samples[0]))
+                let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
+                host.isReleasedWhenClosed = false
+                let pane = AgentSettingsPageHost(); host.contentView = pane; host.makeKeyAndOrderFront(nil)
+                defer { host.close() }
+                checks = try await AgentManagementReviewCheck.run(tasks: tasks, taskID: task, pane: pane, host: host, output: output)
+            }
         } catch { report["error"] = error.localizedDescription }
         report["appPID"] = getpid(); report["checks"] = checks; report["modelRequests"] = requests
         report["success"] = report["error"] == nil && requests == 0 && !checks.isEmpty && checks.values.allSatisfy { $0 }
@@ -39,6 +43,124 @@ import AppKit
     }
     private static func bytes(_ url: URL) throws -> Data? { FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil }
     private static func object(_ value: [String: Any]) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self) }
+    static func runRemovals(owner: ControlWindow, tasks: AgentStore, taskID: String, output: URL) async throws -> [String: Bool] {
+        guard let task = tasks.task(taskID), let workspace = task.workspace, let host = owner.window, let root = host.contentView,
+              let pane = find(AgentSettingsPageHost.self, in: root, matching: { _ in true }) else { throw PetError("缺少扩展移除验收工作台") }
+        let files = FileManager.default
+        let originalSize = root.bounds.size
+        let project = URL(fileURLWithPath: workspace)
+        let userPlugin = try tasks.extensions.plugins.installation("zz-settings-demo")
+        let package = try await tasks.extensions.plugins.inspect(output.appendingPathComponent("公开扩展/zz-settings-demo"))
+        let projectPlugin = try tasks.extensions.plugins.install(package, workspace: workspace)
+        let projectRule = try tasks.rules.create(name: "settings-rule", text: AgentRuleDocument.text(name: "settings-rule", trigger: .manual,
+            description: "", patterns: [], body: "原项目规则。"), project: true, task: task)
+        let userRule = try tasks.rules.catalog(workspace: workspace, directories: []).first { !$0.project && $0.name == projectRule.name }
+        guard let userRule else { throw PetError("缺少同名用户规则") }
+        let skillBody = (1...48).map { "原技能介绍 \($0)" }.joined(separator: "\n")
+        let skill = try tasks.extensions.create(.skill, name: "settings-project-skill", text: skillBody, project: true, workspace: workspace)
+        let resource = skill.root.appendingPathComponent("inventory.csv")
+        try Data("sku,quantity\nPUBLIC-042,12\n".utf8).write(to: resource)
+        guard let command = try tasks.extensions.catalog(workspace: workspace).first(where: { $0.name == "settings-command" }) else {
+            throw PetError("缺少原指令")
+        }
+        let userReceipt = userPlugin.root.appendingPathComponent("receipt.json")
+        let protected = [project.appendingPathComponent("README.md"), userReceipt, userRule.source, output.appendingPathComponent("公开扩展/settings-skill/SKILL.md")]
+        let originals = try protected.map(bytes)
+        tasks.update(taskID) { $0.draft = "原任务草稿" }
+        owner.showAgentTask(taskID); host.makeKeyAndOrderFront(nil)
+        host.setContentSize(NSSize(width: 780, height: 540))
+        defer { host.setContentSize(originalSize) }
+        guard owner.showSettingsCategory("extensions") else { throw PetError("扩展管理未打开") }
+
+        var checks: [String: Bool] = [:]
+        func pressVisible(_ title: String, enabled: Bool = true) throws -> NSButton {
+            guard let button = find(NSButton.self, in: root, matching: { $0.title == title && !$0.isHiddenOrHasHiddenAncestor && $0.isEnabled == enabled }) else {
+                throw PetError("缺少移除审阅操作：" + title)
+            }
+            if enabled { button.performClick(nil) }
+            return button
+        }
+        func chooseMenu(_ label: String, _ title: String) throws {
+            guard let detail = pane.currentController else { throw PetError("原详情未打开") }
+            guard let menu = find(NSPopUpButton.self, in: root, matching: { $0.accessibilityLabel() == label && !$0.isHiddenOrHasHiddenAncestor }),
+                  let item = menu.menu?.item(withTitle: title), item.isEnabled, let action = item.action,
+                  NSApp.sendAction(action, to: item.target, from: item), pane.currentController !== detail else { throw PetError("移除菜单未打开右侧审阅") }
+        }
+        func verifyReview(_ title: String, path: URL, scope: String, impact: String) throws -> AgentSettingsRemovalReview {
+            guard let page = pane.currentController as? AgentSettingsRemovalReview else { throw PetError("移除未进入设置右侧") }
+            let source = try control(NSTextField.self, "来源路径", page: page)
+            let consequence = try control(NSTextField.self, "移除影响", page: page)
+            root.layoutSubtreeIfNeeded()
+            checks[title + "ReviewNamesExactScopeAndPath"] = page.detailHeading?.title == title && page.detailHeading?.scope == scope &&
+                source.stringValue == path.path && consequence.stringValue.contains(impact)
+            checks[title + "ReviewHasSafeFocusAndNoOverlay"] = page.isPageVisible && page.settingsHostWindow === host &&
+                host.agentDialog == nil && host.attachedSheet == nil && host.frame.size == NSSize(width: 780, height: 540) &&
+                (host.firstResponder as? NSButton)?.title == "取消"
+            return page
+        }
+        guard let plugins = pane.currentController as? AgentPluginWindow else { throw PetError("插件列表未打开") }
+        try plugins.selectInstallation(projectPlugin.id)
+        try chooseMenu("插件更多操作", "移除")
+        let pluginReview = try verifyReview("移除插件", path: projectPlugin.root, scope: "项目 · 设置项目", impact: "历史版本")
+        let external = projectPlugin.root.appendingPathComponent("新增公开备忘.md")
+        let added = Data("等待重新审阅。".utf8)
+        try added.write(to: external)
+        _ = try pressVisible("移到废纸篓")
+        _ = try pressVisible("移到废纸篓", enabled: false)
+        checks["changedPluginDirectoryIsProtected"] = try pane.currentController === pluginReview && bytes(external) == added
+        _ = try pressVisible("取消")
+        checks["pluginCancelReturnsToOriginalDetail"] = pane.currentController?.detailHeading?.title == projectPlugin.metadata.title
+        try chooseMenu("插件更多操作", "移除")
+        _ = try pressVisible("移到废纸篓")
+        checks["pluginRemovalOnlyMovesReviewedProjectInstallation"] = !files.fileExists(atPath: projectPlugin.root.path) && pane.currentController === plugins
+
+        pane.selectPage("skills")
+        guard let skills = pane.currentController as? AgentExtensionWindow else { throw PetError("技能列表未打开") }
+        skills.selectItem(skill.id)
+        guard let detail = pane.currentController else { throw PetError("技能详情未打开") }
+        let editor = try control(NSTextView.self, "扩展说明", page: detail)
+        let pending = skillBody + "\n待保存的技能说明。"
+        editor.string = pending; editor.didChangeText()
+        let range = (pending as NSString).range(of: "待保存")
+        host.makeFirstResponder(editor); editor.setSelectedRange(range); editor.scrollRangeToVisible(range)
+        _ = try pressVisible("移除")
+        _ = try verifyReview("移除技能", path: skill.root, scope: "项目 · 设置项目", impact: "未保存")
+        let route = try owner.captureSettingsRecovery()
+        checks["skillReviewJournalRetainsOnlyParentDraft"] = route?.pages.count == 1 &&
+            route?.pages.first.flatMap { String(data: $0.state, encoding: .utf8) }?.contains("待保存的技能说明") == true
+        _ = try pressVisible("取消")
+        try await Task.sleep(for: .milliseconds(110))
+        checks["skillCancelRestoresFullDraftAndSelectedText"] = pane.currentController === detail && editor.string == pending &&
+            editor.selectedRange() == range && host.firstResponder === editor
+        checks["skillCancelPreservesSourceAndResources"] = try bytes(skill.file) == Data(skillBody.utf8) && bytes(resource) != nil
+        _ = try pressVisible("移除"); _ = try pressVisible("移到废纸篓")
+        checks["skillRemovalMovesTheWholeDirectoryAndClosesDetail"] = !files.fileExists(atPath: skill.root.path) && pane.currentController === skills
+
+        pane.selectPage("commands")
+        guard let commands = pane.currentController as? AgentExtensionWindow else { throw PetError("指令列表未打开") }
+        commands.selectItem(command.id)
+        _ = try pressVisible("移除")
+        _ = try verifyReview("移除指令", path: command.file, scope: "全局", impact: "这份指令文件")
+        _ = try pressVisible("移到废纸篓")
+        checks["commandRemovalKeepsItsParentDirectory"] = !files.fileExists(atPath: command.file.path) &&
+            files.fileExists(atPath: command.file.deletingLastPathComponent().path) && pane.currentController === commands
+
+        guard owner.showSettingsCategory("memory") else { throw PetError("规则设置未打开") }
+        pane.selectPage("rules")
+        guard let rules = pane.currentController as? AgentRuleWindow else { throw PetError("规则列表未打开") }
+        let scopes = try control(NSSegmentedControl.self, "规则范围", page: rules)
+        scopes.selectedSegment = 2
+        if let action = scopes.action { NSApp.sendAction(action, to: scopes.target, from: scopes) }
+        let table = try control(AgentSettingsCatalogTable.self, "规则列表", page: rules)
+        guard table.numberOfRows == 1, let action = table.action, NSApp.sendAction(action, to: table.target, from: table) else { throw PetError("项目规则详情未打开") }
+        try chooseMenu("规则更多操作", "移到废纸篓")
+        _ = try verifyReview("移除规则", path: projectRule.source, scope: "项目 · 设置项目", impact: "这份规则文件")
+        _ = try pressVisible("移到废纸篓")
+        checks["ruleRemovalReturnsToFilteredCatalogAndKeepsOtherScope"] = !files.fileExists(atPath: projectRule.source.path) &&
+            pane.currentController === rules && scopes.selectedSegment == 2
+        checks["onlyReviewedFixturesMoved"] = try protected.map(bytes) == originals && tasks.task(taskID)?.draft == "原任务草稿"
+        return checks
+    }
     static func prepareFixtures(_ output: URL, tasks: AgentStore, workspace: String) throws {
         let scripts = URL(fileURLWithPath: workspace).appendingPathComponent(".bluefatfish/hooks")
         try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)

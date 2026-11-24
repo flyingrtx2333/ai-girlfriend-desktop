@@ -226,7 +226,7 @@ import AppKit
                 let projectRegistry = service.profile.appendingPathComponent("extensions/mcp-projects.json")
                 let originalUser = try Data(contentsOf: userRegistry), originalProject = try Data(contentsOf: projectRegistry)
                 let removal = try review("移除")
-                let path = try view(NSTextField.self, "项目路径", in: control)
+                let path = try view(NSTextField.self, "来源路径", in: control)
                 let consequence = try view(NSTextField.self, "移除影响", in: control)
                 checks["projectReviewNamesExactScopeAndDraftEffect"] = removal.detailHeading?.scope == "项目 · 公开项目范围" &&
                     path.stringValue == directory.path && consequence.stringValue.contains("未保存的修改")

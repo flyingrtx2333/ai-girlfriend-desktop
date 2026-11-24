@@ -280,7 +280,36 @@ import AppKit
     @objc private func useItem() { guard let selected else { return }; do { try onInsert?(selected) } catch { setState(error.localizedDescription, isError: true) } }
     @objc private func revealItem() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([selected.source]) } }
     @objc private func removeItem() {
-        guard let selected, let window = presentingWindow else { return }
+        guard let selected, selected.permissions != nil, !dirty, let window = presentingWindow else { return }
+        if let detailPage, detailPage.settingsHostWindow != nil, detailPage.isPageVisible {
+            do {
+                var scope = selected.scope
+                if selected.project { scope += " · " + selected.owner.lastPathComponent }
+                let review = AgentSettingsRemovalReview(title: "移除规则",
+                    target: .init(title: selected.name, scope: scope, location: selected.source.path),
+                    impact: "这份规则文件会移到废纸篓，已有任务记录保留。")
+                let position = try draftViewport.capture()
+                try draftViewport.restore(position)
+                review.validateTarget = { [weak self] in
+                    guard let self, !dirty, self.selected?.id == selected.id,
+                          let current = try? store.rules.current(selected.id, task: editingTask(), enabledOnly: false),
+                          current.source == selected.source, current.owner == selected.owner, current.signature == selected.signature,
+                          current.sha256 == selected.sha256, current.enabled == selected.enabled else {
+                        throw PetError("规则来源已变化，请返回核对后重新移除")
+                    }
+                }
+                review.onApply = { [weak self] in
+                    guard let self else { throw PetError("原规则详情已关闭") }
+                    try store.rules.trash(selected, task: editingTask())
+                    self.selected = nil; reload()
+                }
+                review.onApplied = { [weak self, weak detailPage] in
+                    detailPage?.close(); self?.catalogState.stringValue = "已移到废纸篓"
+                }
+                detailPage.presentSettingsChild(review)
+            } catch { setState(error.localizedDescription, isError: true) }
+            return
+        }
         let alert = AgentConfirmation(); alert.messageText = "将“\(selected.name)”移到废纸篓？"; alert.informativeText = selected.source.path; alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
         alert.beginModal(in: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }

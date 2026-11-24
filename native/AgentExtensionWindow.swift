@@ -288,7 +288,41 @@ import UniformTypeIdentifiers
         catch { state.stringValue = error.localizedDescription }
     }
     @objc private func removeItem() {
-        guard let item = selected, canLeave(), let window = presentingWindow else { return }
+        guard let item = selected, item.managed, job == nil, let window = presentingWindow else { return }
+        if let detailPage, detailPage.settingsHostWindow != nil, detailPage.isPageVisible {
+            do {
+                let skill = item.kind == .skill
+                let target = skill ? item.root : item.file
+                let signature = try AgentSettingsRemovalReview.sourceSignature(target)
+                var impact = skill ? "技能目录及其中的文件会移到废纸篓。" : "这份指令文件会移到废纸篓。"
+                if dirty { impact += "当前未保存的编辑会随移除操作丢弃。" }
+                var scope = item.scope
+                if item.scope == "项目", let workspace { scope += " · " + URL(fileURLWithPath: workspace).lastPathComponent }
+                let review = AgentSettingsRemovalReview(title: skill ? "移除技能" : "移除指令",
+                    target: .init(title: item.name, scope: scope, location: target.path), impact: impact)
+                let position = try draftViewport.capture()
+                try draftViewport.restore(position)
+                review.validateTarget = { [weak self] in
+                    guard let self, job == nil, self.selected?.id == item.id,
+                          let current = try? store.extensions.item(item.id, workspace: workspace, enabled: false),
+                          current.managed, current.file == item.file, current.root == item.root, current.sha256 == item.sha256,
+                          (try? AgentSettingsRemovalReview.sourceSignature(target)) == signature else {
+                        throw PetError("扩展来源已变化，请返回核对后重新移除")
+                    }
+                }
+                review.onApply = { [weak self] in
+                    guard let self else { throw PetError("原扩展详情已关闭") }
+                    try store.extensions.trash(item, workspace: workspace)
+                    dirty = false; selected = nil; reload()
+                }
+                review.onApplied = { [weak self, weak detailPage] in
+                    detailPage?.close(); self?.state.stringValue = "已移到废纸篓"
+                }
+                detailPage.presentSettingsChild(review)
+            } catch { state.showSaveFailure(error) }
+            return
+        }
+        guard canLeave() else { return }
         let alert = AgentConfirmation(); alert.messageText = "移除「\(item.name)」？"; alert.informativeText = "文件会移到废纸篓，已有任务记录保留。"
         alert.addButton(withTitle: "移除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
         alert.beginModal(in: window) { [weak self] response in
