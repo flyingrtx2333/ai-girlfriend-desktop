@@ -5532,15 +5532,10 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         do {
             let source = task.worktreeSetup.flatMap { tasks.task($0.sourceTaskID) } ?? task
             guard task.worktreeSetup == nil || source.id != task.id else { throw PetError("来源任务已不存在，已创建工作树与记录仍保留") }
-            let directory = try AgentGit.metadata(workspace: source.workspace)
-            if !directory.path.hasPrefix((source.workspace ?? "") + "/"), source.gitDirectory != directory.path {
-                let alert = AgentConfirmation(); alert.messageText = "连接 Git 仓库元数据？"; alert.informativeText = directory.path; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
-                guard alert.runModal(for: window) == .alertFirstButtonReturn else { return }; tasks.update(source.id) { $0.gitDirectory = directory.path }
-            }
             showAgentGit()
             guard taskWorkspace.taskID == task.id, taskWorkspace.selectedRoot == .review, taskWorkspace.prepareToNavigate(),
                   let editor = taskWorkspace.rootController(.review) as? AgentGitWindow else { return }
-            try editor.presentWorktreeCreation(sourceTaskID: source.id, directory: directory, resumeTaskID: task.worktreeSetup == nil ? nil : task.id)
+            try editor.requestWorktreeCreation(sourceTaskID: source.id, resumeTaskID: task.worktreeSetup == nil ? nil : task.id)
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     @objc private func selectLocalEnvironment() {

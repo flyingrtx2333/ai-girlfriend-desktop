@@ -8,6 +8,8 @@ import AppKit
     private let message = AgentDialogTextField(), refreshButton = NSButton(title: "刷新", target: nil, action: nil), commitButton = AgentDialogButton(title: "提交", target: nil, action: nil)
     private let generateButton = AgentDialogButton(title: "生成说明", target: nil, action: nil)
     private let worktreeButton = NSButton(title: "新建工作树", target: nil, action: nil), initializeButton = AgentDialogButton(title: "初始化 Git", target: nil, action: nil)
+    private weak var metadataReview: AgentSettingsReviewPage?
+    private var hasMetadataReview: Bool { metadataReview?.settingsHostWindow != nil || metadataReview?.window?.isVisible == true }
     private let pushButton = AgentDialogButton(title: "推送…", target: nil, action: nil), commitPushButton = AgentDialogButton(title: "提交并推送…", target: nil, action: nil)
     private var pushWindow: AgentGitPushWindow?
     private var parkedPush: AgentGitDraftRecovery.Push?
@@ -33,6 +35,7 @@ import AppKit
     private var ignoresWhitespace = false
     private var pendingReading: AgentGitDraftRecovery.Reading?
     private var changes: [AgentGitChange] = [], review: AgentGitReview?, git: AgentGit?, job: Task<Void, Never>?, lastResult = "", displayedBranchRef = ""
+    private var refreshQueued = false
     private var draftScope: AgentGitDraftRecovery.Scope?, currentDraftScope: AgentGitDraftRecovery.Scope?
     private var draftSelection: AgentTextViewport.Selection?, pendingDraftPaths: [String]?
     private var draftFocused = false, restoreDraftFocus = false, applyingDraftFocus = false
@@ -139,7 +142,7 @@ import AppKit
         content.onResize = { [weak self] in self?.pageDidLayout() }; pageDidLayout(); refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func windowWillClose(_ notification: Notification) { job?.cancel(); git?.cancel(); dependencyWindow?.close(); busy = false }
+    func windowWillClose(_ notification: Notification) { job?.cancel(); refreshQueued = false; git?.cancel(); dependencyWindow?.close(); busy = false }
     private var draftText: String { (message.currentEditor() as? NSTextView)?.string ?? message.stringValue }
     private var selectedPaths: [String] { table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path } }
     private var hasPushDraft: Bool { parkedPush != nil || pushWindow?.hasDraft == true }
@@ -310,8 +313,8 @@ import AppKit
         busy = value; table.isEnabled = !value; refreshButton.isEnabled = !value; filePicker.isEnabled = !value && !changes.isEmpty
         sourcePopup.isEnabled = !value; revision.isEnabled = !value
         sourceFrame.refreshEnabledState(); fileFrame.refreshEnabledState()
-        worktreeButton.isEnabled = !value && writable() && initializeButton.isHidden
-        manageWorktrees.isEnabled = !value && initializeButton.isHidden
+        worktreeButton.isEnabled = !value && writable() && initializeButton.isHidden && git != nil
+        manageWorktrees.isEnabled = !value && initializeButton.isHidden && git != nil
         let handoffTask = store.task(taskID)
         handoffButton.isHidden = handoffTask?.managedWorktreeOrigins.isEmpty != false
         handoffButton.isEnabled = !value && handoffTask?.canStartFreshSession == true && initializeButton.isHidden
@@ -362,23 +365,84 @@ import AppKit
             presentSettingsChild(controller)
         } catch { showError(error) }
     }
+    private struct MetadataConnection: Error, Equatable {
+        let taskID: String, workspace: URL, directory: URL, checkout: URL
+        let workspaceIdentity: String, directoryIdentity: String, checkoutIdentity: String
+        let scope: AgentWorkspaceScope?, previousDirectory: String?
+
+        init?(task: AgentTaskRecord, workspace: URL, directory: URL) throws {
+            guard directory != workspace, !directory.path.hasPrefix(workspace.path + "/"), directory.path != task.gitDirectory else { return nil }
+            taskID = task.id; self.workspace = workspace; self.directory = directory
+            scope = task.workspaceScope; previousDirectory = task.gitDirectory
+            checkout = try AgentGit.metadata(workspace: workspace.path, checkout: true)
+            workspaceIdentity = try AgentFiles.directoryIdentity(workspace)
+            directoryIdentity = try AgentFiles.directoryIdentity(directory)
+            checkoutIdentity = try AgentFiles.directoryIdentity(checkout)
+        }
+
+        func requireCurrent(_ task: AgentTaskRecord?) throws -> AgentTaskRecord {
+            let changed = PetError("任务或 Git 元数据目录已变化，请取消后重新审阅")
+            guard let task, !task.archived, task.id == taskID, task.workspaceScope == scope, task.gitDirectory == previousDirectory,
+                  let root = try? AgentFiles(workspace: task.workspace).root,
+                  let shared = try? AgentGit.metadata(workspace: root.path),
+                  (try? Self(task: task, workspace: root, directory: shared)) == self else { throw changed }
+            return task
+        }
+    }
+
+    private func presentMetadataReview(_ connection: MetadataConnection, operation: String, validate: (() throws -> Void)? = nil,
+                                       onConnected: @escaping () -> Void) throws {
+        guard !hasMetadataReview else { throw PetError("请先完成当前的 Git 连接审阅") }
+        let page = AgentSettingsReviewPage(title: "连接 Git 元数据", metadata: connection.workspace.lastPathComponent, notice: "Git 操作将访问项目目录之外的元数据。",
+            sections: [("连接范围", "操作：\(operation)\n\n工作区\n\(connection.workspace.path)\n\nGit 元数据\n\(connection.directory.path)" +
+                        (connection.checkout == connection.directory ? "" : "\n\n工作树元数据\n\(connection.checkout.path)"))], applyTitle: "连接")
+        page.window?.title = operation
+        page.useSafeConfirmation(destructive: false)
+        page.onApply = { [weak self, weak page] in
+            guard let self, let page, page.isPageVisible else { throw PetError("原 Git 审阅页已关闭") }
+            let task: AgentTaskRecord
+            do {
+                try validate?()
+                task = try connection.requireCurrent(store.task(connection.taskID))
+            } catch {
+                page.showPreviewFailure(error); throw error
+            }
+            let expected = try store.recordVersion(task.id)
+            var updated = task
+            updated.gitDirectory = connection.directory.path; updated.updated = Date()
+            let checkpoint = try store.backupDirectory(task.id).appendingPathComponent("git-connection-" + UUID().uuidString)
+            try store.commitTaskRecord(updated, expectedHash: expected, transaction: checkpoint, label: "连接 Git 元数据") {
+                try validate?()
+                _ = try connection.requireCurrent(self.store.task(connection.taskID))
+            }
+        }
+        page.onApplied = { [weak self] in
+            self?.metadataReview = nil
+            onConnected()
+        }
+        presentSettingsChild(page)
+        guard page.settingsHostWindow != nil || page.window?.isVisible == true else { throw PetError("无法打开 Git 连接审阅") }
+        metadataReview = page
+        if refreshQueued {
+            job?.cancel(); refreshQueued = false; setBusy(false)
+            state.stringValue = "连接 Git 元数据后可读取变更"
+        }
+    }
+
     private func connect(creating: Bool = false) throws -> AgentGit {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         let files = try AgentFiles(workspace: task.workspace), directory = try AgentGit.metadata(workspace: task.workspace, creating: creating)
-        if directory != files.root, !directory.path.hasPrefix(files.root.path + "/"), task.gitDirectory != directory.path {
-            let alert = AgentConfirmation(); alert.messageText = "连接 Git 仓库"; alert.informativeText = directory.path
-            alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
-            guard alert.runModal() == .alertFirstButtonReturn else { throw PetError("未连接 Git 元数据") }
-            store.update(taskID) { $0.gitDirectory = directory.path }
-        }
+        if let connection = try MetadataConnection(task: task, workspace: files.root, directory: directory) { throw connection }
         let result = try AgentGit(store: store, taskID: taskID, directory: directory); window?.title = "Git · " + result.files.root.lastPathComponent; git = result; return result
     }
     @objc private func refresh() {
-        guard !busy else { return }
+        guard !busy, !hasMetadataReview else { return }
         if pendingDraftPaths == nil, !draftText.isEmpty { pendingDraftPaths = selectedPaths }
         review = nil; inspection = nil; changes = []; table.reloadData(); updateFilePicker(); showDiff(""); statistics.stringValue = ""; branch.stringValue = "Git"; setBusy(true); state.stringValue = "读取 Git…"
+        refreshQueued = true
         job = Task { [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
+            refreshQueued = false
             do {
                 let git = try connect(); _ = try await git.status(); try Task.checkCancellation()
                 let symbolic = try await git.run(["symbolic-ref", "--quiet", "HEAD"])
@@ -415,6 +479,13 @@ import AppKit
                     else { pendingReading = nil }
                 } else if !changes.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
                 reviewReadingChanged()
+            } catch let connection as MetadataConnection {
+                guard !Task.isCancelled else { return }
+                git = nil; initializeButton.isHidden = true; setBusy(false)
+                state.stringValue = "连接 Git 元数据后可读取变更"
+                guard isPageVisible else { return }
+                do { try presentMetadataReview(connection, operation: "查看 Git 变更") { [weak self] in self?.refresh() } }
+                catch { showError(error) }
             } catch {
                 guard !Task.isCancelled else { return }
                 currentDraftScope = try? AgentGitDraftRecovery.Scope.current(store.task(taskID))
@@ -740,6 +811,36 @@ import AppKit
         do { try presentWorktreeCreation(sourceTaskID: taskID, directory: git.directory) }
         catch { showError(error) }
     }
+    private func worktreeSource(_ sourceTaskID: String, resumeTaskID: String?) throws -> AgentTaskRecord {
+        guard let owner = store.task(taskID), owner.canChooseEnvironment, owner.workspace != nil,
+              let record = store.task(sourceTaskID), !record.archived else { throw PetError("原任务已变化，请重新打开工作树设置") }
+        if let resumeTaskID {
+            guard resumeTaskID == owner.id, owner.worktreeSetup?.sourceTaskID == record.id else { throw PetError("原工作树配置已变化") }
+        } else {
+            guard record.id == owner.id, owner.worktreeSetup == nil else { throw PetError("原工作树配置已变化") }
+        }
+        return record
+    }
+    func requestWorktreeCreation(sourceTaskID: String, resumeTaskID: String?) throws {
+        let original = try worktreeSource(sourceTaskID, resumeTaskID: resumeTaskID)
+        let files = try AgentFiles(workspace: original.workspace)
+        let directory = try AgentGit.metadata(workspace: files.root.path)
+        if let connection = try MetadataConnection(task: original, workspace: files.root, directory: directory) {
+            try presentMetadataReview(connection, operation: resumeTaskID == nil ? "新建工作树" : "继续创建工作树", validate: { [weak self] in
+                guard let self else { throw PetError("原 Git 审阅页已关闭") }
+                _ = try worktreeSource(sourceTaskID, resumeTaskID: resumeTaskID)
+            }) { [weak self] in
+                guard let self else { return }
+                do {
+                    try presentWorktreeCreation(sourceTaskID: sourceTaskID, directory: directory, resumeTaskID: resumeTaskID)
+                    if sourceTaskID == taskID { refresh() }
+                }
+                catch { showError(error) }
+            }
+        } else {
+            try presentWorktreeCreation(sourceTaskID: sourceTaskID, directory: directory, resumeTaskID: resumeTaskID)
+        }
+    }
     func restoreWorktreeCreation(_ saved: AgentGitDraftRecovery.WorktreeForm) throws {
         let source = store.task(saved.sourceTaskID)
         let scope = try AgentGitDraftRecovery.Scope.current(source)
@@ -788,6 +889,7 @@ import AppKit
         job = Task { [weak self] in
             guard let self else { return }
             do { let git = try connect(creating: true); _ = try await git.initialize(); log("Git 初始化", result: git.files.root.path); setBusy(false); refresh() }
+            catch is MetadataConnection { setBusy(false); refresh() }
             catch { showError(error); setBusy(false) }
         }
     }

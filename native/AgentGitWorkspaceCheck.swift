@@ -164,14 +164,120 @@ import AppKit
             control.showAgentTask(fixture.taskID); await git.checkWorkspace(source: .uncommitted, path: "review.txt")
             checks.merge(try await checkGitWhitespaceReview(git, fixture: fixture, tasks: tasks, rawGit: rawGit)) { _, value in value }
             checks.merge(try await checkGitReadingJournal(git, output: output)) { _, value in value }
+            checks.merge(try await checkExternalGitMetadata(fixture, output: output, tasks: tasks)) { _, value in value }
             checks["modelTransmissionsRemainZero"] = requests == 0 && tasks.tasks.allSatisfy { $0.modelReceipts?.isEmpty != false && $0.inputTokens == 0 && $0.outputTokens == 0 }
-            report["head"] = head; report["taskID"] = fixture.taskID; report["workspace"] = fixture.workspace.path; report["modelRequests"] = requests
+            report["head"] = try await rawGit(["rev-parse", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            report["reviewedCommit"] = head; report["taskID"] = fixture.taskID; report["workspace"] = fixture.workspace.path; report["modelRequests"] = requests
             report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }; report["scope"] = "Actual task window, independent Git repository/index/commit objects and loopback remote preparation; no model requests. Publishing remains an explicit UI confirmation."
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("git-workspace-report.json"))
         } catch { report["success"] = false; report["checks"] = checks; report["error"] = error.localizedDescription; try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("git-workspace-report.json")) }
     }
 
     private func gitReviewSubviews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(gitReviewSubviews) }
+
+    private func checkExternalGitMetadata(_ fixture: GitWorkspaceFixture, output: URL, tasks: AgentStore) async throws -> [String: Bool] {
+        let fm = FileManager.default, host = control.taskWorkspace
+        let project = output.appendingPathComponent("separate-project", isDirectory: true)
+        let metadata = output.appendingPathComponent("separate-metadata", isDirectory: true)
+        let alternate = output.appendingPathComponent("separate-alternate", isDirectory: true)
+        let parked = output.appendingPathComponent("separate-original", isDirectory: true)
+        try fm.createDirectory(at: project, withIntermediateDirectories: false)
+        try fm.copyItem(at: fixture.workspace.appendingPathComponent(".git"), to: metadata)
+        try fm.copyItem(at: metadata, to: alternate)
+        let pointer = project.appendingPathComponent(".git"), file = project.appendingPathComponent("review.txt")
+        try Data("gitdir: \(metadata.path)\n".utf8).write(to: pointer)
+        let content = Data("public external workspace review\n".utf8)
+        try content.write(to: file)
+        let draft = "元数据连接时保留原草稿。"
+        let first = tasks.create(title: "审阅项目外的 Git 元数据", workspace: project.path, mode: .ask, draft: draft)
+        let second = tasks.create(title: "从输入区进入工作树", workspace: project.path, mode: .ask, draft: draft)
+        func review(_ step: String) async throws -> (AgentSettingsReviewPage, NSButton, NSButton, NSTextView) {
+            for _ in 0..<50 {
+                if let page = host.currentController as? AgentSettingsReviewPage, let body = page.pageContentView {
+                    let views = gitReviewSubviews(body)
+                    let buttons = views.compactMap { $0 as? NSButton }
+                    if let cancel = buttons.first(where: { $0.title == "取消" }), let connect = buttons.first(where: { $0.title == "连接" }),
+                       let text = views.compactMap({ $0 as? NSTextView }).first(where: { $0.accessibilityLabel() == "设置审阅正文" }) {
+                        return (page, cancel, connect, text)
+                    }
+                }
+                try await Task.sleep(for: .milliseconds(30))
+            }
+            let current = control.gitWorkspaceReadback()
+            let state = (host.currentController as? AgentGitWindow)?.workspaceReadback()["state"] as? String ?? ""
+            throw PetError("Git 元数据审阅未打开（\(step)）。当前：\(current["controller"] ?? "")，Git 状态：\(state)")
+        }
+        var checks: [String: Bool] = [:]
+        defer {
+            if let data = try? JSONSerialization.data(withJSONObject: checks, options: [.sortedKeys]) {
+                try? data.write(to: output.appendingPathComponent("external-git-metadata-checks.json"), options: .atomic)
+            }
+        }
+        let wasVisible = control.window?.isVisible == true
+        if !wasVisible { control.window?.orderFront(nil) }
+        defer { if !wasVisible { control.window?.orderOut(nil) } }
+        control.showAgentTask(second); control.createTaskWorktree()
+        do {
+            let (page, cancel, _, text) = try await review("工作树入口")
+            checks["worktreeUsesSameWindowForExplicitMetadataScope"] = page.isPageVisible && page.presentingWindow === control.window && control.window?.hasBlockingDialog == false &&
+                text.string.contains("操作：新建工作树") && text.string.contains(metadata.path) && text.string.contains(project.path) &&
+                control.window?.firstResponder === cancel && tasks.task(second)?.gitDirectory == nil
+            cancel.performClick(nil)
+            try await Task.sleep(for: .milliseconds(30))
+            checks["metadataCancelDoesNotGrantOrChangeDraft"] = host.currentController is AgentGitWindow && tasks.task(second)?.gitDirectory == nil && tasks.task(second)?.draft == draft
+        }
+        control.showAgentTask(first); control.showAgentGit()
+        guard let git = host.rootController(.review) as? AgentGitWindow else { throw PetError("Git 根审阅缺失") }
+        do {
+            let (page, cancel, connect, text) = try await review("第一次 Git 阅读")
+            checks["approvalIsRequiredBeforeGitReadsTheExternalCheckout"] = text.string.contains("操作：查看 Git 变更") &&
+                (git.workspaceReadback()["files"] as? [String])?.isEmpty == true && tasks.task(first)?.gitDirectory == nil
+            try fm.moveItem(at: metadata, to: parked); try fm.moveItem(at: alternate, to: metadata)
+            connect.performClick(nil)
+            checks["samePathMetadataReplacementInvalidatesPreviousApproval"] = !connect.isEnabled && host.currentController === page && tasks.task(first)?.gitDirectory == nil
+            try fm.moveItem(at: metadata, to: alternate); try fm.moveItem(at: parked, to: metadata)
+            cancel.performClick(nil)
+        }
+        await git.checkWorkspace(action: "refresh")
+        do {
+            let (page, _, connect, _) = try await review("刷新后的 Git 阅读")
+            let record = tasks.directory.appendingPathComponent(first + ".json"), before = try Data(contentsOf: record)
+            try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: record.path)
+            connect.performClick(nil)
+            checks["readOnlyTaskDoesNotGrantMetadataAndCanRetry"] = try host.currentController === page && connect.isEnabled && tasks.task(first)?.gitDirectory == nil && Data(contentsOf: record) == before
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: record.path)
+            connect.performClick(nil)
+        }
+        await git.checkWorkspace(path: "review.txt")
+        checks["gitApprovalLoadsRealDiffAndOnlyConnectsItsOriginalTask"] = host.currentController === git &&
+            (git.workspaceReadback()["diff"] as? String)?.contains("+public external workspace review") == true &&
+            tasks.task(first)?.gitDirectory == metadata.path && tasks.task(second)?.gitDirectory == nil && tasks.task(first)?.draft == draft
+
+        control.showAgentTask(second); control.createTaskWorktree()
+        let (page, _, connect, text) = try await review("再次打开工作树")
+        guard text.string.contains("操作：新建工作树") else { throw PetError("重新打开工作树时显示了别的 Git 操作") }
+        connect.performClick(nil)
+        for _ in 0..<100 {
+            if let creation = host.currentController as? AgentWorktreeCreationWindow, creation.prepareWorkspaceNavigation() { break }
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        checks["worktreeApprovalContinuesToOriginalCreationForm"] = (host.currentController as? AgentWorktreeCreationWindow)?.isPageVisible == true &&
+            tasks.task(second)?.gitDirectory == metadata.path && tasks.task(second)?.draft == draft && control.window?.hasBlockingDialog == false
+        checks["permissionReviewDoesNotChangePublicWorkingFileOrGitPointer"] = try Data(contentsOf: file) == content &&
+            String(contentsOf: pointer, encoding: .utf8) == "gitdir: \(metadata.path)\n"
+        if checks["worktreeApprovalContinuesToOriginalCreationForm"] != true {
+            let current = control.gitWorkspaceReadback()
+            let state = (host.rootController(.review) as? AgentGitWindow)?.workspaceReadback()["state"] as? String ?? ""
+            throw PetError("工作树审阅未续接。当前：\(current["controller"] ?? "")，确认仍可见：\(page.isPageVisible)，已保存连接：\(tasks.task(second)?.gitDirectory == metadata.path)，Git 状态：\(state)")
+        }
+        host.checkBack()
+        guard let worktreeGit = host.currentController as? AgentGitWindow, worktreeGit.boundTaskID == second else {
+            throw PetError("无法从工作树配置返回原 Git 审阅")
+        }
+        await worktreeGit.checkWorkspace()
+        control.showAgentTask(fixture.taskID)
+        return checks
+    }
 
     private func checkGitReadingJournal(_ page: AgentGitWindow, output: URL) async throws -> [String: Bool] {
         let path = "whitespace-review.txt", task = page.boundTaskID
