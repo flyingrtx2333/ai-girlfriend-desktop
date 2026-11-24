@@ -30,6 +30,7 @@ import Foundation
     lazy var sideTasks = AgentSideTasks(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
+    private var waitingStatusCache: [String: (updated: Date, status: AgentTaskWaitingStatus?)] = [:]
     private var taskHashes: [String: String] = [:]
     private var unsavedTaskEdits = Set<String>()
     private(set) var taskSearchRevisions: [String: UInt64] = [:], taskSearchRevision: UInt64 = 0
@@ -185,21 +186,38 @@ import Foundation
         trimCache(keeping: id)
         return task
     }
-    func recordedActivityDates(_ id: String) -> [Date]? {
+    private func taskSnapshot(_ id: String) -> AgentTaskRecord? {
         guard UUID(uuidString: id) != nil, !deletions.taskIDs.contains(id) else { return nil }
-        let record: AgentTaskRecord
-        if let current = cache[id] { record = current }
-        else {
-            // Statistics must not recover interrupted tasks, acquire leases, write records or evict drafts.
-            guard let files = try? AgentFiles(workspace: directory.path), let file = try? files.literalURL(id + ".json"),
-                  (try? files.entryMetadata(file).kind) == "file", (try? files.resolve(id + ".json")) == file,
-                  let data = try? files.readData(file, maximum: 20_000_000), let value = try? JSONDecoder().decode(AgentTaskRecord.self, from: data) else { return nil }
-            record = value
-        }
-        guard record.id == id else { return nil }
+        if let current = cache[id] { return current.id == id ? current : nil }
+        // A preview must not recover interrupted tasks, acquire leases or evict drafts.
+        guard let files = try? AgentFiles(workspace: directory.path), let file = try? files.literalURL(id + ".json"),
+              (try? files.entryMetadata(file).kind) == "file", (try? files.resolve(id + ".json")) == file,
+              let data = try? files.readData(file, maximum: 20_000_000), let record = try? JSONDecoder().decode(AgentTaskRecord.self, from: data),
+              record.id == id else { return nil }
+        return record
+    }
+    func recordedActivityDates(_ id: String) -> [Date]? {
+        guard let record = taskSnapshot(id) else { return nil }
         var dates = record.events.map(\.created) + (record.modelReceipts ?? []).map(\.created) + (record.resultHistory ?? []).map(\.created)
         if record.messages.contains(where: \.isHumanInput), let date = record.activityAt { dates.append(date) }
         return dates
+    }
+    func workbenchWaitingStates(for summaries: [AgentTaskRecord]) -> [String: AgentTaskWaitingStatus] {
+        let waitingIDs = Set(tasks.lazy.filter { $0.status == .waiting && !$0.archived }.map(\.id))
+        waitingStatusCache = waitingStatusCache.filter { waitingIDs.contains($0.key) }
+        let connectorTasks = Set(mcp.userInputs.requests.map(\.taskID))
+        var result: [String: AgentTaskWaitingStatus] = [:]
+        for summary in summaries where !summary.archived {
+            if summary.status == .waiting {
+                if waitingStatusCache[summary.id]?.updated != summary.updated {
+                    let status = taskSnapshot(summary.id).flatMap(AgentTaskWaitingStatus.init)
+                    waitingStatusCache[summary.id] = (updated: summary.updated, status: status)
+                }
+                if let waiting = waitingStatusCache[summary.id]?.status { result[summary.id] = waiting; continue }
+            }
+            if connectorTasks.contains(summary.id) { result[summary.id] = .answer }
+        }
+        return result
     }
     func taskViewMetadata() -> [AgentTaskRecord] {
         // Older indexes lack activity dates; load each missing entry once without rewriting its task file.

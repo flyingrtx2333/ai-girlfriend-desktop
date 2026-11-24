@@ -66,6 +66,7 @@ private final class AgentTaskTable: NSTableView {
     private var effectiveGrouping: AgentTaskGrouping { filter == 1 ? .workspace : taskView.grouping }
     private static let dragType = NSPasteboard.PasteboardType("com.xjs.bluefatfish.task-view")
     private var tasks: [AgentTaskRecord] = [], rows: [Row] = []
+    private var waitingStates: [String: AgentTaskWaitingStatus] = [:]
     private var selected: String?, signature = "", updating = false, searchVisible = false, filter = 0, attentionSelected = false, mainPage = "chat"
     private var collapsed = Set<String>(), expandedTasks = Set<String>()
     private var observedRecovery: AgentTaskSidebarRecovery.State?
@@ -222,8 +223,11 @@ private final class AgentTaskTable: NSTableView {
         if event.keyCode == 53, bulkSelecting { cancelBulkSelection(); return true }
         return super.performKeyEquivalent(with: event)
     }
-    func refresh(_ values: [AgentTaskRecord], selected: String?, organization: AgentOrganization, searchRevision: UInt64 = 0) {
+    func refresh(_ values: [AgentTaskRecord], selected: String?, organization: AgentOrganization, searchRevision: UInt64 = 0,
+                 waitingStates: [String: AgentTaskWaitingStatus] = [:]) {
         self.organization = organization
+        let waitingChanged = self.waitingStates != waitingStates
+        self.waitingStates = waitingStates
         let previous = self.selected; self.selected = selected
         let mode = values.first(where: { $0.id == selected })?.organizationMode ?? .coding
         let view = organization.taskView(mode)
@@ -234,7 +238,7 @@ private final class AgentTaskTable: NSTableView {
         if previous != selected, let path = values.first(where: { $0.id == selected })?.organizationWorkspace { collapsed.remove(groupKey(path)) }
         let next = values.map { "\($0.id)|\($0.title)|\($0.organizationWorkspace ?? "")|\($0.organizationMode.rawValue)|\($0.status.rawValue)|\($0.archived)|\($0.pinned)|\($0.summary)|\($0.activityAt ?? $0.updated)" }.joined(separator: "\n") + "\n\(organization.revision)|\(workMode.rawValue)|\(Calendar.current.startOfDay(for: Date()))|\(search.stringValue.isEmpty ? 0 : searchRevision)"
         if onAttention == nil { setAttentionCount(values.filter { !$0.archived && $0.status == .waiting }.count, enabled: true) }
-        if signature != next || previous != selected {
+        if signature != next || previous != selected || waitingChanged {
             signature = next; tasks = values; applyFilter()
             if previous != selected { selectCurrent(reveal: true) }
         } else { selectCurrent() }
@@ -468,6 +472,11 @@ private final class AgentTaskTable: NSTableView {
         let bounds = table.rect(ofRow: row).insetBy(dx: 0, dy: 1)
         return table.visibleRect.minY <= bounds.minY && table.visibleRect.maxY >= bounds.maxY
     }
+    func selectedTaskAccessibilityLabel() -> String? {
+        let row = table.selectedRow
+        guard rows.indices.contains(row), case .task = rows[row] else { return nil }
+        return table.view(atColumn: 0, row: row, makeIfNecessary: false)?.accessibilityLabel()
+    }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         if case .group = rows[row] { return compactRows ? 28 : 32 }
@@ -530,14 +539,16 @@ private final class AgentTaskTable: NSTableView {
             cell.textField = label
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             let icon = NSImageView()
-            AgentTaskStatusAppearance(task).apply(to: icon)
+            let appearance = AgentTaskStatusAppearance(task, waiting: waitingStates[task.id])
+            appearance.apply(to: icon)
             let snippet = searchSnippet(task)
             let text = NSStackView(views: [label]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 3
             if let snippet { let preview = NSTextField(labelWithString: snippet); preview.font = .systemFont(ofSize: 11); preview.textColor = AgentWorkbenchTheme.secondaryText; preview.lineBreakMode = .byTruncatingTail; text.addArrangedSubview(preview) }
             for child in text.arrangedSubviews { child.widthAnchor.constraint(equalTo: text.widthAnchor).isActive = true }
             let line = NSStackView(views: [icon, text]); line.spacing = 7; cell.addSubview(line); line.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([line.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: CGFloat(29 + depth * 12)), line.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -7), line.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 12), icon.heightAnchor.constraint(equalToConstant: 12)])
-            cell.toolTip = task.title + " · " + task.statusTitle + (unread ? " · 未读" : "") + (snippet.map { "\n" + $0 } ?? ""); cell.setAccessibilityLabel(task.title + "，" + task.statusTitle + (unread ? "，未读" : "") + (snippet.map { "，" + $0 } ?? "")); return cell
+            cell.toolTip = task.title + " · " + appearance.title + (unread ? " · 未读" : "") + (snippet.map { "\n" + $0 } ?? "")
+            cell.setAccessibilityLabel(task.title + "，" + appearance.title + (unread ? "，未读" : "") + (snippet.map { "，" + $0 } ?? "")); return cell
         }
     }
     @objc private func toggleGroup(_ sender: NSButton) { guard rows.indices.contains(sender.tag), case .group(_, let path) = rows[sender.tag], let path else { return }; clearPendingRecovery(); let key = groupKey(path); if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }; applyFilter() }

@@ -14,6 +14,7 @@ import AppKit
     private let openButton = AgentDialogButton(title: "打开", target: nil, action: nil)
     private let onSelect: (String) -> Void, onClose: () -> Void
     private var values: [AgentTaskRecord] = [], initialSelection: String?, chosen: String?
+    private var waitingStates: [String: AgentTaskWaitingStatus] = [:]
     static func candidates(store: AgentStore, query: String) -> [AgentTaskRecord] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let matches = store.tasks.filter { task in
@@ -65,7 +66,9 @@ import AppKit
     override func layoutForOwner(_ available: NSSize) { preferredContentSize = NSSize(width: min(560, available.width), height: min(480, available.height)) }
     func refresh() {
         let selected = values.indices.contains(table.selectedRow) ? values[table.selectedRow].id : initialSelection
-        initialSelection = nil; values = Self.candidates(store: store, query: search.stringValue); table.reloadData()
+        initialSelection = nil; values = Self.candidates(store: store, query: search.stringValue)
+        waitingStates = store.workbenchWaitingStates(for: values)
+        table.reloadData()
         if !values.isEmpty { table.selectRowIndexes(IndexSet(integer: values.firstIndex(where: { $0.id == selected }) ?? 0), byExtendingSelection: false); table.scrollRowToVisible(table.selectedRow) }
         empty.isHidden = !values.isEmpty; openButton.isEnabled = !values.isEmpty
     }
@@ -100,7 +103,8 @@ import AppKit
         }
         cell.textField?.stringValue = task.title
         let directory = store.organization.name(task.workspace, mode: task.organizationMode) ?? "无" + task.organizationMode.directoryTitle
-        (cell.subviews.first { $0.identifier?.rawValue == "detail" } as? NSTextField)?.stringValue = task.organizationMode.title + " · " + directory + " · " + task.status.title
+        let state = waitingStates[task.id]?.title ?? task.statusTitle
+        (cell.subviews.first { $0.identifier?.rawValue == "detail" } as? NSTextField)?.stringValue = task.organizationMode.title + " · " + directory + " · " + state
         return cell
     }
     func checkState() -> [String: Any] {

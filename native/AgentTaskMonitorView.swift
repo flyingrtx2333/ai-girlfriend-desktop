@@ -42,12 +42,15 @@ struct AgentMonitorContent {
     var onOpenTerminal: (() -> Void)?, onTerminal: ((String) -> Void)?, onPage: ((String) -> Void)?
     var onRecap: (() -> Void)?, onContext: ((Int) -> Void)?, onSettings: (() -> Void)?, onMemory: (() -> Void)?, onPreview: (() -> Void)?
     var onClose: (() -> Void)?, onPresentation: (() -> Void)?
+    var onStopTask: ((String) -> Void)?
     var onReadingChange: ((String, Reading) -> Void)?
     var onAddSource: ((NSButton) -> Void)?
     var onSkillCurate: ((Set<String>,String,Bool)->Void)?, onSkillTask: ((String)->Void)?, onSkillRetry: (()->Void)?, onSkillSource: (()->Void)?
     private var skillSelections: [String:Set<String>] = [:]
     var canOpenTerminal = true
     private let column = NSStackView(), scroll = NSScrollView(), pin = AgentWorkbenchButton()
+    private let stopSlot = NSStackView()
+    private var stopAction: (taskID: String, button: AgentDialogButton)?
     private final class Action: NSObject {
         let taskID: String?, generation: UUID, body: () -> Void
         init(taskID: String?, generation: UUID, body: @escaping () -> Void) { self.taskID = taskID; self.generation = generation; self.body = body }
@@ -68,7 +71,9 @@ struct AgentMonitorContent {
         AgentWorkbenchTheme.toolbar(pin, title: "改为浮动", symbol: "rectangle.portrait.and.arrow.right"); pin.target = self; pin.action = #selector(changePresentation)
         AgentWorkbenchTheme.toolbar(more, title: "任务监控操作", symbol: "ellipsis"); more.target = self; more.action = #selector(showMenu(_:))
         AgentWorkbenchTheme.toolbar(close, title: "关闭任务监控", symbol: "xmark"); close.target = self; close.action = #selector(closeMonitor)
-        let header = AgentTaskMonitorHeader(views: [title, NSView(), pin, more, close]); header.spacing = 3
+        stopSlot.isHidden = true
+        let header = AgentTaskMonitorHeader(views: [title, NSView(), stopSlot, pin, more, close]); header.spacing = 3
+        header.setCustomSpacing(9, after: stopSlot)
         let line = AgentWorkbenchTheme.rule(), document = FormDocumentView(); column.orientation = .vertical; column.alignment = .leading; column.spacing = 20
         document.addSubview(column); document.translatesAutoresizingMaskIntoConstraints = false; column.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document
         scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false; scroll.setAccessibilityLabel("任务监控内容")
@@ -83,6 +88,26 @@ struct AgentMonitorContent {
     func setPresentation(_ presentation: AgentMonitorPresentation) {
         pin.image = NSImage(systemSymbolName: presentation == .fixed ? "rectangle.portrait.and.arrow.right" : "pin", accessibilityDescription: nil)
         let title = presentation == .fixed ? "改为浮动" : "固定到任务右侧"; pin.setAccessibilityLabel(title); pin.toolTip = title
+    }
+    func setStopTask(_ taskID: String?) {
+        guard taskID != stopAction?.taskID else { return }
+        if let old = stopAction?.button {
+            stopSlot.removeArrangedSubview(old); old.removeFromSuperview()
+        }
+        stopAction = nil
+        stopSlot.isHidden = taskID == nil
+        guard let taskID else { return }
+        let button = AgentDialogButton(title: "停止任务", target: self, action: #selector(stopTask(_:)))
+        button.hasDestructiveAction = true
+        button.setAccessibilityIdentifier("monitor-stop-task")
+        AgentDialogStyle.action(button)
+        stopSlot.addArrangedSubview(button)
+        stopAction = (taskID, button)
+    }
+    @objc private func stopTask(_ sender: NSButton) {
+        guard let stopAction, stopAction.button === sender, boundTaskID == stopAction.taskID,
+              !sender.isHiddenOrHasHiddenAncestor, sender.window?.isVisible == true else { return }
+        onStopTask?(stopAction.taskID)
     }
     @objc private func closeMonitor() { onClose?() }
     @objc private func changePresentation() { onPresentation?() }
@@ -283,7 +308,8 @@ struct AgentMonitorContent {
     func readback() -> [String: Any] {
         guard ["--task-monitor-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) else { return [:] }
         func collect(_ view: NSView) -> [String] { ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap(collect) }
-        return ["taskID": boundTaskID ?? "", "sections": column.arrangedSubviews.compactMap { ($0 as? NSStackView)?.arrangedSubviews.first?.identifier?.rawValue }, "text": collect(column).joined(separator: "\n"), "scrollY": scroll.contentView.bounds.origin.y]
+        return ["taskID": boundTaskID ?? "", "sections": column.arrangedSubviews.compactMap { ($0 as? NSStackView)?.arrangedSubviews.first?.identifier?.rawValue }, "text": collect(column).joined(separator: "\n"), "scrollY": scroll.contentView.bounds.origin.y,
+                "stopTaskID": stopAction?.taskID ?? "", "stopVisible": stopAction?.button.isHiddenOrHasHiddenAncestor == false]
     }
 }
 

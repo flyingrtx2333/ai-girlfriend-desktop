@@ -104,7 +104,21 @@ class AgentWorkbenchButton: NSButton {
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); AgentWorkbenchTheme.color(layer, state == .on ? AgentWorkbenchTheme.selection : .clear, animated: false) }
 }
 
+enum AgentTaskWaitingStatus: String {
+    case approval, answer
+
+    init?(task: AgentTaskRecord) {
+        guard !task.archived, task.status == .waiting, let call = task.pendingCalls.first,
+              task.approvals.contains(where: { $0.call.id == call.id && $0.decision == nil }) else { return nil }
+        self = call.name == "ask_user" ? .answer : .approval
+    }
+
+    var title: String { self == .approval ? "待审批" : "待答复" }
+    var symbol: String { self == .approval ? "exclamationmark.circle.fill" : "questionmark.circle.fill" }
+}
+
 @MainActor struct AgentTaskStatusAppearance {
+    let title: String
     let symbol: String
     let color: NSColor
     private static let runningColor = NSColor(name: "AgentTaskRunning") { appearance in
@@ -114,7 +128,9 @@ class AgentWorkbenchButton: NSButton {
         return NSColor(srgbRed: 0.02, green: 0.31, blue: 0.69, alpha: 1)
     }
 
-    init(_ task: AgentTaskRecord) {
+    init(_ task: AgentTaskRecord, waiting: AgentTaskWaitingStatus? = nil) {
+        title = waiting?.title ?? task.statusTitle
+        if let waiting { (symbol, color) = (waiting.symbol, AgentDialogStyle.warning); return }
         let status: AgentTaskStatus = task.statusTitle == "校验未通过" ? .failed : task.status
         switch status {
         case .ready: (symbol, color) = ("circle", AgentWorkbenchTheme.secondaryText)
@@ -172,11 +188,11 @@ class AgentWorkbenchButton: NSButton {
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
     override var intrinsicContentSize: NSSize { NSSize(width: label.intrinsicContentSize.width + (isEnabled ? 46 : 33), height: 22) }
-    func update(_ task: AgentTaskRecord) {
-        let appearance = AgentTaskStatusAppearance(task)
+    func update(_ task: AgentTaskRecord, waiting: AgentTaskWaitingStatus?) {
+        let appearance = AgentTaskStatusAppearance(task, waiting: waiting)
         appearance.apply(to: icon)
         arrow.contentTintColor = appearance.color
-        label.stringValue = task.statusTitle; label.textColor = appearance.color; statusColor = appearance.color; needsDisplay = true
+        label.stringValue = appearance.title; label.textColor = appearance.color; statusColor = appearance.color; needsDisplay = true
         invalidateIntrinsicContentSize()
         updateAccessibilityTitle()
     }

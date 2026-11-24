@@ -1,6 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 import CoreText
+import Darwin
 
 final class ComposerView: NSTextView {
     var placeholder = "发消息…" { didSet { needsDisplay = true } }
@@ -1440,9 +1441,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         desktopButton.isHidden = compactTaskTools; gitButton.isHidden = compactTaskTools || !presentation.changeReview
         taskOverflowControls = compactTaskTools ? [desktopButton] + (presentation.changeReview ? [gitButton] : []) : []
         if chatting, let focus, taskOverflowControls.contains(where: { $0 === focus }) { window?.makeFirstResponder(taskMore) }
-        workbenchBadge.update(task)
         updateWorkbenchStatusAction(task)
         workbenchInspector.update(monitorContent, reading: monitorState.reading); workbenchInspector.setPresentation(.fixed)
+        workbenchInspector.setStopTask(fullMonitor && canStopWorkbenchTask(task) ? task.id : nil)
         updateFloatingMonitor(monitorContent, state: monitorState, show: chatting && monitorState.presentation == .floating && monitorState.visible)
         taskBack.isEnabled = sideTaskTabID == nil && taskNavigationIndex > 0; taskForward.isEnabled = sideTaskTabID == nil && taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
         let modelName = (try? companion?.agentRuntime?.taskPreferences(task.id).model) ?? task.modelOverride ?? companion?.store.preferences.model ?? ""
@@ -1482,6 +1483,15 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             else if task.status == .failed, !status.isHidden { title = "查看错误" }
         }
         workbenchBadge.setOpenTitle(title)
+    }
+    private func canStopWorkbenchTask(_ task: AgentTaskRecord) -> Bool {
+        !task.archived && task.status == .running && companion?.agentRuntime?.isRunning(task.id) == true
+    }
+    private func stopWorkbenchTask(_ id: String) {
+        guard selectedTab == "chat", workspaceEditor == nil, let window, !window.hasBlockingDialog,
+              let task = currentAgentTask, task.id == id, canStopWorkbenchTask(task) else { return }
+        if !workbenchInspector.isHidden, terminalSplit.isHidden { window.makeFirstResponder(resultsButton) }
+        companion?.cancelConversation(taskID: id, userInterrupt: true)
     }
     @objc private func revealWorkbenchStatus() {
         guard let window, !window.hasBlockingDialog, selectedTab == "chat", workspaceEditor == nil,
@@ -1631,6 +1641,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         view.onMemory = { [weak self] in self?.openAgentMemory() }
         view.onPreview = { [weak self] in self?.toggleMonitorPreview() }
         view.onClose = { [weak self] in self?.closeTaskMonitor() }
+        view.onStopTask = { [weak self] id in self?.stopWorkbenchTask(id) }
         view.onPresentation = { [weak self] in self?.pinTaskMonitor() }
         view.onAddSource = { [weak self] sender in self?.showSourceMenu(sender) }
         view.onSkillCurate = { [weak self] ids,source,adopt in
@@ -1745,8 +1756,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         }
         func header(_ task: AgentTaskRecord) -> Bool {
             let controls = [projectButton, browserButton, terminalButton, desktopButton, gitButton, resultsButton, taskMore].filter { !$0.isHidden }
+            let expected = AgentTaskWaitingStatus(task: task)?.title ?? task.statusTitle
             return visible(pageTitle) && rect(pageTitle).width >= 48 && pageTitle.stringValue == task.title && pageTitle.toolTip == task.title &&
-                visible(workbenchBadge) && workbenchBadge.accessibilityLabel() == task.statusTitle && resultsButton.isEnabled &&
+                visible(workbenchBadge) && workbenchBadge.accessibilityLabel() == expected && resultsButton.isEnabled &&
                 controls.allSatisfy { visible($0) && rect($0).minX >= rect(workbenchBadge).maxX }
         }
         func capture(_ key: String) {
@@ -1786,8 +1798,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             showAgentTask(id)
             if !workbenchInspector.isHidden { resultsButton.performClick(nil) }
             root.layoutSubtreeIfNeeded()
-            let expectedStatus = ["empty": "待开始", "running": "执行中", "waiting": "需要我", "failed": "出错了", "completed": "已完成"][state]
-            checks["WorkbenchTitleStatusAndSelection-" + state] = window.frame.size == NSSize(width: 780, height: 540) && header(task) && expectedStatus == task.statusTitle && taskSidebar.workbenchSelectionIsVisible(id)
+            let expectedStatus = ["empty": "待开始", "running": "执行中", "waiting": "待审批", "failed": "出错了", "completed": "已完成"][state]
+            checks["WorkbenchTitleStatusAndSelection-" + state] = window.frame.size == NSSize(width: 780, height: 540) && header(task) &&
+                expectedStatus == workbenchBadge.accessibilityLabel() && taskSidebar.workbenchSelectionIsVisible(id)
             let leading = rect(entryLeading), trailing = rect(entryTrailing)
             checks["WorkbenchComposerFits-" + state] = !terminalSplit.isHidden && composer.enclosingScrollView.map(visible) == true && visible(modePopup) && visible(permissionPopup) && visible(sendButton) && !leading.intersects(trailing)
             capture(state)
@@ -1799,6 +1812,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             case "waiting":
                 checks["WaitingWorkbenchShowsApprovalWithDisabledSelectors"] = visible(approveButton) && visible(denyButton) && approveButton.isEnabled && denyButton.isEnabled && !modePopup.isEnabled && !taskModel.isEnabled
                 let tools = overflowTools(task)
+                checks["WaitingApprovalSidebarUsesTheSameStatus"] = taskSidebar.selectedTaskAccessibilityLabel()?.contains("，待审批") == true
                 if let row = frames[state]?["sidebarTitle"] {
                     checks["CompactWaitingTaskNameFitsInSidebar"] = row[0] >= row[1] && row[2] <= 29
                 } else { checks["CompactWaitingTaskNameFitsInSidebar"] = false }
@@ -1994,13 +2008,14 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         showAgentTask(waiting); showMonitor()
         try? await Task.sleep(for: .milliseconds(200))
         checks["WideStatusStaysPassiveWhenApprovalAndMonitorAreVisible"] = screenshot("wide-approval") && visible(workbenchInspector) && visible(approveButton) &&
-            visible(button) && !button.isEnabled && button.title.isEmpty
+            visible(button) && !button.isEnabled && button.title.isEmpty && button.accessibilityLabel() == "待审批"
         window.setFrame(NSRect(origin: originalFrame.origin, size: NSSize(width: 780, height: 540)), display: true)
         showMonitor()
         let originalReading = taskMonitorState(waiting).reading, commandID = visibleApproval?.call
         let monitorAction = terminalSplit.isHidden && actionVisible("查看审批")
         try? await Task.sleep(for: .milliseconds(200))
-        checks["NarrowMonitorShowsAccessibleApprovalActionInHeader"] = screenshot("status-narrow-monitor") && monitorAction
+        checks["NarrowMonitorShowsAccessibleApprovalActionInHeader"] = screenshot("status-narrow-monitor") && monitorAction &&
+            button.accessibilityLabel() == "待审批，查看审批"
         button.performClick(nil)
         try? await Task.sleep(for: .milliseconds(200))
         checks["HeaderRevealsOriginalApprovalWithoutMakingADecision"] = screenshot("status-narrow-approval") && agentTaskID == waiting && commandID != nil && visibleApproval?.call == commandID &&
@@ -2018,7 +2033,8 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         let document = taskWorkspace.currentController
         try? await Task.sleep(for: .milliseconds(200))
         checks["NarrowDocumentShowsQuestionActionInHeader"] = screenshot("status-narrow-document-dark") && document is AgentRecordWindow && taskWorkspace.requested &&
-            terminalSplit.isHidden && actionVisible("查看问询")
+            terminalSplit.isHidden && actionVisible("查看问询") && button.accessibilityLabel() == "待答复，查看问询" &&
+            taskSidebar.selectedTaskAccessibilityLabel()?.contains("，待答复") == true
         button.performClick(nil)
         root.layoutSubtreeIfNeeded()
         record("question-visible")
@@ -2061,7 +2077,8 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             let work = Task { await inputs.wait(request) { true } }
             for _ in 0..<25 where inputs.first(taskID: running) == nil { try? await Task.sleep(for: .milliseconds(20)) }
             renderAgentMessages()
-            let offered = terminalSplit.isHidden && actionVisible("查看连接器问询")
+            let offered = terminalSplit.isHidden && actionVisible("查看连接器问询") && button.accessibilityLabel() == "待答复，查看连接器问询" &&
+                taskSidebar.selectedTaskAccessibilityLabel()?.contains("，待答复") == true
             record("connector-action")
             button.performClick(nil)
             root.layoutSubtreeIfNeeded()
@@ -2072,6 +2089,61 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             work.cancel()
         } else { checks["NewConnectorQuestionFindsItsOriginalTaskWithoutResponding"] = false }
         return checks
+    }
+    func checkWorkbenchStop(_ ids: [String: String], pid: Int32) async -> [String: Bool] {
+        guard CommandLine.arguments.contains("--task-monitor-check"), let window, let root = window.contentView,
+              let tasks = companion?.agentStore, let runtime = companion?.agentRuntime,
+              let running = ids["running"], let completed = ids["completed"], let runningTask = tasks.task(running),
+              runtime.isRunning(running), kill(pid, 0) == 0 else { return ["MonitorStopUsesLiveFixture": false] }
+        let size = window.frame.size
+        defer { window.setFrame(NSRect(origin: window.frame.origin, size: size), display: true) }
+        func button(_ view: NSView) -> NSButton? {
+            if let value = view as? NSButton, value.accessibilityIdentifier() == "monitor-stop-task" { return value }
+            return view.subviews.lazy.compactMap(button).first
+        }
+        func monitor() async {
+            if workbenchInspector.isHidden { resultsButton.performClick(nil) }
+            // AppKit finishes the inspector transition on the next layout passes.
+            try? await Task.sleep(for: .milliseconds(200))
+            root.layoutSubtreeIfNeeded()
+        }
+        showAgentTask(running)
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 1320, height: 800)), display: true)
+        await monitor()
+        let wide = button(workbenchInspector) == nil && !terminalSplit.isHidden && !workbenchInspector.isHidden &&
+            taskMenu(runningTask).item(withTitle: "停止任务")?.representedObject as? String == running
+        closeTaskMonitor()
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
+        let draft = "保留后台任务的原草稿。", selection = NSRange(location: 2, length: 4)
+        window.makeFirstResponder(composer); composer.string = draft; composer.didChangeText(); composer.setSelectedRange(selection)
+        await monitor()
+        guard let first = button(workbenchInspector) else { return ["CompactMonitorShowsDirectStop": false] }
+        let compact = terminalSplit.isHidden && !first.isHiddenOrHasHiddenAncestor && first.bounds.width > 60 &&
+            root.bounds.insetBy(dx: -1, dy: -1).contains(first.convert(first.bounds, to: root)) &&
+            first.visibleRect.width + 1 >= first.bounds.width
+        let originalStatus = tasks.task(completed)?.status
+        showAgentTask(completed); await monitor()
+        if let action = first.action { NSApp.sendAction(action, to: first.target, from: first) }
+        let staleProtected = button(workbenchInspector) == nil && runtime.isRunning(running) && kill(pid, 0) == 0 &&
+            tasks.task(completed)?.status == originalStatus
+        showAgentTask(running); await monitor()
+        guard let fresh = button(workbenchInspector), fresh !== first else { return ["CompactMonitorRebindsStopToItsOwner": false] }
+        fresh.performClick(nil)
+        // The task status can update before its background command has exited.
+        for _ in 0..<120 {
+            if !runtime.isRunning(running), kill(pid, 0) != 0 { break }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        renderAgentMessages(); root.layoutSubtreeIfNeeded()
+        let stopped = tasks.task(running)?.status == .stopped && !runtime.isRunning(running) && kill(pid, 0) != 0
+        let monitorRemainedOpen = workbenchBadge.accessibilityLabel() == "已停止" && button(workbenchInspector) == nil && !workbenchInspector.isHidden
+        closeTaskMonitor(); root.layoutSubtreeIfNeeded()
+        return ["WideMonitorKeepsStopInComposerOrTaskMenu": wide, "CompactMonitorShowsDirectStop": compact,
+                "DetachedMonitorStopCannotActOnAnotherTask": staleProtected,
+                "MonitorStopActuallyTerminatesItsOwnProcess": stopped,
+                "StoppedTaskKeepsMonitorOpenAndRemovesStop": monitorRemainedOpen,
+                "MonitorStopPreservesDraftSelectionAndOtherTasks": composer.string == draft && composer.selectedRange() == selection &&
+                    tasks.task(running)?.draft == draft && tasks.task(completed)?.status == originalStatus]
     }
     @objc private func toggleLeftSidebar() {
         guard selectedTab == "chat" else { return }
@@ -2162,6 +2234,12 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             menu.addItem(item)
         }
         if !taskOverflowControls.isEmpty { menu.addItem(.separator()) }
+        if canStopWorkbenchTask(task) {
+            let stop = NSMenuItem(title: "停止任务", action: #selector(stopTaskFromMenu(_:)), keyEquivalent: "")
+            stop.target = self; stop.representedObject = task.id
+            menu.addItem(stop)
+            menu.addItem(.separator())
+        }
         for (title, action) in [("重命名", "rename"), (task.pinned ? "取消置顶" : "置顶", "pin"), ("创建分支", "fork"), (task.archived ? "恢复任务" : "归档任务", "archive")] {
             let item = NSMenuItem(title: title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running && (task.pendingFileRollback == nil || !["fork", "archive"].contains(action)); menu.addItem(item)
         }
@@ -2186,6 +2264,9 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         menu.addItem(.separator())
         let remove = NSMenuItem(title: "永久删除…", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); remove.target = self; remove.representedObject = [task.id, "delete"]; remove.isEnabled = task.status != .running; menu.addItem(remove)
         return menu
+    }
+    @objc private func stopTaskFromMenu(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? String { stopWorkbenchTask(id) }
     }
     @objc private func taskMenuAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? [String], value.count == 2 { agentTaskAction(value[0], action: value[1]) } }
     @objc private func showTaskModelMenu(_ sender: NSButton) {
@@ -6146,10 +6227,17 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
         let readingPosition = restoringConversation ? conversationPositions[task.id] : currentConversationPosition()
         let taskView = tasks.organization.taskView(task.organizationMode)
         let listing = taskView.grouping != .workspace || taskView.activity != .all ? tasks.taskViewMetadata() : tasks.tasks
+        let pendingReview = companion?.agentRuntime?.pendingReview(task.id)
+        let mcpRequest = task.archived ? nil : tasks.mcp.userInputs.first(taskID: task.id)
+        let waiting = task.archived ? nil : pendingReview.flatMap(AgentTaskWaitingStatus.init) ?? (mcpRequest == nil ? nil : .answer)
+        var waitingStates = tasks.workbenchWaitingStates(for: listing)
+        waitingStates[task.id] = waiting
         var hidden = Set(listing.filter { !tasks.sideTasks.sidebarVisible($0) }.map(\.id)), previous = Set<String>()
         while previous != hidden { previous = hidden; for item in listing where item.agent?.ownerID.map(hidden.contains) == true || item.kind == "hook" && item.parentID.map(hidden.contains) == true { hidden.insert(item.id) } }
         let sidebarSelection = task.sideTask.flatMap { side in tasks.tasks.contains { $0.id == side.parentID && !$0.archived } ? side.parentID : nil } ?? task.id
-        taskSidebar.refresh(listing.filter { !hidden.contains($0.id) }, selected: sidebarSelection, organization: tasks.organization, searchRevision: tasks.taskSearchRevision)
+        taskSidebar.refresh(listing.filter { !hidden.contains($0.id) }, selected: sidebarSelection, organization: tasks.organization,
+                            searchRevision: tasks.taskSearchRevision, waitingStates: waitingStates)
+        workbenchBadge.update(task, waiting: waiting)
         if selectedTab == "chat" { pageTitle.stringValue = task.title; pageTitle.toolTip = task.title }
         projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = tasks.organization.name(task.organizationWorkspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle
         if let entry = tasks.organization.entry(task.organizationWorkspace ?? "",mode:task.organizationMode,tasks:tasks.tasks) { projectButton.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); projectButton.contentTintColor = (entry.color ?? .forest).nsColor } else { projectButton.image = NSImage(systemSymbolName:"folder",accessibilityDescription:nil); projectButton.contentTintColor = AgentWorkbenchTheme.secondaryText }
@@ -6350,7 +6438,7 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
                 if let childID = events[call.id]?.childTaskID, let child = tasks.task(childID) { toolRows[call.id]?.setSubtask(child) { [weak self] in self?.selectAgentTask(childID) } }
             }
         }
-        if let review = companion?.agentRuntime?.pendingReview(task.id), let call = review.pendingCalls.first, let approval = review.approvals.last(where: { $0.call.id == call.id && $0.decision == nil }) {
+        if let review = pendingReview, let call = review.pendingCalls.first, let approval = review.approvals.last(where: { $0.call.id == call.id && $0.decision == nil }) {
             let asking = call.name == "ask_user"
             if visibleApproval?.task != review.id || visibleApproval?.call != call.id {
                 visibleApproval = (review.id, call.id)
@@ -6411,7 +6499,6 @@ private final class ComposerResizeButton: AgentWorkbenchButton {
             fitApprovalPreview(to: history.bounds.width)
         } else { visibleApproval = nil; approvalPanel.isHidden = true }
         reserveApprovalSpaceInTerminalSplit()
-        let mcpRequest = task.archived ? nil : tasks.mcp.userInputs.first(taskID: task.id)
         mcpInputRow.isHidden = mcpRequest == nil
         if let mcpRequest { mcpInputButton.title = "回答 " + String(mcpRequest.serverName.prefix(32)) }
         if let panel = mcpInputPanel, panel.request.id != mcpRequest?.id { panel.dismiss(); mcpInputPanel = nil }
