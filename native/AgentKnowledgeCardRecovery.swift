@@ -87,6 +87,11 @@ import AppKit
         openedScope = state.scope; hasRestoredSnapshot = true; value = state.book; revision = state.revision
         language.selectItem(at: state.language == "en" ? 1 : 0); category.selectItem(at: state.category); search.stringValue = state.query; focus.stringValue = state.focus
         format.selectedSegment = state.mode; savedViews = state.views; fieldSelections = state.fields; lastContentFocus = state.active; filter(preferred: state.selected)
+        if state.dirty, selected?.id != state.selected {
+            // Earlier builds could save a cancelled filter alongside the open draft.
+            search.stringValue = ""; category.selectItem(at: 0); fieldSelections["query"] = nil; lastContentFocus = "body"
+            filter(preferred: state.selected)
+        }
         if state.selected == nil { table.deselectAll(nil); selected = nil; render() }
         if sources.numberOfItems > state.reference, state.reference >= 0 { sources.selectItem(at: state.reference) }
         if state.mode == 1 { titleField.stringValue = state.title; preview.string = state.body ?? selected?.body ?? "" }
@@ -133,10 +138,19 @@ import AppKit
             guard isPageVisible, presentingWindow?.hasBlockingDialog != true else { return }
             applyingRecovery = true; presentingWindow?.contentView?.layoutSubtreeIfNeeded()
             if let viewport = pendingCardViewport, viewport.apply(to: preview, focus: cardFocusRequested && lastContentFocus == "body") { pendingCardViewport = nil }
-            if cardFocusRequested, lastContentFocus == "body", pendingCardViewport == nil { presentingWindow?.makeFirstResponder(preview) }
-            if cardFocusRequested, let field = recoveryFields[lastContentFocus] {
-                presentingWindow?.makeFirstResponder(field)
-                if let editor = field.currentEditor() as? NSTextView, let selection = fieldSelections[lastContentFocus], selection.valid(in: (editor.string as NSString).length) { editor.setSelectedRange(selection.range) }
+            if cardFocusRequested {
+                if lastContentFocus == "body", !preview.isHiddenOrHasHiddenAncestor {
+                    if pendingCardViewport == nil { presentingWindow?.makeFirstResponder(preview) }
+                } else {
+                    let preferred = recoveryFields[lastContentFocus]
+                    if let field = [preferred, search, focus].compactMap({ $0 }).first(where: { $0.isEditable && !$0.isHiddenOrHasHiddenAncestor }) {
+                        presentingWindow?.makeFirstResponder(field)
+                        if field === preferred, let editor = field.currentEditor() as? NSTextView,
+                           let selection = fieldSelections[lastContentFocus], selection.valid(in: (editor.string as NSString).length) {
+                            editor.setSelectedRange(selection.range)
+                        }
+                    }
+                }
             }
             cardFocusRequested = false; applyingRecovery = false; onWorkspaceChange?()
         }

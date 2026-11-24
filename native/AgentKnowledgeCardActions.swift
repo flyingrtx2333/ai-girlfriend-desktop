@@ -46,14 +46,16 @@ import AppKit
         resetRecoverySnapshot()
         saveOptions()
     }
-    @objc func optionsChanged(_ sender: NSButton) {
-        if sender.state == .on && (sender === automatic || sender === exporting) {
+    @objc func optionsChanged(_ sender: NSMenuItem) {
+        do { try requireOriginalCardScope() } catch { state.stringValue = error.localizedDescription; return }
+        let next: NSControl.StateValue = sender.state == .on ? .off : .on
+        if next == .on && (sender === automatic || sender === exporting) {
             let alert = AgentConfirmation(); alert.messageText = sender === automatic ? "启用自动更新？" : "启用自动导出？"
             alert.informativeText = sender === automatic ? "源码变化后使用此任务的模型生成卡片，会产生模型用量。存在手动编辑时会提示审阅。" : "卡片保存后写入当前项目的 " + ((try? cards.sharingPath(language: selectedLanguage)) ?? "知识目录") + "，可随项目提交。外部改动需先导入。"
             alert.addButton(withTitle: "启用"); alert.addButton(withTitle: "取消")
-            guard alert.runModal() == .alertFirstButtonReturn else { sender.state = .off; return }
-            sender.state = .on
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
+        sender.state = next
         saveOptions()
     }
     func saveOptions() {
@@ -70,8 +72,21 @@ import AppKit
         }
     }
     @objc func saveCard() {
-        presentingWindow?.makeFirstResponder(nil)
         guard let task, let selected else { return }
+        let host = presentingWindow, responder = host?.firstResponder
+        let editingTitle = responder != nil && responder === titleField.currentEditor()
+        let editingBody = responder === preview
+        if editingTitle {
+            rememberCurrentFieldSelection()
+            guard host?.makeFirstResponder(nil) == true else { return }
+            lastContentFocus = "title"
+        }
+        defer {
+            if editingTitle || editingBody {
+                cardFocusRequested = true
+                scheduleCardViewport()
+            }
+        }
         do {
             try requireOriginalCardScope()
             _ = try cards.replaceCard(task: task, id: selected.id, body: preview.string, title: titleField.stringValue, expectedCard: selected.hash, citations: nil, expectedBook: revision)
